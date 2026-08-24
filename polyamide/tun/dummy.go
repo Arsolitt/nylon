@@ -10,14 +10,16 @@ import (
 // device is closed, while writes are discarded.
 type DummyDevice struct {
 	name      string
+	mtu       int
 	closed    chan struct{}
 	events    chan Event
 	closeOnce sync.Once
 }
 
-func NewDummyDevice(name string) *DummyDevice {
+func NewDummyDevice(name string, mtu int) *DummyDevice {
 	return &DummyDevice{
 		name:   name,
+		mtu:    mtu,
 		closed: make(chan struct{}),
 		events: make(chan Event),
 	}
@@ -42,7 +44,7 @@ func (d *DummyDevice) Write(bufs [][]byte, _ int) (int, error) {
 }
 
 func (d *DummyDevice) MTU() (int, error) {
-	return 1420, nil
+	return d.mtu, nil
 }
 
 func (d *DummyDevice) Name() (string, error) {

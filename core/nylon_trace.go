@@ -3,6 +3,7 @@ package core
 import (
 	"github.com/dustin/go-broadcast"
 )
+
 type NylonTrace struct {
 	broadcast.Broadcaster
 }

@@ -9,11 +9,53 @@ import (
 	"net/netip"
 	"runtime"
 	"slices"
+	"strings"
 
 	"github.com/encodeous/nylon/polyamide/conn"
 	"github.com/encodeous/nylon/polyamide/device"
 	"github.com/encodeous/nylon/state"
 )
+
+// resolveMTU returns the configured TUN MTU or the device default.
+func resolveMTU(cfg *state.LocalCfg) int {
+	if cfg.MTU != nil {
+		return int(*cfg.MTU)
+	}
+	return device.DefaultMTU
+}
+
+// obfDeviceIPC renders the device-level AWG 2.0 UAPI knobs for the active
+// central config. A nil profile yields the vanilla-compat default: AWG with
+// every parameter unset picks message type 0 (PickOne over a zero range),
+// which is NOT vanilla WireGuard — pinning H1..H4 to the WG message types
+// preserves byte-level vanilla behavior for existing meshes and the
+// version-skew window (design §2.4). I-packets are sender-local: only this
+// node's own ObfPeerParams apply.
+func obfDeviceIPC(obf *state.ObfProfile, local *state.ObfPeerParams) string {
+	var b strings.Builder
+	if obf == nil {
+		b.WriteString("h1=1-1\nh2=2-2\nh3=3-3\nh4=4-4\n")
+	} else {
+		fmt.Fprintf(&b, "jc=%d\njmin=%d\njmax=%d\n", obf.Jc, obf.Jmin, obf.Jmax)
+		fmt.Fprintf(&b, "s1=%d\ns2=%d\ns3=%d\ns4=%d\n", obf.S1, obf.S2, obf.S3, obf.S4)
+		fmt.Fprintf(&b, "h1=%d-%d\n", obf.H1.Min, obf.H1.Max)
+		fmt.Fprintf(&b, "h2=%d-%d\n", obf.H2.Min, obf.H2.Max)
+		fmt.Fprintf(&b, "h3=%d-%d\n", obf.H3.Min, obf.H3.Max)
+		fmt.Fprintf(&b, "h4=%d-%d\n", obf.H4.Min, obf.H4.Max)
+	}
+	if local != nil {
+		for i, spec := range [5]string{local.I1, local.I2, local.I3, local.I4, local.I5} {
+			if spec != "" {
+				fmt.Fprintf(&b, "i%d=%s\n", i+1, spec)
+			}
+		}
+	}
+	return b.String()
+}
+
+func (n *Nylon) obfDeviceIPC() string {
+	return obfDeviceIPC(n.CentralCfg.Obf, n.GetNode(n.LocalCfg.Id).Obf)
+}
 
 func (n *Nylon) initWireGuard() error {
 	dev, tdev, itfName, err := NewWireGuardDevice(n)
@@ -45,7 +87,7 @@ listen_port=%d
 `,
 			hex.EncodeToString(n.Key[:]),
 			n.Port,
-		),
+		) + n.obfDeviceIPC(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to configure wg device: %v", err)
@@ -145,6 +187,12 @@ func (n *Nylon) SyncWireGuard() error {
 		n.AppliedSystem.Peers = make(map[state.NodeId]state.NyPublicKey)
 	}
 
+	// (re-)apply the AWG 2.0 obfuscation knobs; a config reload may switch the
+	// S/H profile live. In-flight handshakes can fail for one rekey window —
+	// maintenance-action semantics (design §2.4).
+	if err := n.Device.IpcSet(n.obfDeviceIPC()); err != nil {
+		return fmt.Errorf("failed to apply obf profile: %v", err)
+	}
 	desired := make(map[state.NodeId]state.NyPublicKey)
 	for _, peer := range n.GetPeers(n.LocalCfg.Id) {
 		ncfg := n.GetNode(peer)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestDummyDevice(t *testing.T) {
-	dev := NewDummyDevice("relay")
+	dev := NewDummyDevice("relay", 1420)
 
 	name, err := dev.Name()
 	if err != nil {

@@ -30,7 +30,7 @@ func NewWireGuardDevice(n *Nylon) (dev *device.Device, tunDevice tun.Device, rea
 	bind := vn.Bind(n.LocalCfg.Id)
 	var tdev tun.Device
 	if n.NoTun {
-		tdev = tun.NewDummyDevice(itfName)
+		tdev = tun.NewDummyDevice(itfName, resolveMTU(&n.LocalCfg))
 	} else {
 		tdev = vn.Tun(n.LocalCfg.Id)
 	}

@@ -20,11 +20,13 @@ func NewWireGuardDevice(n *Nylon) (dev *device.Device, tunDevice tun.Device, rea
 		itfName = "utun"
 	}
 
+	mtu := resolveMTU(&n.LocalCfg)
+
 	var tdev tun.Device
 	if n.NoTun {
-		tdev = tun.NewDummyDevice(itfName)
+		tdev = tun.NewDummyDevice(itfName, mtu)
 	} else {
-		tdev, err = tun.CreateTUN(itfName, device.DefaultMTU)
+		tdev, err = tun.CreateTUN(itfName, mtu)
 		if err != nil {
 			return nil, nil, "", fmt.Errorf("failed to create TUN: %v. Check if an interface with the name nylon exists already", err)
 		}

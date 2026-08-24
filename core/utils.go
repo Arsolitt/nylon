@@ -1,8 +1,6 @@
 package core
 
 import (
-
-
 	"github.com/encodeous/nylon/state"
 )
 
@@ -28,7 +26,6 @@ func SeqnoGt(a, b uint16) bool {
 func SeqnoGe(a, b uint16) bool {
 	return !SeqnoLt(a, b)
 }
-
 
 func abs(a int) int {
 	if a < 0 {
