@@ -424,6 +424,17 @@ func (device *Device) handleDeviceLine(ipcDev *ipcSetDevice, key, value string) 
 		}
 		device.ipackets[4] = chain
 
+	case "header_protection_key",
+		"content_padding_addition",
+		"random_trailers",
+		"disable_cookies",
+		"rekey_after_time",
+		"rekey_timeout",
+		"reject_after_time",
+		"keepalive_timeout",
+		"max_handshake_attempts":
+		return ipcErrorf(ipc.IpcErrorInvalid, "UAPI knob %q is AWG 3.x-only and unsupported by this AWG 2.0 build", key)
+
 	default:
 		return ipcErrorf(ipc.IpcErrorInvalid, "invalid UAPI device key: %v", key)
 	}
