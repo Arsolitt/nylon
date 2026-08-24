@@ -1,12 +1,15 @@
 # Nylon Fork Design — polyamide-awg, Gossip Membership, Dynamic Prefixes, nylon-lb
 
 Status: **design document** — no production code changes in this round.
-Date: 2026-08-22 · Base: `c3f872d98aad9d474927c108c74a94de571f4bfc` (`v0.4.5-4-gc3f872d`) · Branch: `fork/design`
+Date: 2026-08-22, round 2 2026-08-24 · Base: `c3f872d98aad9d474927c108c74a94de571f4bfc` (`v0.4.5-4-gc3f872d`) · Branch: `fork/design`
 
 Continuation of the "Nylon + AmneziaWG self-healing underlay for k3s" design (Obsidian note 2026-08-16).
 Changes vs that note: dynamic prefix contract is `prefixes.d/*.json` (not `*.conf`); nylon-lb is fully
 designed (§6); the AWG wire-format target is locked to **2.0**; the polyamide↔amneziawg-go diff-audit
 has been executed and its outcome is recorded here (§2, Appendix A).
+
+Round 2 (this revision): org-wide zoned mesh (§7), control-plane VIP (§6.8), nylon-lb single-mode
+failover hardening (§6.7); PoC plan renumbered to §8 (adds stage 5), risk register to §9 (R6–R7).
 
 ---
 
@@ -17,6 +20,10 @@ nylon. The mesh provides: any-to-any routed connectivity with Babel-style distan
 (RTT-aware metrics), per-node prefix announcement with health-gated withdrawal, and — as a fork —
 AmneziaWG 2.0 traffic obfuscation to make the underlay's handshakes indistinguishable from a chosen
 ordinary protocol.
+
+The mesh is org-wide and zoned: zones share one gossip domain with strict pod-CIDR isolation
+between them and shared service slices for cross-zone reachability (§7), and the k3s control plane
+floats on a mesh-announced anycast VIP (§6.8).
 
 Three fork parts:
 
@@ -58,6 +65,11 @@ pinned upstream tags** — never a merge-forever branch. Concretely:
   `ContentPaddingAddition`, `random_trailers`, `disable_cookies`, and the timings overrides.
   These knobs are rejected at nylon's UAPI boundary (§2.3) and never written by nylon's config
   synthesis.
+- **AWG 3.0 — deferred, not rejected:** the 3.x knobs stay stubbed (§2.3) until amnezigo gains
+  3.x parameter support (separate task, user-driven). Upgrade when it happens: un-stub the
+  rejected UAPI knobs, then swap the genesis profile via the §2.4 version-skew mechanism —
+  a maintenance action (compat profile → 3.0 profile) converging within one rekey window. No 3.0
+  design is committed in this document.
 - amnezigo (`~/projects/amnezigo`, GPL-3.0) remains the **parameter oracle**, unchanged: nylon asks
   it for valid parameter sets; it never interprets AWG internals itself.
 
@@ -89,7 +101,7 @@ so the 2.0 behavior is the default when the key is never set:
 (one small patch in `uapi.go`, rejecting `header_protection_key` — see §2.3) instead of surgically
 excising the gated branches from `send.go`/`receive.go`. Rationale: the branches are inert when the
 key is zero; excision would touch exactly the hunks that must stay verbatim for future re-applies.
-Recorded fallback if PoC stage 2 (§7) finds HEAD's 2.0 encoding incompatible with reference AWG 2.0
+Recorded fallback if PoC stage 2 (§8) finds HEAD's 2.0 encoding incompatible with reference AWG 2.0
 peers: rebase the port onto **`v0.2.19`** = `1cc94272ca8e9e223a5fe76382f5880f09d3c12d`, the newest
 tag whose `device/` contains no HPK references (and the last to carry `magic-header.go`).
 
@@ -149,7 +161,7 @@ Mechanics (from the ported code, not documentation claims):
   uniformity is assumed (§3 genesis distributes one shared S/H/J profile).
 - **Release acceptance criterion:** pcap-verified interop matrix {vanilla polyamide ↔ polyamide-awg
   with compat profile; polyamide-awg ↔ polyamide-awg with obf profile; polyamide-awg ↔ reference
-  AWG 2.0 peer (amneziawg-go `v0.2.19` or awg 1.5)} — exercised in PoC stages 1–2 (§7).
+  AWG 2.0 peer (amneziawg-go `v0.2.19` or awg 1.5)} — exercised in PoC stages 1–2 (§8).
 
 ### 2.5 Mandatory small patches
 
@@ -430,9 +442,152 @@ from node and pod ranges.
 VIPs are reachable from all mesh participants and from anything that routes the mesh supernet.
 Public exposure requires external NAT/routing — explicitly **out of scope**.
 
+### 6.7 Single-mode liveness guard (anti-split-brain)
+
+Scenario: a `single`-mode announcer (§6.4) is alive but partitioned from the k8s API while the
+controller reassigns the VIP — two binders. Guard: the agent withdraws `20-nylon-lb.json` and
+releases the VIP on `lo` when its observed `nylon-lb-state` ConfigMap is stale — `resourceVersion`
+unchanged and the lease timestamp older than a **30 s** TTL (the controller refreshes the lease
+every **10 s**) — or when the k8s API is unreachable for the same TTL. The split-brain window is
+bounded by the TTL. `anycast` mode (the default, §6.4) is immune by construction: multiple owners
+are the design, not a failure. TTL/refresh values are defaults, tunable at implementation time.
+
+### 6.8 Control-plane VIP (anycast) — apiserver endpoint
+
+User decision: the floating apiserver VIP uses **anycast** mode (§6.4).
+
+- **Address** — allocated from the zone's shared slice (§7.4) or a dedicated infra slice.
+- **Announcement** — every k3s **server** node's nylon-lb agent announces the /32 and binds it on
+  `lo`, gated on a local probe of `https://localhost:6443/readyz`: period **2 s**, 3 consecutive
+  failures ⇒ withdraw + unbind, 1 success ⇒ re-announce (defaults, tunable).
+- **k3s wiring** — agents get `server: https://<VIP>:6443`; servers MUST list the VIP in `tls-san`
+  (cert SAN — client cert validation breaks without it).
+- **Failover semantics** — node death ⇒ announcement retracts (Babel neighbour-death machinery,
+  same auto-withdraw as §6.4) ⇒ clients land on the nearest healthy server. Long-lived watch
+  connections break on reroute; client-go re-lists/re-watches transparently — the same failure
+  class as the §6.4 anycast caveat.
+- **etcd is NOT placed behind the VIP (design rule)** — etcd quorum members require stable
+  identity; they keep their per-node mesh /32 addresses, announced by their own node always. The
+  VIP covers only the stateless apiserver frontends.
+
 ---
 
-## 7. PoC plan
+## 7. Zones — org-wide multi-cluster mesh
+
+### 7.1 Model
+
+One gossip domain for the whole org (assumption: ≤ 50 nodes; the §3.3 memberlist push-pull cadence
+stays fine at that size — ~1.2 KB × 50 ≈ 60 KB per exchange every 5 s, Appendix B sizing). A zone
+is a **policy scope in the membership/synthesis layer, not a protocol construct** — Babel, the WG
+data plane, and the wire format are zone-blind (§7.3). `MemberRecord` (§3.1) gains two fields:
+
+```go
+Zone    string // zone identifier (e.g. "msk", "spb")
+Gateway bool   // cross-zone gateway role tag
+```
+
+≈ +16 B per record; against the measured budget of Appendix B (979 B canonical / 1,223 B compact
+JSON) the 2 KB hard limit (§3.1) holds with wide margin.
+
+### 7.2 Topology (synthesized `CentralCfg.Graph`)
+
+Zone wiring rides the existing graph mechanism — `CentralCfg.Graph` (`state/config.go:44`) with
+group syntax (`ParseGraph` doc, `state/config.go:153–168`). Synthesis (the per-node `CentralCfg`
+synthesis of §3.5) emits for every node:
+
+```text
+zonea = <all zone-A member ids>
+zoneb = <all zone-B member ids>
+gwa   = <zone-A ids with Gateway=true>
+gwb   = <zone-B ids with Gateway=true>
+zonea, zonea   # intra-zone full mesh
+zoneb, zoneb
+gwa, gwb       # gateway pairs: full mesh across zones
+```
+
+Verified parser semantics: `g, g` interconnects every member pair and `g1, g2` interconnects the
+two member sets pairwise (expansion pass, `state/config.go:251–324`); symbols are lowercased
+(`:181`), and group names must not collide with node ids (`:189–191`). `GetPeers`
+(`state/config.go:336–362`) **panics** on an invalid graph (`:344–347`) — a synthesis bug fails
+loud at the offending node, never silently. WG adjacency follows the graph mechanically:
+`syncWireGuardEndpoints` (`core/nylon_wireguard.go:199–235`) iterates `GetPeers(...)` (`:206`) to
+program peer endpoints. Non-gateway nodes therefore never hold cross-zone tunnels.
+
+### 7.3 Isolation mechanics (enforcement point)
+
+Synthesis rule for a node N in zone Z — N's `CentralCfg` contains:
+
+- (a) all zone-Z nodes with their **full** prefix lists;
+- (b) foreign nodes with `Gateway=true`, carrying **only** the foreign zone's shared aggregate
+  (§7.4) in `Prefixes`;
+- foreign non-gateway node ids are omitted entirely.
+
+Enforcement is upstream's existing validation — fail-closed on both axes:
+
+- `routerHandleRouteUpdate` (`core/router.go:346–370`) accepts an update only if `checkPrefix`
+  (`:327–335`) finds the prefix in the node's own `GetPrefixes()` — the union of all `Prefixes`
+  entries in its `CentralCfg` view (`state/config.go:84–108`) — **and** `checkNode` (`:337–343`)
+  knows the origin router id (`TryGetNode`, `state/config.go:435`). The same gates run in
+  `routerHandleAckRetract` (`:372–385`) and `routerHandleSeqnoRequest` (`:387–404`).
+- A route never installed in `RouterState.Routes` never becomes an OS route:
+  `ComputeSysRouteTable` (`core/router.go:252–275`) derives the system table from
+  `RouterState.Routes` only — no FIB entry ⇒ no system route ⇒ sender-side drop, and packets
+  injected into the TUN drop too (no forwarding entry).
+
+Consequence: a zone-Z node never installs routes for foreign podCIDRs — no reachability **and** no
+transit (nothing to forward through). Within-zone transit and multi-hop behave exactly as today.
+
+**Dynamic-prefix bridge (design intent).** Runtime announcements via `prefixes.d` (§4) — VIP /32s
+from nylon-lb agents — enter a receiver's `GetPrefixes()` union only if the announcer's member
+record carries them: the record publisher sources `MemberRecord.Prefixes` from the merged
+announced set (static + dynamic) and re-publishes on change (Version bump; §3.1 merge rules), so
+peers re-synthesize and `checkPrefix` admits the new prefix. Without this bridge `checkPrefix`
+would drop every dynamic announcement at the first hop — PoC stages 3b and 5(b) (§8) exercise it
+end-to-end.
+
+### 7.4 Shared subnets
+
+Each zone carves a shared slice from the mesh supernet at design time. Example layout (real
+allocation happens at fleet design time):
+
+| Block | Example | Purpose |
+|---|---|---|
+| Org supernet | `10.64.0.0/10` | whole mesh |
+| Zone block | `10.64.0.0/14` … `10.80.0.0/14` | node /32s + per-node podCIDR /24s |
+| Zone shared slice | `10.64.16.0/20` (carved from the zone block) | exposed services + nylon-lb VIP pool |
+
+Zone gateways announce the zone's shared aggregate (static health, anycast across the zone's
+gateways) via their synthesized own-entry `Prefixes`; foreign views home the aggregate on those
+gateways (§7.3b). nylon-lb controllers allocate Service VIPs from the owning zone's shared slice —
+§6.3 extends to: pool = one ConfigMap per cluster, carved from its zone's shared slice. Routing
+hierarchy: foreign node → foreign gateway (aggregate) → inside the owning zone the VIP /32 (more
+specific, announced by lb agents via the §7.3 bridge) wins longest-prefix match.
+
+### 7.5 Accepted trade-off — cross-zone transit of shared traffic (user decision)
+
+Zone-Z nodes hold routes to foreign shared aggregates, so when all intra-zone paths to a service's
+announcers are degraded, Babel may route shared traffic through a foreign gateway. Bounded to
+shared aggregates only (podCIDR isolation is unaffected, §7.3), hop-by-hop encrypted (§1), and
+self-healing by design. Documented as accepted; PoC stage 5 asserts the bound (§8).
+
+### 7.6 Gateway deployment model
+
+Gateway = a role tag on the member record, not a node kind. Initial deployment: one repurposed
+k3s **worker** per zone (user decision — no spare machines); the worker keeps scheduling pods.
+Production requirement: **≥ 2 gateways per zone** (R7) before carrying production cross-zone
+traffic. Migration to dedicated VMs later = flip `Gateway` on the records and let synthesis +
+Babel reconverge; no cluster re-deploy. Draining a gateway follows the R4 runbook (§5) plus a
+cross-zone convergence check (§8 stage 5).
+
+### 7.7 Policy boundary
+
+CiliumNetworkPolicy filters at the destination cluster's edge (pod ingress). Non-k8s hosts on the
+mesh are NOT covered by CNP — L3 scoping (zone isolation + shared-only reachability, §7.3) is
+their only control. Stated explicitly: L4/L7 policy exists only where Cilium runs.
+
+---
+
+## 8. PoC plan
 
 1. **Vanilla nylon** — 3 VMs, netem break A↔B: convergence time, throughput, long-lived TCP
    survival across link failure/recovery.
@@ -444,10 +599,22 @@ Public exposure requires external NAT/routing — explicitly **out of scope**.
    **3b.** two-node same-/32 announce → anycast check for §6 (§6.5 prerequisites).
 4. **Soak** — random degradation schedule (link loss, latency injection, node restarts); also
    exercises Babel RTT de-preference.
+5. **Two-zone lab (§7)** — reuse the 4-VM demo stand as 2 zones × 2 nodes; in each zone the
+   "extra" node carries the gateway role; vanilla nylon (zones are synthesis policy, §7.3 —
+   per-node graph/prefix views assembled by hand):
+   - (a) zone-B node has NO route to the zone-A podCIDR (routes section of `nylon status` empty
+     for it; ping fails);
+   - (b) shared VIP — a loopback-bound /32 announced via a test `prefixes.d` file (§7.3 dynamic
+     bridge) — reachable cross-zone through the zone gateways;
+   - (c) A-internal partition (existing nft partition tooling): tcpdump on zone-B `nylon0` shows
+     zero packets with zone-A podCIDR src/dst — transit-block proof (§7.3);
+   - (d) apiserver VIP anycast on the k3s part of the stand (§6.8): stop nylon on one server node
+     ⇒ the kubelet on a worker reconnects to the remaining server within its retry window;
+     `tls-san` configured per §6.8.
 
 ---
 
-## 8. Risk register
+## 9. Risk register
 
 | # | Risk | Mitigation |
 |---|---|---|
@@ -456,6 +623,8 @@ Public exposure requires external NAT/routing — explicitly **out of scope**.
 | R3 | k8s IPAM changes `podCIDR` on node recreation | sidecar rewrites `10-podcidr.json`; withdraw/re-announce handled by existing health/Babel machinery; acceptance covered in PoC stage 3 |
 | R4 | nylon is a per-node SPOF | systemd `Restart=always` + `StartLimitIntervalSec=0` + watchdog (§2.5b); drain/maintenance procedures (§5) |
 | R5 | `prefixes.d` is an unauthenticated local control surface | directory root-owned `0755`, files root-owned `0644`; only root/hostPath writers; fail-closed parsing (§4.4) |
+| R6 | zone synthesis bug leaks or strands routes | fail-closed by upstream `checkPrefix`/`checkNode` — unknown prefix or origin ⇒ drop (`core/router.go:327–343`, §7.3); e2e zone suite in CI (stage 5 assertions automated, §8) |
+| R7 | single gateway per zone = cross-zone SPOF (worker-as-gateway, §7.6) | accepted temporarily; gate: ≥ 2 gateways per zone before production cross-zone traffic; monitor `nylon_selected_routes` / `nylon_route_metric` (`docs/guides/observability.mdx`) |
 
 ---
 
