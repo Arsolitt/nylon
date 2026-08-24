@@ -161,7 +161,14 @@ Mechanics (from the ported code, not documentation claims):
   uniformity is assumed (§3 genesis distributes one shared S/H/J profile).
 - **Release acceptance criterion:** pcap-verified interop matrix {vanilla polyamide ↔ polyamide-awg
   with compat profile; polyamide-awg ↔ polyamide-awg with obf profile; polyamide-awg ↔ reference
-  AWG 2.0 peer (amneziawg-go `v0.2.19` or awg 1.5)} — exercised in PoC stages 1–2 (§8).
+  AWG 2.0 peer} — exercised in PoC stages 1–2 (§8). Reference peer lineage: the `1b86b2a` tree
+  (published as `amneziaawg-go/v3 v3.1.20260814`, MIT); release `v0.2.19` predates the
+  ranged-type/padding wire format and does **not** interoperate (lab leg 3, §8 outcome).
+  Compatibility is regression-guarded automatically: (a) golden classification vectors in
+  `polyamide/device/obf_golden_test.go` (46 upstream-derived expectations, always-on), and (b) an
+  in-process harness `interop/awgref/` (`go test -tags awg_ref_interop ./interop/awgref/`) that
+  handshakes and exchanges data against stock amneziaawg-go pinned in go.mod — retarget the module
+  version + knob lines for the AWG 3.0 round.
 
 ### 2.5 Mandatory small patches
 
