@@ -31,8 +31,14 @@ require (
 )
 
 require (
+	github.com/google/go-jsonnet v0.22.0 // indirect
+	sigs.k8s.io/yaml v1.4.0 // indirect
+)
+
+require (
 	dario.cat/mergo v1.0.2 // indirect
 	filippo.io/edwards25519 v1.1.1 // indirect
+	github.com/Arsolitt/amnezigo v0.2.0
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
@@ -88,3 +94,5 @@ require (
 	golang.org/x/time v0.12.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/Arsolitt/amnezigo => ../amnezigo
