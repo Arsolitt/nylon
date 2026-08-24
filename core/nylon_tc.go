@@ -136,7 +136,9 @@ func (n *Nylon) SendNylon(pkt *protocol.Ny, endpoint conn.Endpoint, peer *device
 
 func (n *Nylon) SendNylonBundle(pkt *protocol.TransportBundle, endpoint conn.Endpoint, peer *device.Peer) error {
 	tce := n.Device.NewTCElement()
-	offset := device.MessageTransportOffsetContent + device.PolyHeaderSize
+	padding := n.Device.TransportPadding()
+	tce.Padding = padding
+	offset := int(padding) + device.MessageTransportOffsetContent + device.PolyHeaderSize
 	buf, err := proto.MarshalOptions{
 		Deterministic: true,
 	}.MarshalAppend(tce.Buffer[offset:offset], pkt)

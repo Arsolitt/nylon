@@ -68,6 +68,10 @@ type TCElement struct {
 	FromPeer *Peer                 // which peer (if any) sent us this Packet
 	ToPeer   *Peer                 // which peer to send this Packet to
 	Priority TCPriority            // Priority, higher is better
+
+	// Padding is the AWG crypto padding (S4-class) prefixing the transport
+	// header in Buffer; it defines the wire layout [padding][header][packet].
+	Padding uint32
 }
 
 func (elem *TCElement) clearPointers() {
@@ -77,6 +81,7 @@ func (elem *TCElement) clearPointers() {
 	elem.ToEp = nil
 	elem.FromPeer = nil
 	elem.ToPeer = nil
+	elem.Padding = 0
 }
 
 func (device *Device) NewTCElement() *TCElement {
@@ -157,10 +162,10 @@ func (device *Device) TCBatch(batch []*TCElement, tcs *TCState) {
 	// bounce packets back to the system
 	if len(tcs.bouncePkts) > 0 {
 		for _, elem := range tcs.bouncePkts {
-			tcs.bounceBufs = append(tcs.bounceBufs, elem.Buffer[:MessageTransportHeaderSize+len(elem.Packet)])
+			tcs.bounceBufs = append(tcs.bounceBufs, elem.Buffer[:int(elem.Padding)+MessageTransportHeaderSize+len(elem.Packet)])
 		}
 		// here, we need to use elem.Buffer instead of elem.Packet since we will get io.ErrShortBuffer if offset < 4
-		_, err := device.tun.device.Write(tcs.bounceBufs, MessageTransportHeaderSize)
+		_, err := device.tun.device.Write(tcs.bounceBufs, int(tcs.bouncePkts[0].Padding)+MessageTransportHeaderSize)
 		if err != nil && !device.isClosed() {
 			device.Log.Errorf("Failed to loop back packets to TUN device: %v", err)
 		}
@@ -199,6 +204,7 @@ func (device *Device) TCBatch(batch []*TCElement, tcs *TCState) {
 				obe.endpoint = elem.ToEp
 				obe.packet = elem.Packet
 				obe.buffer = elem.Buffer
+				obe.padding = elem.Padding
 				obec.elems = append(obec.elems, obe)
 				device.PutTCElement(elem)
 				elems[i] = nil

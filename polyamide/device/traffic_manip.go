@@ -14,8 +14,13 @@ const (
 	PolyOffsetPayloadLength = 1
 )
 
+func (elem *TCElement) packetStart() int {
+	return int(elem.Padding) + MessageTransportHeaderSize
+}
+
 func (elem *TCElement) InitPacket(ver int, len uint16) {
-	elem.Packet = elem.Buffer[MessageTransportHeaderSize : MessageTransportHeaderSize+len]
+	start := elem.packetStart()
+	elem.Packet = elem.Buffer[start : start+int(len)]
 	elem.SetIPVersion(ver)
 	elem.SetLength(len)
 }
@@ -28,7 +33,7 @@ func (elem *TCElement) ParsePacket() bool {
 		if elem.Buffer == nil {
 			return false
 		}
-		elem.Packet = elem.Buffer[MessageTransportHeaderSize:]
+		elem.Packet = elem.Buffer[elem.packetStart():]
 	}
 	if !elem.hasPacketHeader() {
 		return false

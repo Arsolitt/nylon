@@ -35,7 +35,7 @@ func (peer *Peer) Status() PeerStatus {
 		LatestHandshakeUnixNano:     peer.lastHandshakeNano.Load(),
 		TxBytes:                     peer.txBytes.Load(),
 		RxBytes:                     peer.rxBytes.Load(),
-		PersistentKeepaliveInterval: peer.persistentKeepaliveInterval.Load(),
+		PersistentKeepaliveInterval: uint32(peer.persistentKeepaliveInterval.Load().Lo()),
 	}
 }
 

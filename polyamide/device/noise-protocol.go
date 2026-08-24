@@ -6,13 +6,14 @@
 package device
 
 import (
-	"encoding/binary"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/blake2s"
+	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/poly1305"
 
@@ -54,10 +55,11 @@ const (
 )
 
 const (
-	MessageInitiationType  = 1
-	MessageResponseType    = 2
-	MessageCookieReplyType = 3
-	MessageTransportType   = 4
+	MessageUnknownType     uint32 = 0
+	MessageInitiationType  uint32 = 1
+	MessageResponseType    uint32 = 2
+	MessageCookieReplyType uint32 = 3
+	MessageTransportType   uint32 = 4
 )
 
 const (
@@ -114,98 +116,6 @@ type MessageCookieReply struct {
 	Receiver uint32
 	Nonce    [chacha20poly1305.NonceSizeX]byte
 	Cookie   [blake2s.Size128 + poly1305.TagSize]byte
-}
-
-var errMessageLengthMismatch = errors.New("message length mismatch")
-
-func (msg *MessageInitiation) unmarshal(b []byte) error {
-	if len(b) != MessageInitiationSize {
-		return errMessageLengthMismatch
-	}
-
-	msg.Type = binary.LittleEndian.Uint32(b)
-	msg.Sender = binary.LittleEndian.Uint32(b[4:])
-	copy(msg.Ephemeral[:], b[8:])
-	copy(msg.Static[:], b[8+len(msg.Ephemeral):])
-	copy(msg.Timestamp[:], b[8+len(msg.Ephemeral)+len(msg.Static):])
-	copy(msg.MAC1[:], b[8+len(msg.Ephemeral)+len(msg.Static)+len(msg.Timestamp):])
-	copy(msg.MAC2[:], b[8+len(msg.Ephemeral)+len(msg.Static)+len(msg.Timestamp)+len(msg.MAC1):])
-
-	return nil
-}
-
-func (msg *MessageInitiation) marshal(b []byte) error {
-	if len(b) != MessageInitiationSize {
-		return errMessageLengthMismatch
-	}
-
-	binary.LittleEndian.PutUint32(b, msg.Type)
-	binary.LittleEndian.PutUint32(b[4:], msg.Sender)
-	copy(b[8:], msg.Ephemeral[:])
-	copy(b[8+len(msg.Ephemeral):], msg.Static[:])
-	copy(b[8+len(msg.Ephemeral)+len(msg.Static):], msg.Timestamp[:])
-	copy(b[8+len(msg.Ephemeral)+len(msg.Static)+len(msg.Timestamp):], msg.MAC1[:])
-	copy(b[8+len(msg.Ephemeral)+len(msg.Static)+len(msg.Timestamp)+len(msg.MAC1):], msg.MAC2[:])
-
-	return nil
-}
-
-func (msg *MessageResponse) unmarshal(b []byte) error {
-	if len(b) != MessageResponseSize {
-		return errMessageLengthMismatch
-	}
-
-	msg.Type = binary.LittleEndian.Uint32(b)
-	msg.Sender = binary.LittleEndian.Uint32(b[4:])
-	msg.Receiver = binary.LittleEndian.Uint32(b[8:])
-	copy(msg.Ephemeral[:], b[12:])
-	copy(msg.Empty[:], b[12+len(msg.Ephemeral):])
-	copy(msg.MAC1[:], b[12+len(msg.Ephemeral)+len(msg.Empty):])
-	copy(msg.MAC2[:], b[12+len(msg.Ephemeral)+len(msg.Empty)+len(msg.MAC1):])
-
-	return nil
-}
-
-func (msg *MessageResponse) marshal(b []byte) error {
-	if len(b) != MessageResponseSize {
-		return errMessageLengthMismatch
-	}
-
-	binary.LittleEndian.PutUint32(b, msg.Type)
-	binary.LittleEndian.PutUint32(b[4:], msg.Sender)
-	binary.LittleEndian.PutUint32(b[8:], msg.Receiver)
-	copy(b[12:], msg.Ephemeral[:])
-	copy(b[12+len(msg.Ephemeral):], msg.Empty[:])
-	copy(b[12+len(msg.Ephemeral)+len(msg.Empty):], msg.MAC1[:])
-	copy(b[12+len(msg.Ephemeral)+len(msg.Empty)+len(msg.MAC1):], msg.MAC2[:])
-
-	return nil
-}
-
-func (msg *MessageCookieReply) unmarshal(b []byte) error {
-	if len(b) != MessageCookieReplySize {
-		return errMessageLengthMismatch
-	}
-
-	msg.Type = binary.LittleEndian.Uint32(b)
-	msg.Receiver = binary.LittleEndian.Uint32(b[4:])
-	copy(msg.Nonce[:], b[8:])
-	copy(msg.Cookie[:], b[8+len(msg.Nonce):])
-
-	return nil
-}
-
-func (msg *MessageCookieReply) marshal(b []byte) error {
-	if len(b) != MessageCookieReplySize {
-		return errMessageLengthMismatch
-	}
-
-	binary.LittleEndian.PutUint32(b, msg.Type)
-	binary.LittleEndian.PutUint32(b[4:], msg.Receiver)
-	copy(b[8:], msg.Nonce[:])
-	copy(b[8+len(msg.Nonce):], msg.Cookie[:])
-
-	return nil
 }
 
 type Handshake struct {
@@ -286,8 +196,10 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 
 	handshake.mixHash(handshake.remoteStatic[:])
 
+	msgType := device.headers.init.Load().PickOne()
+
 	msg := MessageInitiation{
-		Type:      MessageInitiationType,
+		Type:      msgType,
 		Ephemeral: handshake.localEphemeral.publicKey(),
 	}
 
@@ -460,7 +372,7 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 	}
 
 	var msg MessageResponse
-	msg.Type = MessageResponseType
+	msg.Type = device.headers.response.Load().PickOne()
 	msg.Sender = handshake.localIndex
 	msg.Receiver = handshake.remoteIndex
 
@@ -715,4 +627,30 @@ func (peer *Peer) ReceivedWithKeypair(receivedKeypair *Keypair) bool {
 	keypairs.current = keypairs.next.Load()
 	keypairs.next.Store(nil)
 	return true
+}
+
+func (device *Device) JunkPackets() [][]byte {
+	var bufs [][]byte
+
+	min := device.junk.min.Load()
+	max := device.junk.max.Load()
+
+	for range device.junk.count.Load() {
+		buf := make([]byte, min+fastrandn(max-min))
+		rand.Read(buf)
+		bufs = append(bufs, buf)
+	}
+
+	return bufs
+}
+
+func (device *Device) HeaderProtectionCipher(salt []byte) (*chacha20.Cipher, error) {
+	device.headerProtection.RLock()
+	defer device.headerProtection.RUnlock()
+
+	if device.headerProtection.key.IsZero() {
+		return nil, nil
+	}
+
+	return chacha20.NewUnauthenticatedCipher(device.headerProtection.key[:], salt)
 }

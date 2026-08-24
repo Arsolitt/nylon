@@ -6,6 +6,7 @@
 package device
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"net"
@@ -30,6 +31,7 @@ type QueueInboundElement struct {
 	counter  uint64
 	keypair  *Keypair
 	endpoint conn.Endpoint
+	padding  uint32
 }
 
 type QueueInboundElementsContainer struct {
@@ -90,6 +92,7 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 		endpoints   = make([]conn.Endpoint, maxBatchSize)
 		deathSpiral int
 		elemsByPeer = make(map[*Peer]*QueueInboundElementsContainer, maxBatchSize)
+		typeHashBuf [4]byte
 	)
 
 	for i := range bufsArrs {
@@ -133,7 +136,30 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 			// check size of packet
 
 			packet := bufsArrs[i][:size]
-			msgType := binary.LittleEndian.Uint32(packet[:4])
+
+			cip, err := device.HeaderProtectionCipher(packet[:HeaderCipherNonceSize])
+			if err != nil {
+				device.Log.Errorf("Failed to initialize header cipher")
+				continue
+			}
+
+			typeHash := typeHashBuf[:]
+			clear(typeHash)
+			if cip != nil {
+				cip.XORKeyStream(typeHash, typeHash)
+			}
+
+			// get message padding and type based on information from S1-S4 and H1-H4
+			msgSize, msgType, padding := device.DeterminePacketTypeAndPadding(packet, typeHash)
+
+			packet = packet[padding:]
+			if msgType != MessageTransportType {
+				packet = packet[:msgSize]
+			}
+
+			if cip != nil {
+				applyHash(packet[:4], packet[:4], typeHash)
+			}
 
 			switch msgType {
 
@@ -145,6 +171,9 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 
 				if len(packet) < MessageTransportSize {
 					continue
+				}
+				if cip != nil {
+					cip.XORKeyStream(packet[4:MessageTransportHeaderSize], packet[4:MessageTransportHeaderSize])
 				}
 
 				// lookup key pair
@@ -172,6 +201,7 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 				elem.keypair = keypair
 				elem.endpoint = endpoints[i]
 				elem.counter = 0
+				elem.padding = padding
 
 				elemsForPeer, ok := elemsByPeer[peer]
 				if !ok {
@@ -190,15 +220,24 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 				if len(packet) != MessageInitiationSize {
 					continue
 				}
+				if cip != nil {
+					cip.XORKeyStream(packet[4:MessageInitiationSize], packet[4:MessageInitiationSize])
+				}
 
 			case MessageResponseType:
 				if len(packet) != MessageResponseSize {
 					continue
 				}
+				if cip != nil {
+					cip.XORKeyStream(packet[4:MessageResponseSize], packet[4:MessageResponseSize])
+				}
 
 			case MessageCookieReplyType:
 				if len(packet) != MessageCookieReplySize {
 					continue
+				}
+				if cip != nil {
+					cip.XORKeyStream(packet[4:MessageCookieReplySize], packet[4:MessageCookieReplySize])
 				}
 
 			default:
@@ -285,7 +324,8 @@ func (device *Device) RoutineHandshake(id int) {
 			// unmarshal packet
 
 			var reply MessageCookieReply
-			err := reply.unmarshal(elem.packet)
+			reader := bytes.NewReader(elem.packet)
+			err := binary.Read(reader, binary.LittleEndian, &reply)
 			if err != nil {
 				device.Log.Verbosef("Failed to decode cookie reply")
 				goto skip
@@ -350,11 +390,15 @@ func (device *Device) RoutineHandshake(id int) {
 			// unmarshal
 
 			var msg MessageInitiation
-			err := msg.unmarshal(elem.packet)
+			reader := bytes.NewReader(elem.packet)
+			err := binary.Read(reader, binary.LittleEndian, &msg)
 			if err != nil {
 				device.Log.Errorf("Failed to decode initiation message")
 				goto skip
 			}
+
+			// have to reassign msgType for ranged msgType to work
+			msg.Type = elem.msgType
 
 			// consume initiation
 
@@ -382,11 +426,15 @@ func (device *Device) RoutineHandshake(id int) {
 			// unmarshal
 
 			var msg MessageResponse
-			err := msg.unmarshal(elem.packet)
+			reader := bytes.NewReader(elem.packet)
+			err := binary.Read(reader, binary.LittleEndian, &msg)
 			if err != nil {
 				device.Log.Errorf("Failed to decode response message")
 				goto skip
 			}
+
+			// have to reassign msgType for ranged msgType to work
+			msg.Type = elem.msgType
 
 			// consume response
 
@@ -467,7 +515,12 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			rxBytesLen += uint64(len(elem.packet) + MinMessageSize)
 			rxPkts++
 
-			if len(elem.packet) == 0 {
+			udpWindow := elem.padding + MessageTransportHeaderSize + uint32(len(elem.packet))
+			if peer.udpWindow.Load() < udpWindow {
+				peer.udpWindow.Store(udpWindow)
+			}
+
+			if len(elem.packet) == 0 || elem.packet[0] == 0 {
 				device.Log.Verbosef("%v - Receiving keepalive packet", peer)
 				continue
 			}
@@ -476,6 +529,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			tce := device.GetTCElement()
 			tce.Packet = elem.packet
 			tce.Buffer = elem.buffer
+			tce.Padding = elem.padding
 			elem.buffer = nil
 			elem.packet = nil
 			tce.FromEp = elem.endpoint
@@ -507,4 +561,66 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 		}
 		device.PutInboundElementsContainer(elemsContainer)
 	}
+}
+
+func applyHash(dst, src, hash []byte) {
+	for i := range len(dst) {
+		dst[i] = src[i] ^ hash[i]
+	}
+}
+
+func (device *Device) DeterminePacketTypeAndPadding(packet []byte, typeHash []byte) (int, uint32, uint32) {
+	var headerBytes [4]byte
+	var padding uint32
+	var header UintRange
+	var expectedSize int
+
+	size := len(packet)
+	randomTrailers := device.randomTrailers.Load()
+
+	padding = device.paddings.init.Load()
+	header = device.headers.init.Load()
+	expectedSize = int(padding) + MessageInitiationSize
+
+	if size == expectedSize || randomTrailers && size > expectedSize {
+		applyHash(headerBytes[:], packet[padding:padding+4], typeHash)
+		if header.Contains(binary.LittleEndian.Uint32(headerBytes[:])) {
+			return MessageInitiationSize, MessageInitiationType, padding
+		}
+	}
+
+	padding = device.paddings.response.Load()
+	header = device.headers.response.Load()
+	expectedSize = int(padding) + MessageResponseSize
+
+	if size == expectedSize || randomTrailers && size > expectedSize {
+		applyHash(headerBytes[:], packet[padding:padding+4], typeHash)
+		if header.Contains(binary.LittleEndian.Uint32(headerBytes[:])) {
+			return MessageResponseSize, MessageResponseType, padding
+		}
+	}
+
+	padding = device.paddings.cookie.Load()
+	header = device.headers.cookie.Load()
+	expectedSize = int(padding) + MessageCookieReplySize
+
+	if size == expectedSize || randomTrailers && size > expectedSize {
+		applyHash(headerBytes[:], packet[padding:padding+4], typeHash)
+		if header.Contains(binary.LittleEndian.Uint32(headerBytes[:])) {
+			return MessageCookieReplySize, MessageCookieReplyType, padding
+		}
+	}
+
+	padding = device.paddings.transport.Load()
+	header = device.headers.transport.Load()
+	expectedSize = int(padding) + MessageTransportSize
+
+	if size >= expectedSize {
+		applyHash(headerBytes[:], packet[padding:padding+4], typeHash)
+		if header.Contains(binary.LittleEndian.Uint32(headerBytes[:])) {
+			return MessageTransportSize, MessageTransportType, padding
+		}
+	}
+
+	return 0, MessageUnknownType, 0
 }

@@ -129,7 +129,7 @@ func expiredZeroKeyMaterial(peer *Peer) {
 }
 
 func expiredPersistentKeepalive(peer *Peer) {
-	if peer.persistentKeepaliveInterval.Load() > 0 {
+	if !peer.persistentKeepaliveInterval.Load().IsZero() {
 		peer.SendKeepalive()
 	}
 }
@@ -196,8 +196,8 @@ func (peer *Peer) timersAnyAuthenticatedPacketTraversal(remote bool) {
 		peer.timers.lastReceived.Store(time.Now().UnixNano())
 	}
 	keepalive := peer.persistentKeepaliveInterval.Load()
-	if keepalive > 0 && peer.timersActive() {
-		peer.timers.persistentKeepalive.Mod(time.Duration(keepalive) * time.Second)
+	if !keepalive.IsZero() && peer.timersActive() {
+		peer.timers.persistentKeepalive.Mod(time.Duration(keepalive.PickOne()) * time.Second)
 	}
 }
 

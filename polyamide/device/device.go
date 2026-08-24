@@ -93,6 +93,38 @@ type Device struct {
 	IpcHandler map[string]func(*bufio.ReadWriter) error
 	closed     chan struct{}
 	Log        *Logger
+
+	junk struct {
+		min   atomic.Uint32
+		max   atomic.Uint32
+		count atomic.Uint32
+	}
+
+	headers struct {
+		init      AtomicUintRange
+		cookie    AtomicUintRange
+		response  AtomicUintRange
+		transport AtomicUintRange
+	}
+
+	paddings struct {
+		init      atomic.Uint32
+		response  atomic.Uint32
+		cookie    atomic.Uint32
+		transport atomic.Uint32
+	}
+
+	ipackets [5]*obfChain
+
+	headerProtection struct {
+		sync.RWMutex
+		key HeaderCipherKey
+	}
+
+	contentPaddingAddition AtomicUintRange
+
+	randomTrailers atomic.Bool
+	disableCookies atomic.Bool
 }
 
 // deviceState represents the state of a Device.
@@ -187,7 +219,7 @@ func (device *Device) upLocked() error {
 	device.peers.RLock()
 	for _, peer := range device.peers.keyMap {
 		peer.Start()
-		if peer.persistentKeepaliveInterval.Load() > 0 {
+		if !peer.persistentKeepaliveInterval.Load().IsZero() {
 			peer.SendKeepalive()
 		}
 	}
@@ -302,6 +334,17 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	device.peers.keyMap = make(map[NoisePublicKey]*Peer)
 	device.rate.limiter.Init()
 	device.indexTable.Init()
+
+	var rang UintRange
+	rang.FromUint32(MessageInitiationType, MessageInitiationType)
+	device.headers.init.Store(rang)
+	rang.FromUint32(MessageResponseType, MessageResponseType)
+	device.headers.response.Store(rang)
+	rang.FromUint32(MessageCookieReplyType, MessageCookieReplyType)
+	device.headers.cookie.Store(rang)
+	rang.FromUint32(MessageTransportType, MessageTransportType)
+	device.headers.transport.Store(rang)
+
 	device.TCFilters = append(device.TCFilters, TCFDrop)
 	device.TCFilters = append(device.TCFilters, TCFBounce)
 	device.TCFilters = append(device.TCFilters, TCFAllowedip)
@@ -362,6 +405,13 @@ func (device *Device) GetPeers() []*Peer {
 		peers = append(peers, peer)
 	}
 	return peers
+}
+
+// TransportPadding returns the current transport-message crypto padding (S4).
+// Buffer layout for outbound elements is [padding][header][packet]; synthetic
+// packet producers must reserve the same prefix.
+func (device *Device) TransportPadding() uint32 {
+	return device.paddings.transport.Load()
 }
 
 func (device *Device) RemovePeer(key NoisePublicKey) {

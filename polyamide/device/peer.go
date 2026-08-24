@@ -60,7 +60,8 @@ type Peer struct {
 
 	cookieGenerator             CookieGenerator
 	trieEntries                 list.List
-	persistentKeepaliveInterval atomic.Uint32
+	persistentKeepaliveInterval AtomicUintRange
+	udpWindow                   atomic.Uint32
 }
 
 func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
@@ -82,6 +83,8 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 
 	// create peer
 	peer := new(Peer)
+
+	peer.udpWindow.Store(DefaultUdpWindow)
 
 	peer.cookieGenerator.Init(pk)
 	peer.device = device
@@ -322,10 +325,14 @@ func (peer *Peer) SetEndpointFromPacket(endpoint conn.Endpoint) {
 	peer.endpoints.clearSrcOnTx = false
 
 	if peer.endpoints.preferRoaming || len(peer.endpoints.val) == 0 {
+		changed := len(peer.endpoints.val) == 0 || peer.endpoints.val[0] != endpoint
 		if len(peer.endpoints.val) == 0 {
 			peer.endpoints.val = append(peer.endpoints.val, endpoint)
 		} else {
 			peer.endpoints.val[0] = endpoint
+		}
+		if changed {
+			peer.udpWindow.Store(DefaultUdpWindow)
 		}
 	}
 }
@@ -378,10 +385,13 @@ func (peer *Peer) LastReceivedPacket() time.Time {
 }
 
 func (peer *Peer) SetPersistentKeepaliveInterval(interval time.Duration) {
-	old := peer.persistentKeepaliveInterval.Swap(uint32(interval.Seconds()))
+	var rang UintRange
+	sec := uint32(interval.Seconds())
+	rang.FromUint32(sec, sec)
+	old := peer.persistentKeepaliveInterval.Swap(rang)
 
 	// Send immediate keepalive if we're turning it on and before it wasn't on.
-	if old == 0 && interval.Seconds() != 0 {
+	if old.IsZero() && sec != 0 {
 		peer.SendKeepalive()
 		peer.SendStagedPackets()
 	}
