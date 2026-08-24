@@ -594,6 +594,15 @@ their only control. Stated explicitly: L4/L7 policy exists only where Cilium run
 2. **polyamide-awg** — pcap: handshake indistinguishable from the mimicked protocol (target from
    `Obf.Protocol` template); interop matrix of §2.4 (compat profile vs vanilla; obf profile
    node-to-node; reference AWG 2.0 peer); re-benchmark throughput (R1 perf gate).
+   **Stage-2 outcome (2026-08-24, fork/awg @ 63c4349, hkdemo stand legs 1–3 + iperf3):** leg1
+   vanilla(c3f872d)↔compat — plain WG types 1/2/4 on the wire (pcap: 2×init, 1×resp, 68×transport
+   at offset 0), 5/5 ping; leg2 obf↔obf (quic profile) — 0 vanilla type words in 45 payloads,
+   5/5 ping; leg3 obf↔amneziawg-go handshake+data OK against `1b86b2a` (keepalives both ways,
+   4/4 injected ICMP arrive on nylon tun) — but **not** against `v0.2.19`: its wire format predates
+   the ranged-type/padding machinery (verdict row §2.3: reference is the 1b86b2a lineage, not
+   v0.2.19); note a bare AWG peer can never complete nylon-protocol pings (nylon wraps all data in
+   poly bundles) — raw-ICMP injection is the correct probe. iperf3 A/B same nodes/link: vanilla
+   433/429 Mbit/s fwd, 224/222 rev; obf 418/415 fwd, 226/223 rev (≤4% cost).
 3. **k3s + Cilium native + `prefixes.d` JSON** — break the direct link between two nodes: verify
    pod-to-pod, apiserver, etcd, and in-cluster DB reachability across the healed path.
    **3b.** two-node same-/32 announce → anycast check for §6 (§6.5 prerequisites).
