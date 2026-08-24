@@ -11,11 +11,60 @@ import (
 	"go4.org/netipx"
 )
 
+// ObfHeaderRange is an inclusive uint32 range mapping to the UAPI "min-max" form.
+type ObfHeaderRange struct {
+	Min uint32
+	Max uint32
+}
+
+// ObfProfile is the mesh-wide shared AWG 2.0 obfuscation profile (S/H/J).
+// Living at CentralCfg level makes S/H uniform across the full mesh by
+// construction, which wire compatibility requires (design §2.4).
+type ObfProfile struct {
+	Jc   uint32         `yaml:",omitempty"`
+	Jmin uint32         `yaml:",omitempty"`
+	Jmax uint32         `yaml:",omitempty"`
+	S1   uint32         `yaml:",omitempty"`
+	S2   uint32         `yaml:",omitempty"`
+	S3   uint32         `yaml:",omitempty"`
+	S4   uint32         `yaml:",omitempty"`
+	H1   ObfHeaderRange `yaml:",omitempty"`
+	H2   ObfHeaderRange `yaml:",omitempty"`
+	H3   ObfHeaderRange `yaml:",omitempty"`
+	H4   ObfHeaderRange `yaml:",omitempty"`
+}
+
+// Validate performs structural load-time checks. Deep parameter validation
+// (padding collisions, header-range viability) belongs to the genesis tool.
+func (p *ObfProfile) Validate() error {
+	if p.Jmin > p.Jmax {
+		return fmt.Errorf("jmin (%d) must not exceed jmax (%d)", p.Jmin, p.Jmax)
+	}
+	for i, h := range [4]ObfHeaderRange{p.H1, p.H2, p.H3, p.H4} {
+		if h.Min > h.Max {
+			return fmt.Errorf("h%d min (%d) must not exceed max (%d)", i+1, h.Min, h.Max)
+		}
+	}
+	return nil
+}
+
+// ObfPeerParams carries the sender-local I-packet (CPS) parameters of one
+// node. Receivers ignore I/junk; only this node's sender path uses them.
+type ObfPeerParams struct {
+	Protocol string `yaml:",omitempty"` // amnezigo template name, informational
+	I1       string `yaml:",omitempty"`
+	I2       string `yaml:",omitempty"`
+	I3       string `yaml:",omitempty"`
+	I4       string `yaml:",omitempty"`
+	I5       string `yaml:",omitempty"`
+}
+
 type NodeCfg struct {
 	Id        NodeId
 	PubKey    NyPublicKey
 	Addresses []netip.Addr          `yaml:",omitempty"`
 	Prefixes  []PrefixHealthWrapper `yaml:",omitempty"`
+	Obf       *ObfPeerParams        `yaml:"obf,omitempty"`
 }
 
 // RouterCfg represents a central representation of a node that can route
@@ -44,28 +93,30 @@ type CentralCfg struct {
 	Graph      []string
 	Timestamp  int64
 	ExcludeIPs []netip.Prefix `yaml:"exclude_ips,omitempty"` // split tunnel, default excluded ip ranges for the whole network, if empty, all advertised prefixes will be included
+	Obf        *ObfProfile    `yaml:"obf,omitempty"`         // mesh-wide shared AWG 2.0 profile; nil = vanilla-compat
 }
 
 // LocalCfg represents local node-level configuration
 type LocalCfg struct {
 	// Node Private Key
-	Key              NyPrivateKey
-	Id               NodeId                // unique id for this node
-	Port             uint16                // Address that the data plane can be accessed by
-	Dist             *LocalDistributionCfg `yaml:",omitempty"`                   // distribution configuration
-	UseSystemRouting bool                  `yaml:"use_system_routing,omitempty"` // all packets from peers will come out of the TUN interface
-	NoTun            bool                  `yaml:"no_tun,omitempty"`             // relay-only mode; requires no advertised addresses or prefixes
-	NoNetConfigure   bool                  `yaml:"no_net_configure,omitempty"`   // do not configure system networking at all
-	DnsResolvers     []string              `yaml:"dns_resolvers,omitempty"`      // DNS resolvers used for endpoints and config repositories
-	InterfaceName    string                `yaml:"interface_name,omitempty"`     // the name of the nylon interface
-	LogPath          string                `yaml:"log_path,omitempty"`           // if not empty, nylon will write to this file
+	Key               NyPrivateKey
+	Id                NodeId                // unique id for this node
+	Port              uint16                // Address that the data plane can be accessed by
+	Dist              *LocalDistributionCfg `yaml:",omitempty"`                   // distribution configuration
+	UseSystemRouting  bool                  `yaml:"use_system_routing,omitempty"` // all packets from peers will come out of the TUN interface
+	NoTun             bool                  `yaml:"no_tun,omitempty"`             // relay-only mode; requires no advertised addresses or prefixes
+	NoNetConfigure    bool                  `yaml:"no_net_configure,omitempty"`   // do not configure system networking at all
+	DnsResolvers      []string              `yaml:"dns_resolvers,omitempty"`      // DNS resolvers used for endpoints and config repositories
+	InterfaceName     string                `yaml:"interface_name,omitempty"`     // the name of the nylon interface
+	LogPath           string                `yaml:"log_path,omitempty"`           // if not empty, nylon will write to this file
 	ObservabilityAddr string                `yaml:"observability_addr,omitempty"` // HTTP address for metrics, health, readiness, and service discovery
-	UnexcludeIPs     []netip.Prefix        `yaml:"unexclude_ips,omitempty"`      // split tunnel, subtracts from centrally excluded ip ranges
-	ExcludeIPs       []netip.Prefix        `yaml:"exclude_ips,omitempty"`        // split tunnel, adds to the centrally excluded ip ranges
-	PreUp            []string              `yaml:"pre_up,omitempty"`             // a list of commands executed in order before the nylon interface is brought up
-	PreDown          []string              `yaml:"pre_down,omitempty"`           // a list of commands executed in order before the nylon interface is brought down
-	PostUp           []string              `yaml:"post_up,omitempty"`            // a list of commands executed in order after the nylon interface is brought up
-	PostDown         []string              `yaml:"post_down,omitempty"`          // a list of commands executed in order after the nylon interface is brought down
+	UnexcludeIPs      []netip.Prefix        `yaml:"unexclude_ips,omitempty"`      // split tunnel, subtracts from centrally excluded ip ranges
+	ExcludeIPs        []netip.Prefix        `yaml:"exclude_ips,omitempty"`        // split tunnel, adds to the centrally excluded ip ranges
+	PreUp             []string              `yaml:"pre_up,omitempty"`             // a list of commands executed in order before the nylon interface is brought up
+	PreDown           []string              `yaml:"pre_down,omitempty"`           // a list of commands executed in order before the nylon interface is brought down
+	PostUp            []string              `yaml:"post_up,omitempty"`            // a list of commands executed in order after the nylon interface is brought up
+	PostDown          []string              `yaml:"post_down,omitempty"`          // a list of commands executed in order after the nylon interface is brought down
+	MTU               *uint16               `yaml:"mtu,omitempty"`                // TUN MTU; nil = device default (1420)
 }
 
 func (c *CentralCfg) Clone() (error, *CentralCfg) {

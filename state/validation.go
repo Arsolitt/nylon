@@ -93,6 +93,11 @@ func AddrToPrefix(addr netip.Addr) netip.Prefix {
 }
 
 func CentralConfigValidator(cfg *CentralCfg) error {
+	if cfg.Obf != nil {
+		if err := cfg.Obf.Validate(); err != nil {
+			return fmt.Errorf("invalid obf profile: %w", err)
+		}
+	}
 	nodes := make([]string, 0)
 	for _, node := range cfg.Routers {
 		err := NameValidator(string(node.Id))
