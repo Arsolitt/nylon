@@ -330,6 +330,13 @@ func (n *Nylon) checkPrefix(prefix netip.Prefix) bool {
 			return true
 		}
 	}
+	// dynamic prefixes (design §4.6) exist only in the announcing node's
+	// view; accept them when they fall inside a centrally-declared range
+	for _, r := range n.CentralCfg.DynamicPrefixRanges {
+		if prefix.Bits() >= r.Bits() && r.Contains(prefix.Addr()) {
+			return true
+		}
+	}
 	n.router.log.Warn("received packet for unknown prefix", "prefix", prefix)
 	return false
 }

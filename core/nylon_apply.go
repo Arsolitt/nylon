@@ -26,6 +26,14 @@ func (n *Nylon) ApplyCentralConfig(cfg *state.CentralCfg) (ApplyResult, error) {
 	if !candidate.IsRouter(n.LocalCfg.Id) {
 		return ApplyRestartRequired, errors.New("local node is not a router in the new central config")
 	}
+	if n.LocalCfg.DynamicPrefixesDir != "" {
+		if cerr, snap := candidate.Clone(); cerr != nil {
+			return ApplyRejected, cerr
+		} else {
+			n.centralCfgPristine = snap
+		}
+		n.injectDynamicPrefixes(candidate)
+	}
 	sameConfig := reflect.DeepEqual(&n.CentralCfg, candidate)
 	if sameConfig {
 		// A previous apply may have committed the desired config while external

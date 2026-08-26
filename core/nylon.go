@@ -34,13 +34,15 @@ type Nylon struct {
 
 	// state
 	state.ConfigState
-	RouterState      *state.RouterState
-	AppliedSystem    AppliedSystemState
-	PingBuf          *ttlcache.Cache[uint64, EpPing]
-	PeerMap          atomic.Pointer[map[state.NyPublicKey]state.NodeId]
-	DNSResolver      *state.DNSResolver
-	EndpointResolver *state.EndpointResolver
-	prefixHealth     map[netip.Prefix]advertisedPrefixHealth
+	RouterState        *state.RouterState
+	AppliedSystem      AppliedSystemState
+	PingBuf            *ttlcache.Cache[uint64, EpPing]
+	PeerMap            atomic.Pointer[map[state.NyPublicKey]state.NodeId]
+	DNSResolver        *state.DNSResolver
+	EndpointResolver   *state.EndpointResolver
+	prefixHealth       map[netip.Prefix]advertisedPrefixHealth
+	dynamicPrefixes    []state.PrefixHealthWrapper
+	centralCfgPristine *state.CentralCfg
 
 	router struct {
 		LastStarvationRequest time.Time
@@ -157,6 +159,16 @@ func NewNylon(ccfg state.CentralCfg, ncfg state.LocalCfg, logLevel slog.Level, c
 		EndpointResolver: state.NewEndpointResolver(dnsResolver),
 	}
 
+	if ncfg.DynamicPrefixesDir != "" {
+		// Load and inject dynamic prefixes before Init so the first
+		// reconcile sees the merged view (design §4.3). Never fails startup.
+		n.loadDynamicPrefixesDir()
+		if cerr, pristine := n.CentralCfg.Clone(); cerr == nil {
+			n.centralCfgPristine = pristine
+		}
+		n.injectDynamicPrefixes(&n.CentralCfg)
+	}
+
 	n.Log.Info("init modules")
 
 	err = n.Init()
@@ -246,6 +258,9 @@ func (n *Nylon) Init() error {
 			n.Log.Info("config source", "repo", repo)
 		}
 		n.RepeatTask(func() error { return checkForConfigUpdates(n) }, n.CentralUpdateDelay)
+	}
+	if n.LocalCfg.DynamicPrefixesDir != "" {
+		go n.watchDynamicPrefixes(n.LocalCfg.DynamicPrefixesDir)
 	}
 	return nil
 }

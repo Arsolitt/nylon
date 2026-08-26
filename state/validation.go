@@ -169,6 +169,12 @@ func CentralConfigValidator(cfg *CentralCfg) error {
 			return fmt.Errorf("invalid prefix %s", p)
 		}
 	}
+	// validate dynamic prefix ranges (design §4.6)
+	for _, r := range cfg.DynamicPrefixRanges {
+		if !r.IsValid() || r != r.Masked() {
+			return fmt.Errorf("invalid dynamic prefix range %s", r)
+		}
+	}
 	// validate prefixes
 	phs := make([]PrefixHealthWrapper, 0)
 	for _, c := range cfg.Clients {

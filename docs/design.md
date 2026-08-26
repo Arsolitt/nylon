@@ -379,6 +379,25 @@ watcher implementation, not this round) on `dynamic_prefixes_dir`:
 - Delete or emptied file = withdraw: `reconcileAdvertisedPrefixes` stops the monitors and retracts
   the prefixes via the existing Babel machinery (`RouterState.Advertised` maintenance).
 
+### 4.6 Receiver-side validation — `dynamic_prefix_ranges` (stage-3 addition)
+
+Discovered during the stage-3 implementation: the routing protocol validates every incoming route
+update against the *receiver's* central config (`checkPrefix`, exact prefix match in
+`core/router.go`). A dynamic prefix exists only in the announcing node's injected view, so peers
+would silently drop every dynamic announcement — cross-node podCIDR/anycast routing (§8 item 3)
+is impossible without a receiver-side allowance.
+
+- New `CentralCfg` field `dynamic_prefix_ranges []netip.Prefix`: a receiver accepts an announced
+  prefix if it is **equal to a prefix in its central config** (existing rule, unchanged) or **a
+  subnet of one of these ranges**. Applies to route updates, ack-retracts and seqno-requests.
+- Empty list (default) = current fail-closed semantics: only centrally-known prefixes are routable.
+  This is also the zone-isolation enforcement point (§7.3): zone synthesis gives each node only its
+  zone aggregate + the shared slice, so foreign podCIDRs stay unroutable while shared VIPs
+  (§7.4 slices) propagate.
+- Supernets of a declared range are rejected; ranges must be masked and valid (validator).
+- Deployment: the k8s stand declares `10.42.0.0/16` (pod CIDR aggregate — the same design-time
+  constant as Cilium's `ipv4-native-routing-cidr`) plus the mesh VIP slice `10.87.0.0/24`.
+
 ---
 
 ## 5. k8s integration

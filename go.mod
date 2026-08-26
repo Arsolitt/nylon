@@ -32,6 +32,7 @@ require (
 )
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/google/go-jsonnet v0.22.0 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
