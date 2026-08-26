@@ -632,6 +632,29 @@ their only control. Stated explicitly: L4/L7 policy exists only where Cilium run
 3. **k3s + Cilium native + `prefixes.d` JSON** — break the direct link between two nodes: verify
    pod-to-pod, apiserver, etcd, and in-cluster DB reachability across the healed path.
    **3b.** two-node same-/32 announce → anycast check for §6 (§6.5 prerequisites).
+   **Stage-3 outcome (2026-08-26, fork/awg @ fcc32ed, hkdemo stand, items 3 + 3b):** feature legs —
+   daemon `prefixes.d` contract deployed on all 4 nodes (watcher active, mesh 4/4); Cilium 1.19.5
+   switched tunnel/geneve → `routingMode: native` + `ipv4NativeRoutingCIDR: 10.42.0.0/16` +
+   `MTU: 1380` over `nylon0`. Baseline before announces: cross-node pod ping 100% loss (the
+   announce step is load-bearing). B3: per-node podCIDR `10-podcidr.json` (metric 0) — peers select
+   all four `10.42.X.0/24` with correct source routers; kernel routes via nylon0 (contiguous /24s
+   coalesce, e.g. `10.42.0.0/23`); cross-node pod ping 3/3 @ 5.5 ms. B4 (partition hkdemo-1↔hkdemo-2,
+   nft pairwise public-IP drop): mesh /32 heal **3 s**; dynamic podCIDR route heal ≈ **20–25 s**
+   (seqno-request cycle — the route lags the mesh ping heal); healed-path matrix all green — pod-pod
+   ping both directions 3/3 (4.7/6.7 ms), apiserver TCP reachable from pod and from the partitioned
+   agent host (401 in 19–40 ms, `k3s-agent` 0 reconnect errors), etcd `[+]ok`, ClusterIP DNS
+   `kubernetes.default` → 10.43.0.1; underlay relay proof on transit (ens1 capture: in .62→.65 then
+   out .65→.63, matching payload lengths). Unpartition: direct next-hop restored in **102 s**
+   (Babel route aging), ping 3/3 @ 2.5 ms. B5 (anycast VIP `10.87.0.100/32` from hkdemo-2+hkdemo-3):
+   selection hkdemo-3 (metric 2025 < 3646); withdraw on the serving node → next-hop flip to
+   hkdemo-2 in **1 s**, continuous ping 396/400 (**loss window ≤ 0.8 s**, zero unreachables), nylon
+   forward table — the WG AllowedIPs source — reprogrammed `10.87.0.100/32 → hkdemo-2`; cleanup
+   withdraw verified (0 routes). Deviations from the plan: (1) §4.6 `dynamic_prefix_ranges` had to
+   be added — receivers otherwise drop dynamic announcements in `checkPrefix` (cross-node routing
+   was impossible without it); (2) Cilium chart value keys are case-sensitive camelCase —
+   `ipv4-native-routing-cidr`/`mtu` are silently ignored (`ipv4NativeRoutingCIDR`/`MTU` required;
+   the pre-stage `mtu: 1360` never applied, auto-MTU was in effect); (3) agent hosts have no
+   kubeconfig — apiserver leg measured with host curl instead of `kubectl`.
 4. **Soak** — random degradation schedule (link loss, latency injection, node restarts); also
    exercises Babel RTT de-preference.
 5. **Two-zone lab (§7)** — reuse the 4-VM demo stand as 2 zones × 2 nodes; in each zone the
