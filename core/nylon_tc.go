@@ -107,16 +107,14 @@ func (n *Nylon) InstallTC() {
 
 	// bounce back packets destined for the current node
 	n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
-		entry, ok := n.router.Tables.Load().Exit.Lookup(packet.GetDst())
 		// we should only accept packets destined to us, but not our passive clients
-		if ok && entry.Nh == n.LocalCfg.Id {
+		if n.tcLocalExit(packet.GetDst()) {
 			if n.DBG_trace_tc {
 				t.Submit(fmt.Sprintf("Exit: %v -> %v\n", packet.GetSrc(), packet.GetDst()))
 			}
-			//dev.Log.Verbosef("BounceCur packet: %v -> %v", packet.GetSrc(), packet.GetDst())
 			return device.TcBounce, nil
 		}
-		//dev.Log.Verbosef("pass packet: %v -> %v, %v", packet.GetSrc(), packet.GetDst(), entry.Nh)
+		//dev.Log.Verbosef("pass packet: %v -> %v", packet.GetSrc(), packet.GetDst())
 		return device.TcPass, nil
 	})
 
@@ -128,6 +126,18 @@ func (n *Nylon) InstallTC() {
 		}
 		return device.TcPass, nil
 	})
+}
+
+// tcLocalExit reports whether dst terminates on this node: the longest match
+// over the full forwarding table is a route this node itself originates (own
+// address, VIPs, pod CIDRs and other statics). Forward is a superset of Exit,
+// so a learned more-specific inside a self-originated aggregate wins
+// longest-match and forwards instead of bouncing. Held (blackholed)
+// more-specifics are excluded so the forward filter drops them rather than
+// letting a covering aggregate resurrect delivery.
+func (n *Nylon) tcLocalExit(dst netip.Addr) bool {
+	entry, ok := n.router.Tables.Load().Forward.Lookup(dst)
+	return ok && entry.Nh == n.LocalCfg.Id && !entry.Blackhole
 }
 
 func (n *Nylon) SendNylon(pkt *protocol.Ny, endpoint conn.Endpoint, peer *device.Peer) error {
