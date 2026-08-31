@@ -340,7 +340,16 @@ func (n *Nylon) checkPrefix(prefix netip.Prefix) bool {
 			return true
 		}
 	}
-	n.router.log.Warn("received packet for unknown prefix", "prefix", prefix)
+	// foreign gateways routinely re-advertise their zone-internal prefixes
+	// (Babel full-table updates every RouteUpdateDelay); rejecting them is
+	// expected, so warn at most once per interval per prefix
+	if n.router.unknownPrefixWarns == nil {
+		n.router.unknownPrefixWarns = make(map[netip.Prefix]time.Time)
+	}
+	if last, ok := n.router.unknownPrefixWarns[prefix]; !ok || time.Since(last) >= n.UnknownPrefixWarnInterval {
+		n.router.unknownPrefixWarns[prefix] = time.Now()
+		n.router.log.Warn("received packet for unknown prefix", "prefix", prefix)
+	}
 	return false
 }
 

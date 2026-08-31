@@ -52,6 +52,10 @@ type Nylon struct {
 		// belong to the same state generation.
 		Tables atomic.Pointer[ForwardingTables]
 		log    *slog.Logger
+		// unknownPrefixWarns tracks the last emitted unknown-prefix warning
+		// per prefix. Written only from the dispatch goroutine (all checkPrefix
+		// callers are dispatched via n.Dispatch), like the rest of router state.
+		unknownPrefixWarns map[netip.Prefix]time.Time
 	}
 
 	// runtime/application
