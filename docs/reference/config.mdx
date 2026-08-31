@@ -123,11 +123,13 @@ clients:
 # Excluded prefixes are NOT routed through nylon (network-wide default).
 # Per-node overrides are in node.yaml (exclude_ips / unexclude_ips).
 #
-# How the three layers combine (applied per-node):
+# How the layers combine (applied per-node):
 # 1. Start with all prefixes from the routing table
-# 2. Subtract: central exclude_ips (below) + prefixes where this node is the next-hop
-# 3. Add back: node unexclude_ips
-# 4. Subtract: node exclude_ips
+# 2. Drop: prefixes this node itself originates (exact match only --
+#    learned more-specifics inside them still install)
+# 3. Subtract: central exclude_ips (below)
+# 4. Add back: node unexclude_ips
+# 5. Subtract: node exclude_ips
 #
 # Example: central excludes 10.0.0.0/8. Node "alice" sets
 # unexclude_ips: [10.1.0.0/16] -- re-includes 10.1.x.x

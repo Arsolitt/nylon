@@ -14,6 +14,7 @@ func TestComputeSysRouteTableAppliesExcludesAndUnexcludes(t *testing.T) {
 		"a",
 		[]netip.Prefix{
 			pfx("10.0.0.128/25"),
+			pfx("10.0.1.0/24"),
 		},
 		[]netip.Prefix{
 			pfx("10.0.1.64/26"),
@@ -23,7 +24,7 @@ func TestComputeSysRouteTableAppliesExcludesAndUnexcludes(t *testing.T) {
 		},
 		map[netip.Prefix]state.SelRoute{
 			pfx("10.0.0.0/24"): {Nh: "b"},
-			pfx("10.0.1.0/24"): {Nh: "a"},
+			pfx("10.0.1.0/24"): {Nh: "d"},
 			pfx("10.0.2.0/24"): {Nh: "c"},
 		},
 	)
@@ -88,6 +89,51 @@ func TestComputeSysRouteTableCoalescesAdjacentResults(t *testing.T) {
 	)
 
 	assert.Equal(t, []netip.Prefix{pfx("10.0.0.0/24")}, sortedPrefixes(n.ComputeSysRouteTable()))
+}
+
+func TestComputeSysRouteTableKeepsLearnedMoreSpecificsInsideSelfPrefixes(t *testing.T) {
+	// gateway scenario from the nylon_demo stand: this node originates a zone
+	// aggregate and a VIP /32, learns own-zone peer /32s and a foreign aggregate
+	n := sysRouteTestNylon(
+		"a",
+		nil,
+		nil,
+		nil,
+		map[netip.Prefix]state.SelRoute{
+			pfx("10.100.0.0/24"):   {Nh: "a"}, // self zone aggregate
+			pfx("10.100.0.100/32"): {Nh: "a"}, // self VIP
+			pfx("10.100.0.1/32"):   {Nh: "b"}, // learned own-zone peer
+			pfx("10.100.0.3/32"):   {Nh: "c"}, // learned own-zone peer
+			pfx("10.100.1.0/24"):   {Nh: "b"}, // foreign aggregate
+		},
+	)
+
+	assert.ElementsMatch(t, []netip.Prefix{
+		pfx("10.100.0.1/32"),
+		pfx("10.100.0.3/32"),
+		pfx("10.100.1.0/24"),
+	}, n.ComputeSysRouteTable())
+}
+
+func TestComputeSysRouteTableCentralExcludeRangesCoverLearnedSpecifics(t *testing.T) {
+	// configured excludes keep address-range semantics: a central range inside a
+	// self-originated aggregate suppresses the learned specifics it covers
+	n := sysRouteTestNylon(
+		"a",
+		[]netip.Prefix{pfx("10.100.0.2/31")}, // covers .2 and .3, not .1
+		nil,
+		nil,
+		map[netip.Prefix]state.SelRoute{
+			pfx("10.100.0.0/24"): {Nh: "a"},
+			pfx("10.100.0.1/32"): {Nh: "b"},
+			pfx("10.100.0.2/32"): {Nh: "b"},
+			pfx("10.100.0.3/32"): {Nh: "c"},
+		},
+	)
+
+	assert.ElementsMatch(t, []netip.Prefix{
+		pfx("10.100.0.1/32"),
+	}, n.ComputeSysRouteTable())
 }
 
 func sysRouteTestNylon(local state.NodeId, centralExcludes, localUnexcludes, localExcludes []netip.Prefix, routes map[netip.Prefix]state.SelRoute) *Nylon {

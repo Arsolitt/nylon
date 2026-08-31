@@ -248,20 +248,23 @@ func (n *Nylon) InitRouter() error {
 	return nil
 }
 
-// ComputeSysRouteTable computes: computed = prefixes - (((n.CentralCfg.ExcludeIPs U selected self prefixes) - n.LocalCfg.UnexcludeIPs) U n.LocalCfg.ExcludeIPs)
+// ComputeSysRouteTable computes: computed = (prefixes - exact self-originated prefixes) - ((n.CentralCfg.ExcludeIPs - n.LocalCfg.UnexcludeIPs) U n.LocalCfg.ExcludeIPs)
+//
+// Prefixes selected with this node as the next hop are self-originated (zone
+// aggregates, VIPs); they live as local aliases and are dropped by exact match
+// only, so learned more-specifics inside them still install. Configured
+// excludes keep address-range semantics.
 func (n *Nylon) ComputeSysRouteTable() []netip.Prefix {
 	prefixes := make([]netip.Prefix, 0)
-	selectedSelf := make([]netip.Prefix, 0)
 	for entry, v := range n.RouterState.Routes {
-		prefixes = append(prefixes, entry)
 		if v.Nh == n.LocalCfg.Id {
-			selectedSelf = append(selectedSelf, entry)
+			continue // never install a mesh route to our own prefix
 		}
+		prefixes = append(prefixes, entry)
 	}
 
 	excludes := netipx.IPSetBuilder{}
 	excludes.AddSet(state.MakeSet(n.CentralCfg.ExcludeIPs))
-	excludes.AddSet(state.MakeSet(selectedSelf))
 	excludes.RemoveSet(state.MakeSet(n.LocalCfg.UnexcludeIPs))
 	excludes.AddSet(state.MakeSet(n.LocalCfg.ExcludeIPs))
 
