@@ -22,6 +22,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/encodeous/nylon/internal/buildinfo"
+	"github.com/encodeous/nylon/internal/logging"
+	"github.com/encodeous/nylon/log"
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +39,7 @@ import (
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -57,6 +62,9 @@ type lbOptions struct {
 	healthAddr      string
 	speaker         bool
 	allocator       bool
+	logLevel        string
+	verbose         bool
+	json            bool
 }
 
 func main() {
@@ -88,6 +96,8 @@ endpoints live) is decided locally.`,
 		},
 	}
 
+	cmd.Version = buildinfo.Version
+
 	cmd.Flags().StringVar(&opts.pool, "pool", "", "IPv4 CIDR pool to allocate LoadBalancer ingress IPs from")
 	cmd.Flags().StringArrayVar(&opts.excludes, "exclude", nil, "pool IP to never allocate (repeatable; e.g. a stand's probe IP)")
 	cmd.Flags().StringVar(&opts.prefixesDir, "prefixes-dir", "/etc/nylon/prefixes.d", "nylon dynamic_prefixes_dir to write announce files into")
@@ -100,6 +110,9 @@ endpoints live) is decided locally.`,
 	cmd.Flags().StringVar(&opts.healthAddr, "health-addr", ":9633", "listen address for the /healthz endpoint (empty disables the health server)")
 	cmd.Flags().BoolVar(&opts.speaker, "speaker", true, "run the per-node announcer (prefix files + interface binding)")
 	cmd.Flags().BoolVar(&opts.allocator, "allocator", true, "run the LoadBalancer IP allocator (status.loadBalancer.ingress writes)")
+	cmd.Flags().StringVar(&opts.logLevel, "log-level", "", "Log level: debug|info|warn|error (default info; env NYLON_LOG_LEVEL; -v is a debug alias)")
+	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "v", false, "Verbose output")
+	cmd.Flags().BoolVar(&opts.json, "json", false, "Log to stderr as JSON instead of tinted text")
 
 	_ = cmd.MarkFlagRequired("pool")
 
@@ -108,13 +121,61 @@ endpoints live) is decided locally.`,
 
 // run wires the whole binary: pool parsing, kube client, informer factory,
 // event recorder, health endpoint, speaker, and the leader-elected allocator.
-func run(opts *lbOptions) error {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+func run(opts *lbOptions) (err error) {
+	level, err := logging.Resolve(opts.logLevel, opts.verbose)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	pool, err := ParsePool(opts.pool, opts.excludes)
 	if err != nil {
 		return fmt.Errorf("invalid pool configuration: %w", err)
 	}
+
+	// Node identity must be settled before the logger exists: it labels
+	// every record the process ever emits.
+	nodeName := opts.nodeName
+	if nodeName == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return fmt.Errorf("resolving node name: %w", err)
+		}
+		nodeName = hostname
+	}
+
+	logger, closer, err := logging.New(logging.Config{
+		Component: "nylon-lb",
+		Node:      nodeName,
+		Level:     level,
+		JSON:      opts.json,
+	})
+	if err != nil {
+		return fmt.Errorf("building logger: %w", err)
+	}
+	defer closer()
+	// Every failure past this point is a structured error record, not just a
+	// cobra stderr line.
+	defer func() {
+		if err != nil {
+			logger.Error("nylon-lb failed", "error", err)
+		}
+	}()
+	// Route client-go's internal logging (informers, leader election) into
+	// the same slog pipeline instead of bare stderr.
+	klog.SetLogger(logr.FromSlogHandler(logger.Handler()))
+
+	metrics := NewMetrics(nodeName)
+
+	logger.Info("starting nylon-lb",
+		"version", buildinfo.Version,
+		"commit", buildinfo.Commit,
+		"node", nodeName,
+		"pool", opts.pool,
+		"prefixes_dir", opts.prefixesDir,
+		"health_addr", opts.healthAddr,
+		"leader_elect", opts.leaderElect,
+	)
 
 	cfg, err := kubeConfig(opts.kubeconfig)
 	if err != nil {
@@ -145,15 +206,6 @@ func run(opts *lbOptions) error {
 		return fmt.Errorf("creating prefixes dir %s: %w", opts.prefixesDir, err)
 	}
 
-	nodeName := opts.nodeName
-	if nodeName == "" {
-		hostname, err := os.Hostname()
-		if err != nil {
-			return fmt.Errorf("resolving node name: %w", err)
-		}
-		nodeName = hostname
-	}
-
 	// Both components register their informer handlers at construction, so
 	// both are built unconditionally — a disabled component just never runs.
 	// Harmless: the handlers only enqueue keys, and Run is what drains.
@@ -162,7 +214,8 @@ func run(opts *lbOptions) error {
 		Factory:  factory,
 		Pool:     pool,
 		Recorder: recorder,
-		Logger:   logger,
+		Logger:   logger.With("module", log.ScopeAllocator),
+		Metrics:  metrics,
 	})
 
 	var binder AddrBinder
@@ -179,16 +232,19 @@ func run(opts *lbOptions) error {
 		PrefixesDir: opts.prefixesDir,
 		NodeName:    nodeName,
 		Binder:      binder,
-		Logger:      logger,
+		Logger:      logger.With("module", log.ScopeSpeaker),
 		Resync:      opts.resync,
+		Metrics:     metrics,
 	})
 	if err != nil {
 		return fmt.Errorf("building speaker: %w", err)
 	}
 
-	// The health server starts BEFORE cache sync so its 503-until-synced
-	// state is actually observable: a kube API outage during startup must
-	// fail the liveness probe instead of hanging invisibly.
+	// The health server starts BEFORE cache sync so readiness is actually
+	// observable: /healthz answers 200 as soon as the process serves
+	// (liveness = process alive), /readyz stays 503 until the informer
+	// caches sync (readiness = able to reconcile), and /metrics exposes the
+	// metric set.
 	var synced atomic.Bool
 	var healthSrv *http.Server
 	if opts.healthAddr != "" {
@@ -198,6 +254,10 @@ func run(opts *lbOptions) error {
 		}
 		mux := http.NewServeMux()
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok\n"))
+		})
+		mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 			if synced.Load() {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte("ok\n"))
@@ -205,10 +265,11 @@ func run(opts *lbOptions) error {
 			}
 			http.Error(w, "informer caches not synced", http.StatusServiceUnavailable)
 		})
+		mux.Handle("/metrics", metrics.Handler())
 		healthSrv = &http.Server{Handler: mux}
 		go func() {
 			if err := healthSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				logger.Error("health server failed", "err", err)
+				logger.Error("health server failed", "error", err)
 			}
 		}()
 	}
@@ -228,18 +289,18 @@ func run(opts *lbOptions) error {
 		// idempotent file writer + GC make concurrent reconciles converge.
 		go func() {
 			if err := speaker.Run(ctx); err != nil {
-				logger.Error("speaker failed", "err", err)
+				logger.Error("speaker failed", "error", err)
 			}
 		}()
 	}
 
 	if opts.allocator {
 		if opts.leaderElect {
-			go runAllocatorElected(ctx, controller, clientset, opts.leaderNamespace, nodeName, logger)
+			go runAllocatorElected(ctx, controller, clientset, opts.leaderNamespace, nodeName, logger, metrics)
 		} else {
 			go func() {
 				if err := controller.Run(ctx); err != nil {
-					logger.Error("allocator controller failed", "err", err)
+					logger.Error("allocator controller failed", "error", err)
 				}
 			}()
 		}
@@ -251,7 +312,7 @@ func run(opts *lbOptions) error {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelShutdown()
 		if err := healthSrv.Shutdown(shutdownCtx); err != nil {
-			logger.Warn("health server shutdown", "err", err)
+			logger.Warn("health server shutdown", "error", err)
 		}
 	}
 
@@ -265,7 +326,7 @@ func run(opts *lbOptions) error {
 // converges. A partitioned ex-leader is still safe — status writes are
 // single-object CAS, and on conflict the reconciler re-derives the taken set
 // from a re-fetch, so dual leaders converge instead of double-assigning.
-func runAllocatorElected(ctx context.Context, controller *Controller, clientset kubernetes.Interface, leaderNamespace, nodeName string, logger *slog.Logger) {
+func runAllocatorElected(ctx context.Context, controller *Controller, clientset kubernetes.Interface, leaderNamespace, nodeName string, logger *slog.Logger, metrics *Metrics) {
 	ns := leaderNamespace
 	if ns == "" {
 		ns = serviceAccountNamespace()
@@ -287,20 +348,26 @@ func runAllocatorElected(ctx context.Context, controller *Controller, clientset 
 		RetryPeriod:   2 * time.Second,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(leaderCtx context.Context) {
+				if metrics != nil {
+					metrics.Leader.Store(1)
+				}
 				// leaderCtx is cancelled on leadership loss, which unwinds
 				// the controller's workqueue loop.
 				if err := controller.Run(leaderCtx); err != nil {
-					logger.Error("allocator controller failed", "err", err)
+					logger.Error("allocator controller failed", "error", err)
 				}
 			},
 			OnStoppedLeading: func() {
+				if metrics != nil {
+					metrics.Leader.Store(0)
+				}
 				logger.Warn("lost allocator leadership", "identity", identity)
 			},
 		},
 		Name: leaseName,
 	})
 	if err != nil {
-		logger.Error("building leader elector", "err", err)
+		logger.Error("building leader elector", "error", err)
 		return
 	}
 	elector.Run(ctx)

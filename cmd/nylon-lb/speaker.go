@@ -53,6 +53,7 @@ type SpeakerOptions struct {
 	NodeName    string
 	Binder      AddrBinder // nil disables binding
 	Logger      *slog.Logger
+	Metrics     *Metrics      // nil disables metrics
 	Resync      time.Duration // safety ticker; informer resync also triggers
 }
 
@@ -68,6 +69,7 @@ type Speaker struct {
 	nodeName      string
 	binder        AddrBinder
 	log           *slog.Logger
+	metrics       *Metrics // nil disables metrics
 	resync        time.Duration
 	svcLister     corev1lister.ServiceLister
 	sliceLister   discoveryv1lister.EndpointSliceLister
@@ -120,6 +122,7 @@ func NewSpeaker(opts SpeakerOptions) (*Speaker, error) {
 		nodeName:      opts.NodeName,
 		binder:        opts.Binder,
 		log:           log,
+		metrics:       opts.Metrics,
 		resync:        resync,
 		svcLister:     opts.Factory.Core().V1().Services().Lister(),
 		sliceLister:   opts.Factory.Discovery().V1().EndpointSlices().Lister(),
@@ -199,7 +202,10 @@ type announce struct {
 func (s *Speaker) desiredAnnounces() []announce {
 	services, err := s.svcLister.List(labels.Everything())
 	if err != nil {
-		s.log.Warn("listing services", "err", err)
+		s.log.Warn("listing services", "error", err)
+		if s.metrics != nil {
+			s.metrics.addError("list")
+		}
 		return nil
 	}
 	var out []announce
@@ -253,7 +259,10 @@ func (s *Speaker) hasLocalEndpoint(ns, name string) bool {
 	slices, err := s.sliceLister.EndpointSlices(ns).List(
 		labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: name}))
 	if err != nil {
-		s.log.Warn("listing endpoint slices", "err", err, "service", ns+"/"+name)
+		s.log.Warn("listing endpoint slices", "error", err, "service", ns+"/"+name)
+		if s.metrics != nil {
+			s.metrics.addError("list")
+		}
 		return false
 	}
 	for _, slice := range slices {
@@ -281,6 +290,9 @@ func (s *Speaker) reconcile() {
 	defer s.mu.Unlock()
 
 	anns := s.desiredAnnounces()
+	if s.metrics != nil {
+		s.metrics.Announces.Store(int64(len(anns)))
+	}
 
 	// 1. Bind, then announce.
 	for _, a := range anns {
@@ -291,14 +303,22 @@ func (s *Speaker) reconcile() {
 					// announcing: traffic still reaches the service via
 					// other announcing nodes, and the next reconcile
 					// retries the bind.
-					s.log.Warn("binding LB address", "err", err, "ip", a.ip, "service", a.ns+"/"+a.name)
+					s.log.Warn("binding LB address", "error", err, "ip", a.ip, "service", a.ns+"/"+a.name)
+					if s.metrics != nil {
+						s.metrics.addError("bind")
+					}
 				} else {
 					s.bound[a.ip] = struct{}{}
 				}
 			}
 		}
 		if _, err := writePrefixFile(s.dir, a.ns, a.name, a.ip); err != nil {
-			s.log.Warn("writing announce file", "err", err, "file", a.file)
+			s.log.Warn("writing announce file", "error", err, "file", a.file)
+			if s.metrics != nil {
+				s.metrics.addError("write")
+			}
+		} else if s.metrics != nil {
+			s.metrics.AnnounceWrites.Add(1)
 		}
 	}
 
@@ -313,13 +333,13 @@ func (s *Speaker) reconcile() {
 	}
 	stale := s.staleAnnounces(desiredFiles)
 	if _, err := gcPrefixFiles(s.dir, desiredFiles); err != nil {
-		s.log.Warn("garbage-collecting announce files", "err", err, "dir", s.dir)
+		s.log.Warn("garbage-collecting announce files", "error", err, "dir", s.dir)
 	}
 	if s.binder != nil {
 		for _, st := range stale {
 			for _, ip := range st.ips {
 				if err := s.binder.Remove(ip); err != nil {
-					s.log.Warn("unbinding withdrawn LB address", "err", err, "ip", ip, "file", st.file)
+					s.log.Warn("unbinding withdrawn LB address", "error", err, "ip", ip, "file", st.file)
 				} else {
 					delete(s.bound, ip)
 				}
@@ -333,14 +353,14 @@ func (s *Speaker) reconcile() {
 	if s.binder != nil {
 		live, err := s.binder.ListInPool()
 		if err != nil {
-			s.log.Warn("listing bound LB addresses", "err", err)
+			s.log.Warn("listing bound LB addresses", "error", err)
 		} else {
 			for _, ip := range live {
 				if _, ok := desiredIPs[ip]; ok {
 					continue
 				}
 				if err := s.binder.Remove(ip); err != nil {
-					s.log.Warn("removing drifted LB address", "err", err, "ip", ip)
+					s.log.Warn("removing drifted LB address", "error", err, "ip", ip)
 				} else {
 					delete(s.bound, ip)
 				}
@@ -363,7 +383,10 @@ type staleAnnounce struct {
 func (s *Speaker) staleAnnounces(keep map[string]struct{}) []staleAnnounce {
 	matches, err := filepath.Glob(filepath.Join(s.dir, "lb-*.json"))
 	if err != nil {
-		s.log.Warn("globbing announce files", "err", err, "dir", s.dir)
+		s.log.Warn("globbing announce files", "error", err, "dir", s.dir)
+		if s.metrics != nil {
+			s.metrics.addError("glob")
+		}
 		return nil
 	}
 	var out []staleAnnounce

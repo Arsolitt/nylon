@@ -24,9 +24,12 @@ propagates — the same stand-proven pattern as `nylon-vip.service` +
 | `--leader-elect` | `true` | Run the allocator under leader election (one active allocator at a time). |
 | `--leader-namespace` | in-cluster SA namespace, else `kube-system` | Namespace holding the `nylon-lb-allocator` Lease. |
 | `--resync` | `30s` | Informer resync period. |
-| `--health-addr` | `:9633` | Listen address for the `/healthz` endpoint. |
+| `--health-addr` | `:9633` | Listen address for the `/healthz`, `/readyz`, and `/metrics` endpoints (empty disables the server). |
 | `--speaker` | `true` | Announce/withdraw per-node /32s (prefix files + address binding). Set `false` for an allocator-only replica. |
 | `--allocator` | `true` | Allocate addresses and update Service status. Set `false` for an announce-only replica. |
+| `--log-level` | env `NYLON_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. |
+| `-v` / `--verbose` | `false` | Shorthand for debug-level logging. |
+| `--json` | `false` | Log to stderr as JSON instead of tinted text. |
 
 ## Announce semantics
 
@@ -37,6 +40,48 @@ propagates — the same stand-proven pattern as `nylon-vip.service` +
   endpoint announce the /32; the announcement is withdrawn when the last ready
   endpoint leaves the node. Pass `--node-name` correctly (see the DaemonSet
   `NODE_NAME` note) or no node will ever match its endpoints.
+
+## Logging
+
+nylon-lb logs through the shared nylon logging pipeline. Every record carries
+`component=nylon-lb` and `node=<name>` attributes; allocator records add
+`module=allocator`, speaker records `module=speaker`.
+
+- `--log-level debug|info|warn|error` sets the level (default `info`).
+- `NYLON_LOG_LEVEL` is consulted when the flag is empty.
+- `-v`/`--verbose` is a shorthand for debug level.
+- `--json` switches stderr output from tinted text to JSON.
+
+client-go internals (informer reflections, leader-election transitions) log
+through klog; a klog bridge routes that chatter into the same slog pipeline,
+so a single `--log-level` controls everything. `--version` prints the
+version/commit stamped at link time (see `Makefile` `-ldflags`).
+
+## Metrics and health endpoints
+
+`--health-addr` (default `:9633`) serves three endpoints:
+
+- `/healthz` — liveness. Always `200` once the process is serving; it does
+  not check cluster connectivity.
+- `/readyz` — readiness. `503` ("informer caches not synced") until the
+  Service and EndpointSlice informer caches have synced, `200` afterwards.
+  The DaemonSet readiness probe points here.
+- `/metrics` — Prometheus text format:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `nylon_lb_build_info` | gauge | `version`, `commit` | Build stamp; always `1`. |
+| `nylon_lb_leader` | gauge | `node` | `1` while this replica holds the allocator Lease. |
+| `nylon_lb_allocated_ips` | gauge | — | Distinct pool addresses currently claimed by Service ingress or `spec.loadBalancerIP`. |
+| `nylon_lb_services` | gauge | — | `type=LoadBalancer` Services currently in the cluster. |
+| `nylon_lb_announces` | gauge | — | LoadBalancer /32s this node currently announces. |
+| `nylon_lb_allocations_total` | counter | — | Fresh ingress assignments since start. |
+| `nylon_lb_releases_total` | counter | — | Ingress clearances (Service deleted or no longer LoadBalancer) since start. |
+| `nylon_lb_announce_writes_total` | counter | — | Successful announce-file writes since start. |
+| `nylon_lb_errors_total` | counter | `kind` | Failed operations since start; `kind` is one of `bind` (address bind failure), `write` (announce-file write failure), `reconcile` (Service reconcile error), `list` (informer lister failure), `glob` (announce-file glob failure). |
+
+Gauges refresh on each successful reconcile pass; `nylon_lb_leader` only
+ever becomes `1` on the leader-elected allocator replica.
 
 ## Deployment
 

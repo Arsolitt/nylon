@@ -48,6 +48,7 @@ type Controller struct {
 	pool     *Pool
 	recorder record.EventRecorder // nil disables events
 	logger   *slog.Logger
+	metrics  *Metrics // nil disables metrics
 	// allocMu serializes the derive→allocate→updateStatus critical section
 	// across the worker pool: two concurrent reconciles could otherwise both
 	// observe the same free address and hand it to two Services. The leader
@@ -71,6 +72,7 @@ type ControllerOptions struct {
 	Pool     *Pool
 	Recorder record.EventRecorder // nil = no events
 	Logger   *slog.Logger
+	Metrics  *Metrics // nil disables metrics
 }
 
 // NewController wires the allocator: a Service informer feeding a rate-limited
@@ -88,6 +90,7 @@ func NewController(opts ControllerOptions) *Controller {
 		pool:      opts.Pool,
 		recorder:  opts.Recorder,
 		logger:    logger,
+		metrics:   opts.Metrics,
 		queue:     workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
 		svcSynced: svcInformer.Informer().HasSynced,
 	}
@@ -105,7 +108,7 @@ func NewController(opts ControllerOptions) *Controller {
 	if err != nil {
 		// Only possible on a factory that already delivered events; the
 		// handler would simply never fire, so log and continue.
-		logger.Error("registering service event handlers", "err", err)
+		logger.Error("registering service event handlers", "error", err)
 	}
 	return c
 }
@@ -115,7 +118,7 @@ func NewController(opts ControllerOptions) *Controller {
 func (c *Controller) enqueue(obj interface{}) {
 	key, err := cache.MetaNamespaceKeyFunc(obj)
 	if err != nil {
-		c.logger.Warn("skipping object without a usable key", "err", err)
+		c.logger.Warn("skipping object without a usable key", "error", err)
 		return
 	}
 	c.queue.Add(key)
@@ -127,7 +130,7 @@ func (c *Controller) enqueue(obj interface{}) {
 func (c *Controller) enqueueDeleted(obj interface{}) {
 	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 	if err != nil {
-		c.logger.Warn("skipping deleted object without a usable key", "err", err)
+		c.logger.Warn("skipping deleted object without a usable key", "error", err)
 		return
 	}
 	c.queue.Add(key)
@@ -171,7 +174,10 @@ func (c *Controller) processNextWorkItem() bool {
 	defer c.queue.Done(key)
 
 	if err := c.reconcile(key); err != nil {
-		c.logger.Error("failed to reconcile service", "key", key, "err", err)
+		c.logger.Error("failed to reconcile service", "key", key, "error", err)
+		if c.metrics != nil {
+			c.metrics.addError("reconcile")
+		}
 		c.queue.AddRateLimited(key)
 		return true
 	}
@@ -205,7 +211,7 @@ func (c *Controller) reconcile(key string) error {
 	if err != nil {
 		// An unparsable key can never become valid; drop it instead of
 		// retrying forever.
-		c.logger.Warn("dropping malformed service key", "key", key, "err", err)
+		c.logger.Warn("dropping malformed service key", "key", key, "error", err)
 		return nil
 	}
 
@@ -237,6 +243,9 @@ func (c *Controller) reconcile(key string) error {
 		}
 		c.logger.Info("released load balancer ingress", "key", key, "ips", released)
 		c.event(svc, corev1.EventTypeNormal, reasonReleased, "released load balancer ingress "+joinIPs(released))
+		if c.metrics != nil {
+			c.metrics.Releases.Add(1)
+		}
 		return nil
 	}
 
@@ -266,9 +275,13 @@ func (c *Controller) assignIngress(ctx context.Context, key, ns, name string) er
 		return err
 	}
 	taken := make(map[netip.Addr]struct{})
+	lbServices := 0
 	var svc *corev1.Service
 	for i := range list.Items {
 		s := &list.Items[i]
+		if s.Spec.Type == corev1.ServiceTypeLoadBalancer {
+			lbServices++
+		}
 		if s.Namespace == ns && s.Name == name {
 			svc = s
 			// The target's own requested address is not "taken by
@@ -329,6 +342,11 @@ func (c *Controller) assignIngress(ctx context.Context, key, ns, name string) er
 			return nil
 		}
 		return err
+	}
+	if c.metrics != nil {
+		c.metrics.AllocatedIPs.Store(int64(len(taken)))
+		c.metrics.Services.Store(int64(lbServices))
+		c.metrics.Allocations.Add(1)
 	}
 	if candidate.IsValid() {
 		c.logger.Info("honored requested load balancer IP", "key", key, "ip", ip.String())
