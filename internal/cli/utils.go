@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"runtime/debug"
 
+	"github.com/encodeous/nylon/internal/buildinfo"
 	"github.com/encodeous/nylon/state"
 	"github.com/spf13/cobra"
 )
@@ -74,11 +74,7 @@ var versionCmd = &cobra.Command{
 	Aliases: []string{"v"},
 	Short:   "Gets the nylon release version",
 	Run: func(cmd *cobra.Command, args []string) {
-		val, ok := debug.ReadBuildInfo()
-		if !ok {
-			fmt.Println("unable to find version")
-		}
-		fmt.Printf("Version: %s\n", val.Main.Version)
+		fmt.Println(buildinfo.String())
 	},
 	GroupID: "ny",
 }

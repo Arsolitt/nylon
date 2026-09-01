@@ -1,5 +1,7 @@
 BIN_DIR ?= bin
-LDFLAGS ?= -s -w
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+LDFLAGS ?= -s -w -X github.com/encodeous/nylon/internal/buildinfo.Version=$(VERSION) -X github.com/encodeous/nylon/internal/buildinfo.Commit=$(COMMIT)
 NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 GOTESTSUM ?= go run gotest.tools/gotestsum@latest --
 export CGO_ENABLED ?= 0

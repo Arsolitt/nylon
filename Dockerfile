@@ -1,8 +1,13 @@
+ARG VERSION=dev
+ARG COMMIT=none
+
 FROM golang:1.26.3 AS builder
+ARG VERSION
+ARG COMMIT
 WORKDIR /src
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w" -o /nylon ./cmd/nylon
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w -X github.com/encodeous/nylon/internal/buildinfo.Version=${VERSION} -X github.com/encodeous/nylon/internal/buildinfo.Commit=${COMMIT}" -o /nylon ./cmd/nylon
 
 FROM scratch
 
