@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/encodeous/nylon/core"
+	"github.com/encodeous/nylon/internal/logging"
 	"github.com/encodeous/nylon/polyamide/conn"
 	"github.com/encodeous/nylon/polyamide/conn/bindtest"
 	"github.com/encodeous/nylon/polyamide/device"
@@ -190,8 +191,17 @@ func (v *VirtualHarness) Start() chan error {
 	if v.LogLevel == nil {
 		v.LogLevel = new(slog.LevelDebug)
 	}
-	for idx := range v.Central.Routers {
-		n, err := core.NewNylon(v.Central, v.Local[idx], *v.LogLevel, "", map[string]any{
+	for idx, rt := range v.Central.Routers {
+		logger, _, err := logging.New(logging.Config{
+			Component: "nylon",
+			Node:      string(rt.Id),
+			Level:     *v.LogLevel,
+		})
+		if err != nil {
+			errChan <- err
+			return errChan
+		}
+		n, err := core.NewNylon(v.Central, v.Local[idx], logger, "", map[string]any{
 			"vnet": vn,
 		}, state.NylonOptions{DBG_log_wireguard: true}, v.Tunables)
 		if err != nil {

@@ -8,7 +8,6 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"path"
 	"reflect"
 	"runtime"
 	"sync"
@@ -20,9 +19,7 @@ import (
 	"github.com/encodeous/nylon/polyamide/device"
 	"github.com/encodeous/nylon/polyamide/tun"
 	"github.com/encodeous/nylon/state"
-	"github.com/encodeous/tint"
 	"github.com/jellydator/ttlcache/v3"
-	slogmulti "github.com/samber/slog-multi"
 )
 
 type Nylon struct {
@@ -77,6 +74,8 @@ type Nylon struct {
 	Context     context.Context
 	Cancel      context.CancelCauseFunc
 	cleanupOnce sync.Once
+	// readyLast tracks the previous readiness state for transition logging.
+	readyLast atomic.Bool
 }
 
 type AppliedSystemState struct {
@@ -85,7 +84,7 @@ type AppliedSystemState struct {
 	Peers   map[state.NodeId]state.NyPublicKey
 }
 
-func NewNylon(ccfg state.CentralCfg, ncfg state.LocalCfg, logLevel slog.Level, configPath string, aux map[string]any, opts state.NylonOptions, tunables *state.RouterTunables) (*Nylon, error) {
+func NewNylon(ccfg state.CentralCfg, ncfg state.LocalCfg, logger *slog.Logger, configPath string, aux map[string]any, opts state.NylonOptions, tunables *state.RouterTunables) (*Nylon, error) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 
 	dispatch := make(chan func() error, 128)
@@ -103,43 +102,6 @@ func NewNylon(ccfg state.CentralCfg, ncfg state.LocalCfg, logLevel slog.Level, c
 	} else {
 		rt = state.DefaultRouterTunables()
 	}
-
-	handlers := make([]slog.Handler, 0)
-	if opts.DBG_log_json {
-		handlers = append(handlers,
-			slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-				Level: logLevel,
-			}),
-		)
-	} else {
-		handlers = append(handlers,
-			tint.NewHandler(os.Stderr, &tint.Options{
-				Level:        logLevel,
-				AddSource:    false,
-				CustomPrefix: string(ncfg.Id),
-				ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
-					if attr.Key == "time" {
-						return slog.Attr{}
-					}
-					return attr
-				},
-			}))
-	}
-
-	if ncfg.LogPath != "" {
-		err := os.MkdirAll(path.Dir(ncfg.LogPath), 0600)
-		if err != nil {
-			return nil, err
-		}
-		f, err := os.OpenFile(ncfg.LogPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
-		if err != nil {
-			return nil, err
-		}
-		handlers = append(handlers, slog.NewTextHandler(f, &slog.HandlerOptions{Level: logLevel}))
-	}
-
-	logger := slog.New(
-		slogmulti.Fanout(handlers...))
 
 	if ncfg.InterfaceName == "" {
 		ncfg.InterfaceName = "nylon"

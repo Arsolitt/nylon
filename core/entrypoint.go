@@ -2,34 +2,41 @@ package core
 
 import (
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"runtime/trace"
 
+	"github.com/encodeous/nylon/internal/buildinfo"
+	"github.com/encodeous/nylon/internal/logging"
 	"github.com/encodeous/nylon/state"
 	"github.com/goccy/go-yaml"
 )
 
-func setupDebugging(opts state.NylonOptions) {
+func setupDebugging(log *slog.Logger, opts state.NylonOptions) (cleanup func()) {
 	if opts.DBG_trace {
 		f, err := os.Create("trace.out")
 		if err != nil {
-			log.Fatal(err)
+			log.Error("failed to create trace file", "error", err)
+		} else if err := trace.Start(f); err != nil {
+			log.Error("failed to start runtime trace", "error", err)
+			_ = f.Close()
+		} else {
+			log.Info("runtime trace started", "path", "trace.out")
+			cleanup = func() {
+				trace.Stop()
+				_ = f.Close()
+			}
 		}
-		err = trace.Start(f)
-		defer trace.Stop()
-		if err != nil {
-			return
-		}
-		log.Println("Started tracing")
 	}
 	if opts.DBG_debug {
 		go func() {
-			log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
+			if err := http.ListenAndServe("0.0.0.0:6060", nil); err != nil {
+				log.Warn("debug server failed", "error", err)
+			}
 		}()
 	}
+	return cleanup
 }
 
 func readCentralConfig(centralPath, nodePath string, tunables *state.RouterTunables) (*state.CentralCfg, error) {
@@ -106,13 +113,7 @@ func fatal(msg string, err error) {
 }
 
 // Bootstrap provides startup logic in a real environment
-func Bootstrap(centralPath, nodePath, logPath string, verbose bool, opts state.NylonOptions) {
-	setupDebugging(opts)
-	level := slog.LevelInfo
-	if verbose {
-		level = slog.LevelDebug
-	}
-
+func Bootstrap(centralPath, nodePath, logPath string, level slog.Level, opts state.NylonOptions) {
 	tunables := state.DefaultRouterTunables()
 	centralCfg, err := readCentralConfig(centralPath, nodePath, &tunables)
 	if err != nil {
@@ -133,7 +134,35 @@ func Bootstrap(centralPath, nodePath, logPath string, verbose bool, opts state.N
 	if err = state.NodeConfigValidator(centralCfg, nodeCfg); err != nil {
 		fatal("invalid node config", err)
 	}
-	n, err := NewNylon(*centralCfg, *nodeCfg, level, centralPath, nil, opts, nil)
+
+	logger, closer, err := logging.New(logging.Config{
+		Component: "nylon",
+		Node:      string(nodeCfg.Id),
+		Level:     level,
+		JSON:      opts.DBG_log_json,
+		FilePath:  nodeCfg.LogPath,
+	})
+	if err != nil {
+		fatal("failed to initialize logging", err)
+	}
+	defer closer()
+	if cleanup := setupDebugging(logger, opts); cleanup != nil {
+		defer cleanup()
+	}
+
+	logger.Info("starting nylon",
+		"version", buildinfo.Version,
+		"commit", buildinfo.Commit,
+		"node", string(nodeCfg.Id),
+		"interface", nodeCfg.InterfaceName,
+		"central_config", centralPath,
+		"node_config", nodePath,
+		"observability_addr", nodeCfg.ObservabilityAddr,
+		"log_level", level.String(),
+	)
+	logger.Debug("effective tunables", "tunables", tunables)
+
+	n, err := NewNylon(*centralCfg, *nodeCfg, logger, centralPath, nil, opts, nil)
 	if err != nil {
 		fatal("failed to initialize nylon", err)
 	}

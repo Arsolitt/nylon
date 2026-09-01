@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/encodeous/nylon/core"
+	"github.com/encodeous/nylon/internal/logging"
 	"github.com/encodeous/nylon/state"
 	"github.com/spf13/cobra"
 )
@@ -25,7 +29,13 @@ var runCmd = &cobra.Command{
 			isVerbose = true
 		}
 
-		core.Bootstrap(centralPath, nodePath, logPath, isVerbose, opts)
+		flagLevel, _ := cmd.Flags().GetString("log-level")
+		level, err := logging.Resolve(flagLevel, isVerbose)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		core.Bootstrap(centralPath, nodePath, logPath, level, opts)
 	},
 	GroupID: "ny",
 }
@@ -34,6 +44,7 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 
 	runCmd.Flags().BoolP("verbose", "v", false, "Verbose output")
+	runCmd.Flags().String("log-level", "", "Log level: debug|info|warn|error (default info; env NYLON_LOG_LEVEL; -v is a debug alias)")
 	runCmd.Flags().BoolVarP(&opts.DBG_log_probe, "dbg-probe", "p", false, "Write probes to console")
 	runCmd.Flags().BoolVarP(&opts.DBG_log_wireguard, "dbg-wg", "w", false, "Outputs wireguard logs to the console")
 	runCmd.Flags().BoolVarP(&opts.DBG_log_repo_updates, "dbg-repo", "", false, "Outputs repo updates to the console")
