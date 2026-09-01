@@ -5,6 +5,7 @@ After=network-online.target
 [Service]
 ExecStart=/usr/bin/nylon run
 WorkingDirectory=/home/encodeous
+# Environment=NYLON_LOG_LEVEL=info
 
 [Install]
 WantedBy=multi-user.target

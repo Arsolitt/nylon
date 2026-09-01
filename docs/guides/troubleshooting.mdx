@@ -1,0 +1,86 @@
+---
+title: Troubleshooting
+description: Debug a nylon network with log control, diagnostics commands, and metrics.
+sidebar:
+  order: 6
+---
+
+## Control logging
+
+The log level is resolved in this order (first match wins):
+
+1. `--log-level` flag (`debug`, `info`, `warn`, `error`) on `nylon run` and `nylon-lb`.
+2. `NYLON_LOG_LEVEL` environment variable, with the same values.
+3. `-v`/`--verbose`, a shorthand for `debug`.
+4. The default, `info`.
+
+An unknown value in the flag or the environment variable is rejected at startup.
+
+Other output controls:
+
+- `--json` writes JSON records to stderr instead of the default colored text output.
+- `log_path` in `node.yaml` (or `nylon run --log <file>` (`-l`)) additionally writes logs to a file. The file sink is always JSON, one record per line.
+
+To set the level for a systemd service:
+
+```ini title="nylon.service"
+[Service]
+Environment=NYLON_LOG_LEVEL=debug
+```
+
+## Read the logs
+
+Records are structured and attributable: `component` identifies the binary (`nylon`, `nylon-lb`, `nylon-genesis`), `node` carries the node ID, and `module` names the subsystem (`router`, `polyamide`, `ipc`, `dynamic-prefixes`, `prefix-health`, `observability`, `allocator`, `speaker`).
+
+The router logs its decisions with an `event` attribute, at these levels:
+
+| Event | Level | Meaning |
+| --- | --- | --- |
+| `route_inserted`, `route_updated`, `route_retracted`, `route_expired` | Debug | Babel route lifecycle. |
+| `seqno_requested` | Debug | A sequence number was requested from a neighbour. |
+| `major_route_change` | Info | A significant change in the selected route set. |
+| `inconsistent_state` | Warn | The router detected inconsistent state. |
+| `no_endpoint_to_neighbour` | Warn | A neighbour has no usable endpoint. |
+
+At the default `info` level you see topology changes and problems, but not individual route updates — raise the level to `debug` while investigating.
+
+## Collect a snapshot for bug reports
+
+`nylon techinfo` produces a single JSON document on stdout combining the node's full status with a connectivity probe of every neighbour:
+
+```bash
+nylon techinfo -i nylon0
+```
+
+A one-line human summary goes to stderr. Attach the JSON output and a short log excerpt (with `--log-level debug` if possible) to your bug report. The command exits non-zero if the status request fails.
+
+## Inspect a running node
+
+| Command | Purpose |
+| --- | --- |
+| `nylon status` | Neighbours and selected routes (`--routes` for route tables, `--full` for routing internals). |
+| `nylon probe <peer>` | Probe connectivity to one peer (`--timeout`, default `2s`). |
+| `nylon trace` | Live stream of routing decisions. |
+
+All three accept `-i/--interface` (default `nylon`) and `--json` for machine-readable output.
+
+## Debug flags
+
+Flags for `nylon run`:
+
+- `--dbg-perf` starts a debug server on port `6060` with the performance web UI and `pprof` endpoints.
+- `--dbg-trace` writes a Go runtime trace to `trace.out`; inspect it later with `go tool trace`.
+- `--dbg-wg` enables WireGuard (polyamide) logs. They are emitted at info level, so they appear at the default log level.
+
+## Metrics quick pointers
+
+- Alert when a peer goes silent: `time() - nylon_wireguard_peer_latest_handshake_seconds > 300`. See [Observability](/guides/observability) for the full expression and its caveats.
+- Check hot-loop health with the `nylon_perf_*` gauges: dispatch latency and batch size quantiles, plus 10-second windowed send/receive rates.
+
+## Debugging nylon-lb
+
+The load balancer uses the same log controls (`--log-level`, `NYLON_LOG_LEVEL`, `-v`, `--json`), and Kubernetes client-go/klog messages are routed into the same log.
+
+- `nylon_lb_leader` is `1` on the instance currently holding the leader lease.
+- `/healthz` is a liveness probe: it returns 200 once the process is serving. `/readyz` returns 503 until the informer caches have synced — point your readiness probe at `/readyz`.
+- `/metrics` exposes leader, allocation, and announce counters and gauges for scraping.
