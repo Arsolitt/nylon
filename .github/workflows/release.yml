@@ -25,6 +25,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           goos: ${{ matrix.goos }}
+          project_path: cmd/nylon
           goarch: ${{ matrix.goarch }}
           asset_name: nylon-${{ matrix.goos }}-${{ matrix.goarch }}
   release-windows:
@@ -47,6 +48,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           goos: ${{ matrix.goos }}
+          project_path: cmd/nylon
           goarch: ${{ matrix.goarch }}
           extra_files: 'wintun/bin/${{ matrix.goarch }}/wintun.dll'
           asset_name: nylon-${{ matrix.goos }}-${{ matrix.goarch }}

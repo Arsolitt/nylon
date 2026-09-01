@@ -23,7 +23,7 @@ go.work.sum
 .env
 
 .DS_Store
-nylon
+/bin/
 
 central.key
 central.yaml

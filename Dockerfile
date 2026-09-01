@@ -2,7 +2,7 @@ FROM golang:1.26.3 AS builder
 WORKDIR /src
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w" -o /nylon .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w" -o /nylon ./cmd/nylon
 
 FROM scratch
 
