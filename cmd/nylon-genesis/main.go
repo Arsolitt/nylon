@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	amnezigo "github.com/Arsolitt/amnezigo"
+	"github.com/encodeous/nylon/internal/buildinfo"
+	"github.com/encodeous/nylon/internal/logging"
 	"github.com/encodeous/nylon/state"
 	"github.com/goccy/go-yaml"
 	"github.com/spf13/cobra"
@@ -34,6 +36,7 @@ func newRootCmd() *cobra.Command {
 		peerIds    string
 		compat     bool
 		outPath    string
+		verbose    bool
 	)
 
 	cmd := &cobra.Command{
@@ -47,9 +50,10 @@ validated before anything is emitted.
 --compat emits the fixed vanilla-compat profile (H1..H4 pinned to the
 WireGuard message types, no padding/junk/I) for the version-skew window
 where plain-WireGuard peers must interoperate.`,
+		Version:      buildinfo.Version,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(presetName, random, protocol, mtu, peerIds, compat, outPath)
+			return run(presetName, random, protocol, mtu, peerIds, compat, outPath, verbose)
 		},
 	}
 
@@ -60,6 +64,7 @@ where plain-WireGuard peers must interoperate.`,
 	cmd.Flags().StringVar(&peerIds, "peers", "", "comma-separated node ids to generate per-node I1-I5 for")
 	cmd.Flags().BoolVar(&compat, "compat", false, "emit the fixed vanilla-compat profile (ignores preset/protocol)")
 	cmd.Flags().StringVar(&outPath, "out", "", "write to FILE instead of stdout")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "log debug detail to stderr")
 
 	return cmd
 }
@@ -76,7 +81,16 @@ type outputFragment struct {
 	Routers []peerFragment    `yaml:"routers,omitempty"`
 }
 
-func run(presetName string, random bool, protocol string, mtu int, peerIds string, compat bool, outPath string) error {
+func run(presetName string, random bool, protocol string, mtu int, peerIds string, compat bool, outPath string, verbose bool) error {
+	level, err := logging.Resolve("", verbose)
+	if err != nil {
+		return err
+	}
+	log, closer, err := logging.New(logging.Config{Component: "nylon-genesis", Level: level, JSON: false})
+	if err != nil {
+		return err
+	}
+	defer closer()
 	if !slices.Contains(amnezigo.ListProtocols(), protocol) {
 		return fmt.Errorf("unknown protocol %q; valid: %v", protocol, amnezigo.ListProtocols())
 	}
@@ -128,6 +142,7 @@ func run(presetName string, random bool, protocol string, mtu int, peerIds strin
 		if err := validateGenerated(&profile, server, peers, protocol); err != nil {
 			return err
 		}
+		log.Debug("validated profile")
 
 		peerParams = make(map[string]*state.ObfPeerParams, len(peers))
 		for _, id := range peers {
@@ -140,6 +155,7 @@ func run(presetName string, random bool, protocol string, mtu int, peerIds strin
 				return fmt.Errorf("peer %s: %w", id, err)
 			}
 			peerParams[id] = params
+			log.Debug("peer profile", "peer", id, "protocol", params.Protocol, "I1", i1, "I2", i2, "I3", i3, "I4", i4, "I5", i5)
 		}
 	}
 
@@ -151,6 +167,12 @@ func run(presetName string, random bool, protocol string, mtu int, peerIds strin
 		}
 		frag.Routers = append(frag.Routers, pf)
 	}
+
+	output := outPath
+	if output == "" {
+		output = "stdout"
+	}
+	log.Info("generated profile", "preset", presetName, "protocol", protocol, "mtu", mtu, "peers", len(peers), "output", output)
 
 	data, err := yaml.Marshal(frag)
 	if err != nil {

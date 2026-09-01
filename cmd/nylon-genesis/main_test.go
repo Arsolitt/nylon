@@ -20,7 +20,7 @@ import (
 func generate(t *testing.T, presetName string, random bool, protocol string, mtu int, peerIds string, compat bool) state.CentralCfg {
 	t.Helper()
 	outPath := filepath.Join(t.TempDir(), "out.yaml")
-	if err := run(presetName, random, protocol, mtu, peerIds, compat, outPath); err != nil {
+	if err := run(presetName, random, protocol, mtu, peerIds, compat, outPath, false); err != nil {
 		t.Fatalf("run(preset=%q, random=%v, protocol=%q, mtu=%d, peers=%q, compat=%v) failed: %v",
 			presetName, random, protocol, mtu, peerIds, compat, err)
 	}
@@ -148,7 +148,7 @@ func TestGenerateRandomProfileValidates(t *testing.T) {
 
 func TestGenerateUnknownProtocolFails(t *testing.T) {
 	outPath := filepath.Join(t.TempDir(), "out.yaml")
-	err := run("standard-1420", false, "smtp", 1420, "node-a", false, outPath)
+	err := run("standard-1420", false, "smtp", 1420, "node-a", false, outPath, false)
 	if err == nil {
 		t.Fatal("expected an error for unknown protocol, got nil")
 	}
