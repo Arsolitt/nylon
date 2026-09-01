@@ -1,0 +1,41 @@
+# RBAC for nylon-lb: Service status writes, EndpointSlice reads, leader-election
+# Lease, and event emission. Apply before daemonset.yaml.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nylon-lb
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nylon-lb
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services/status"]
+    verbs: ["update"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nylon-lb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nylon-lb
+subjects:
+  - kind: ServiceAccount
+    name: nylon-lb
+    namespace: kube-system

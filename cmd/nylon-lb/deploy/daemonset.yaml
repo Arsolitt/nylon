@@ -1,0 +1,65 @@
+# nylon-lb DaemonSet: one speaker replica per node (allocated IPs are bound on
+# lo and announced via prefixes.d on every node for externalTrafficPolicy=Cluster).
+# Apply rbac.yaml first.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nylon-lb
+  namespace: kube-system
+  labels:
+    app: nylon-lb
+spec:
+  selector:
+    matchLabels:
+      app: nylon-lb
+  template:
+    metadata:
+      labels:
+        app: nylon-lb
+    spec:
+      serviceAccountName: nylon-lb
+      # Run on every node, including control-plane.
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+      containers:
+        - name: nylon-lb
+          # Replace with your built image.
+          image: ghcr.io/encodeous/nylon/nylon-lb:latest
+          imagePullPolicy: IfNotPresent
+          # NET_ADMIN for the lo address binding; root because netlink needs it.
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              add: ["NET_ADMIN"]
+          # One pool per cluster: every node must use the same --pool, with the
+          # same --exclude for reserved addresses (e.g. the stand probe IP).
+          args:
+            - --pool=10.110.0.0/24
+            - --exclude=10.110.0.1
+          env:
+            # The container hostname is the pod name, not the node name; pass
+            # --node-name=$(NODE_NAME) in args when running with
+            # externalTrafficPolicy=Local.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: prefixes
+              mountPath: /etc/nylon/prefixes.d
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9633
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9633
+      volumes:
+        - name: prefixes
+          hostPath:
+            path: /etc/nylon/prefixes.d
+            type: DirectoryOrCreate
