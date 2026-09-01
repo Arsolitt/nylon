@@ -93,11 +93,20 @@ func (n *Nylon) BroadcastRequestSeqno(src state.Source, seqno uint16, hopCnt uin
 	}
 }
 
+// RouterEvent records a routing event at a level based on its severity:
+// major route changes are notable but expected (Info), inconsistent state or
+// a neighbour without any usable endpoint warn, and per-route bookkeeping
+// stays at Debug.
 func (n *Nylon) RouterEvent(event string, desc string, args ...any) {
-	if event == log.EventNoEndpointToNeigh {
-		return // ignored
+	args = append([]any{"event", event}, args...)
+	switch event {
+	case log.EventMajorRouteChange:
+		n.router.log.Info(desc, args...)
+	case log.EventInconsistentState, log.EventNoEndpointToNeigh:
+		n.router.log.Warn(desc, args...)
+	default:
+		n.router.log.Debug(desc, args...)
 	}
-	n.router.log.Debug(desc, append([]any{"event", event}, args...)...)
 }
 
 func (n *Nylon) UpdateNeighbour(neigh state.NodeId) {
@@ -270,11 +279,19 @@ func (n *Nylon) ComputeSysRouteTable() []netip.Prefix {
 
 	final := netipx.IPSetBuilder{}
 	final.AddSet(state.MakeSet(prefixes))
-	res, _ := excludes.IPSet()
-	final.RemoveSet(res)
-
-	res, _ = final.IPSet()
-	return res.Prefixes()
+	excluded, err := excludes.IPSet()
+	if err != nil {
+		// fail open: install the unfiltered set rather than dropping routes
+		n.router.log.Warn("computing ip set", "error", err)
+	} else {
+		final.RemoveSet(excluded)
+	}
+	computed, err := final.IPSet()
+	if err != nil {
+		n.router.log.Warn("computing ip set", "error", err)
+		return prefixes
+	}
+	return computed.Prefixes()
 }
 
 func (n *Nylon) updatePassiveClient(prefix state.PrefixHealthWrapper, node state.NodeId, passiveHold bool) {

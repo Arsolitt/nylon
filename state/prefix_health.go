@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digineo/go-ping"
+	"github.com/encodeous/nylon/log"
 )
 
 // PrefixHealthConfig is immutable configuration stored in CentralCfg.
@@ -192,7 +193,7 @@ func (p *pingPrefixHealthMonitor) run() {
 		pinger.Close()
 		if err != nil {
 			p.lastMetric.Store(INF)
-			p.log.Debug("prefix healthcheck failed", "prefix", p.prefix.String(), "addr", p.addr.String(), "error", err)
+			p.log.Warn("prefix healthcheck failed", "prefix", p.prefix.String(), "addr", p.addr.String(), "error", err)
 			continue
 		}
 		p.lastMetric.Store(DurationToMetric(rtt))
@@ -214,7 +215,7 @@ func checkHTTPPrefix(log *slog.Logger, client *http.Client, prefix netip.Prefix,
 	startTime := time.Now()
 	resp, err := client.Get(url)
 	if err != nil {
-		log.Debug("prefix healthcheck failed", "prefix", prefix.String(), "url", url, "error", err)
+		log.Warn("prefix healthcheck failed", "prefix", prefix.String(), "url", url, "error", err)
 		return INF
 	}
 	_, drainErr := io.Copy(io.Discard, resp.Body)
@@ -226,7 +227,7 @@ func checkHTTPPrefix(log *slog.Logger, client *http.Client, prefix netip.Prefix,
 		log.Debug("failed to close prefix healthcheck response", "prefix", prefix.String(), "url", url, "error", closeErr)
 	}
 	if resp.StatusCode != http.StatusOK {
-		log.Debug("prefix healthcheck failed", "prefix", prefix.String(), "url", url, "status", resp.StatusCode)
+		log.Warn("prefix healthcheck failed", "prefix", prefix.String(), "url", url, "status", resp.StatusCode)
 		return INF
 	}
 	return DurationToMetric(time.Since(startTime))
@@ -328,8 +329,10 @@ func (p PrefixHealthWrapper) SameConfig(other PrefixHealthWrapper, tunables *Rou
 	return p.PrefixHealth.sameConfig(other.PrefixHealth, tunables)
 }
 
-func (p PrefixHealthWrapper) NewMonitor(log *slog.Logger, tunables *RouterTunables, resolver *DNSResolver) PrefixHealthMonitor {
-	return p.PrefixHealth.newMonitor(log, tunables, resolver)
+// NewMonitor constructs the runtime monitor for this prefix health config.
+// Monitors log under the "prefix-health" module scope.
+func (p PrefixHealthWrapper) NewMonitor(logger *slog.Logger, tunables *RouterTunables, resolver *DNSResolver) PrefixHealthMonitor {
+	return p.PrefixHealth.newMonitor(logger.With("module", log.ScopeHealth), tunables, resolver)
 }
 
 func (p PrefixHealthWrapper) StaticMetric() (uint32, bool) {

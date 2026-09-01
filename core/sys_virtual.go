@@ -39,9 +39,11 @@ func NewWireGuardDevice(n *Nylon) (dev *device.Device, tunDevice tun.Device, rea
 
 	// setup WireGuard
 	dev = device.NewDevice(tdev, bind, &device.Logger{
+		// Verbosef only fires when DBG_log_wireguard is set; emitting at Info
+		// makes the flag the single gate, visible at the default log level.
 		Verbosef: func(format string, args ...any) {
 			if n.DBG_log_wireguard {
-				wgLog.Debug(fmt.Sprintf(format, args...))
+				wgLog.Info(fmt.Sprintf(format, args...))
 			}
 		},
 		Errorf: func(format string, args ...any) {

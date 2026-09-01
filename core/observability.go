@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
-	"sort"
-	"strconv"
 	"sync"
 	"time"
 
+	"github.com/encodeous/nylon/internal/buildinfo"
+	"github.com/encodeous/nylon/internal/promtext"
+	"github.com/encodeous/nylon/log"
+	"github.com/encodeous/nylon/perf"
 	"github.com/encodeous/nylon/protocol"
 )
 
@@ -33,6 +36,7 @@ func (n *Nylon) startObservability() error {
 	if n.LocalCfg.ObservabilityAddr == "" {
 		return nil
 	}
+	obsLog := n.Log.With("module", log.ScopeObservability)
 
 	listener, err := net.Listen("tcp", n.LocalCfg.ObservabilityAddr)
 	if err != nil {
@@ -41,8 +45,12 @@ func (n *Nylon) startObservability() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", n.handleHealth)
-	mux.HandleFunc("/readyz", n.handleReady)
-	mux.HandleFunc("/metrics", n.handleMetrics)
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		n.handleReady(obsLog, w, r)
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		n.handleMetrics(obsLog, w, r)
+	})
 	mux.HandleFunc("/discovery", n.handleDiscovery)
 
 	obs := &observabilityServer{
@@ -53,11 +61,11 @@ func (n *Nylon) startObservability() error {
 		},
 	}
 	n.observability = obs
-	n.Log.Info("observability server started", "address", listener.Addr())
+	obsLog.Info("observability server started", "address", listener.Addr())
 
 	go func() {
 		if err := obs.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			n.Log.Error("observability server failed", "error", err)
+			obsLog.Error("observability server failed", "error", err)
 			n.Cancel(fmt.Errorf("observability server failed: %w", err))
 		}
 	}()
@@ -108,27 +116,45 @@ func (n *Nylon) statusSnapshot(ctx context.Context) (*protocol.StatusResponse, e
 	}
 }
 
-func (n *Nylon) handleReady(w http.ResponseWriter, r *http.Request) {
+func (n *Nylon) handleReady(logger *slog.Logger, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), observabilityTimeout)
 	defer cancel()
 	if _, err := n.statusSnapshot(ctx); err != nil {
+		// only surface state transitions, not every failed probe
+		if n.readyLast.Swap(false) {
+			logger.Warn("readiness failed", "error", err)
+		} else {
+			logger.Debug("readiness failed", "error", err)
+		}
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
+	}
+	if !n.readyLast.Swap(true) {
+		logger.Info("readiness recovered")
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, "ok\n")
 }
 
-func (n *Nylon) handleMetrics(w http.ResponseWriter, r *http.Request) {
+func (n *Nylon) handleMetrics(logger *slog.Logger, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), observabilityTimeout)
 	defer cancel()
 	status, err := n.statusSnapshot(ctx)
 	if err != nil {
+		logger.Debug("metrics snapshot failed", "error", err)
 		http.Error(w, "metrics unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	writePrometheusMetrics(w, status)
+	perfMetrics := promtext.New(w)
+	for _, sample := range perf.Snapshot() {
+		perfMetrics.Metric(sample.Name, sample.Help, sample.Type, sample.Labels, sample.Value)
+	}
+	perfMetrics.Metric("nylon_build_info", "Nylon build information.", "gauge", map[string]string{
+		"version": buildinfo.Version,
+		"commit":  buildinfo.Commit,
+	}, 1)
 }
 
 func (n *Nylon) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
@@ -162,37 +188,37 @@ func (n *Nylon) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
 }
 
 func writePrometheusMetrics(w io.Writer, status *protocol.StatusResponse) {
-	metrics := metricWriter{w: w, seen: make(map[string]struct{})}
+	metrics := promtext.New(w)
 	node := status.GetNode()
 	stats := node.GetStats()
-	metrics.metric("nylon_up", "Whether the nylon daemon is ready.", "gauge", nil, 1)
-	metrics.metric("nylon_config_timestamp_seconds", "Unix timestamp of the active central configuration.", "gauge", nil, float64(node.ConfigTimestamp/int64(time.Second)))
-	metrics.metric("nylon_neighbours", "Number of configured neighbours.", "gauge", nil, float64(stats.NeighbourCount))
-	metrics.metric("nylon_active_endpoints", "Number of active peer endpoints.", "gauge", nil, float64(stats.ActiveEndpointCount))
-	metrics.metric("nylon_selected_routes", "Number of selected Babel routes.", "gauge", nil, float64(stats.SelectedRouteCount))
-	metrics.metric("nylon_advertised_prefixes", "Number of locally advertised prefixes.", "gauge", nil, float64(stats.AdvertisedPrefixCount))
-	metrics.metric("nylon_wireguard_transmit_bytes_total", "WireGuard bytes transmitted by this node.", "counter", nil, float64(stats.TxBytes))
-	metrics.metric("nylon_wireguard_receive_bytes_total", "WireGuard bytes received by this node.", "counter", nil, float64(stats.RxBytes))
+	metrics.Metric("nylon_up", "Whether the nylon daemon is ready.", "gauge", nil, 1)
+	metrics.Metric("nylon_config_timestamp_seconds", "Unix timestamp of the active central configuration.", "gauge", nil, float64(node.ConfigTimestamp/int64(time.Second)))
+	metrics.Metric("nylon_neighbours", "Number of configured neighbours.", "gauge", nil, float64(stats.NeighbourCount))
+	metrics.Metric("nylon_active_endpoints", "Number of active peer endpoints.", "gauge", nil, float64(stats.ActiveEndpointCount))
+	metrics.Metric("nylon_selected_routes", "Number of selected Babel routes.", "gauge", nil, float64(stats.SelectedRouteCount))
+	metrics.Metric("nylon_advertised_prefixes", "Number of locally advertised prefixes.", "gauge", nil, float64(stats.AdvertisedPrefixCount))
+	metrics.Metric("nylon_wireguard_transmit_bytes_total", "WireGuard bytes transmitted by this node.", "counter", nil, float64(stats.TxBytes))
+	metrics.Metric("nylon_wireguard_receive_bytes_total", "WireGuard bytes received by this node.", "counter", nil, float64(stats.RxBytes))
 
 	for _, neigh := range status.Neighbours {
 		labels := map[string]string{"peer": neigh.PeerId}
 		wg := neigh.GetWireguard()
-		metrics.metric("nylon_wireguard_peer_transmit_bytes_total", "WireGuard bytes transmitted to a peer.", "counter", labels, float64(wg.TxBytes))
-		metrics.metric("nylon_wireguard_peer_receive_bytes_total", "WireGuard bytes received from a peer.", "counter", labels, float64(wg.RxBytes))
+		metrics.Metric("nylon_wireguard_peer_transmit_bytes_total", "WireGuard bytes transmitted to a peer.", "counter", labels, float64(wg.TxBytes))
+		metrics.Metric("nylon_wireguard_peer_receive_bytes_total", "WireGuard bytes received from a peer.", "counter", labels, float64(wg.RxBytes))
 		handshake := float64(0)
 		if wg.LatestHandshakeUnix > 0 {
 			handshake = float64(wg.LatestHandshakeUnix / int64(time.Second))
 		}
-		metrics.metric("nylon_wireguard_peer_latest_handshake_seconds", "Unix time of the latest WireGuard handshake.", "gauge", labels, handshake)
+		metrics.Metric("nylon_wireguard_peer_latest_handshake_seconds", "Unix time of the latest WireGuard handshake.", "gauge", labels, handshake)
 		for _, endpoint := range neigh.Endpoints {
 			epLabels := map[string]string{"peer": neigh.PeerId, "endpoint": endpoint.Address}
 			active := float64(0)
 			if endpoint.Active {
 				active = 1
 			}
-			metrics.metric("nylon_endpoint_active", "Whether a peer endpoint is active.", "gauge", epLabels, active)
-			metrics.metric("nylon_endpoint_metric", "Current Babel endpoint metric.", "gauge", epLabels, float64(endpoint.Metric))
-			metrics.metric("nylon_endpoint_rtt_seconds", "Filtered endpoint round-trip time.", "gauge", epLabels, float64(endpoint.FilteredRttNs)/float64(time.Second))
+			metrics.Metric("nylon_endpoint_active", "Whether a peer endpoint is active.", "gauge", epLabels, active)
+			metrics.Metric("nylon_endpoint_metric", "Current Babel endpoint metric.", "gauge", epLabels, float64(endpoint.Metric))
+			metrics.Metric("nylon_endpoint_rtt_seconds", "Filtered endpoint round-trip time.", "gauge", epLabels, float64(endpoint.FilteredRttNs)/float64(time.Second))
 		}
 	}
 	for _, route := range status.GetRoutes().GetSelected() {
@@ -202,35 +228,6 @@ func writePrometheusMetrics(w io.Writer, status *protocol.StatusResponse) {
 			"router":   pub.GetSource().GetNodeId(),
 			"next_hop": route.GetNh(),
 		}
-		metrics.metric("nylon_route_metric", "Metric of a selected Babel route.", "gauge", labels, float64(pub.GetFd().GetMetric()))
+		metrics.Metric("nylon_route_metric", "Metric of a selected Babel route.", "gauge", labels, float64(pub.GetFd().GetMetric()))
 	}
-}
-
-type metricWriter struct {
-	w    io.Writer
-	seen map[string]struct{}
-}
-
-func (m *metricWriter) metric(name, help, metricType string, labels map[string]string, value float64) {
-	if _, ok := m.seen[name]; !ok {
-		_, _ = fmt.Fprintf(m.w, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, metricType)
-		m.seen[name] = struct{}{}
-	}
-	_, _ = io.WriteString(m.w, name)
-	if len(labels) != 0 {
-		keys := make([]string, 0, len(labels))
-		for key := range labels {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		_, _ = io.WriteString(m.w, "{")
-		for i, key := range keys {
-			if i != 0 {
-				_, _ = io.WriteString(m.w, ",")
-			}
-			_, _ = fmt.Fprintf(m.w, `%s=%s`, key, strconv.Quote(labels[key]))
-		}
-		_, _ = io.WriteString(m.w, "}")
-	}
-	_, _ = fmt.Fprintf(m.w, " %s\n", strconv.FormatFloat(value, 'f', -1, 64))
 }

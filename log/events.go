@@ -2,8 +2,14 @@ package log
 
 const (
 	// Scopes
-	ScopeRouter    = "router"
-	ScopePolyamide = "polyamide"
+	ScopeRouter        = "router"
+	ScopePolyamide     = "polyamide"
+	ScopeIPC           = "ipc"
+	ScopePrefixes      = "dynamic-prefixes"
+	ScopeHealth        = "prefix-health"
+	ScopeObservability = "observability"
+	ScopeAllocator     = "allocator"
+	ScopeSpeaker       = "speaker"
 )
 
 const (

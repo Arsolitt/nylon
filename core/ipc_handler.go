@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/encodeous/nylon/log"
 	"github.com/encodeous/nylon/polyamide/device"
 	"github.com/encodeous/nylon/protocol"
 	"github.com/encodeous/nylon/state"
@@ -45,6 +46,10 @@ func errResponse(msg string) *protocol.IpcResponse {
 	return &protocol.IpcResponse{Ok: false, Error: msg}
 }
 
+// errUnmarshalRequest marks requests that arrived but could not be decoded;
+// transport errors (e.g. the client hanging up) are returned unwrapped.
+var errUnmarshalRequest = errors.New("unmarshal request")
+
 func readRequest(rw *bufio.ReadWriter) (*protocol.IpcRequest, error) {
 	line, err := rw.ReadBytes('\n')
 	if err != nil {
@@ -52,29 +57,38 @@ func readRequest(rw *bufio.ReadWriter) (*protocol.IpcRequest, error) {
 	}
 	req := &protocol.IpcRequest{}
 	if err := pjUnmarshal.Unmarshal(line, req); err != nil {
-		return nil, fmt.Errorf("unmarshal request: %w", err)
+		return nil, fmt.Errorf("%w: %w", errUnmarshalRequest, err)
 	}
 	return req, nil
 }
 
 func HandleNylonIPC(n *Nylon, rw *bufio.ReadWriter) error {
+	ipcLog := n.Log.With("module", log.ScopeIPC)
+	start := time.Now()
 	req, err := readRequest(rw)
 	if err != nil {
+		if errors.Is(err, errUnmarshalRequest) {
+			ipcLog.Warn("ipc request failed", "method", "unknown", "error", err)
+		}
 		if err := writeResponse(rw, errResponse(err.Error())); err != nil {
 			return err
 		}
 		return device.ErrIPCStatusHandled
 	}
+	m := ipcMethod(req)
 
 	// trace is blocking, so we dont dispatch
 	if _, ok := req.Request.(*protocol.IpcRequest_Trace); ok {
-		return handleTrace(n, rw)
+		err := handleTrace(n, rw)
+		ipcLog.Debug("ipc request", "method", m, "dur", time.Since(start))
+		return err
 	}
 	if _, ok := req.Request.(*protocol.IpcRequest_Probe); ok {
 		resp := handleIPCProbe(n, req.GetProbe())
 		if err := writeResponse(rw, resp); err != nil {
 			return err
 		}
+		ipcLog.Debug("ipc request", "method", m, "dur", time.Since(start))
 		return device.ErrIPCStatusHandled
 	}
 
@@ -94,6 +108,7 @@ func HandleNylonIPC(n *Nylon, rw *bufio.ReadWriter) error {
 	})
 
 	var resp *protocol.IpcResponse
+	timedOut := false
 	select {
 	case resp = <-done:
 	case <-n.Context.Done():
@@ -101,11 +116,33 @@ func HandleNylonIPC(n *Nylon, rw *bufio.ReadWriter) error {
 	case <-time.After(n.IPCDispatchTimeout):
 		// nylon is too busy to handle IPC requests
 		resp = errResponse("timed out waiting for dispatch")
+		timedOut = true
 	}
 	if err := writeResponse(rw, resp); err != nil {
 		return err
 	}
+	if timedOut {
+		ipcLog.Warn("ipc dispatch timed out", "method", m)
+	} else {
+		ipcLog.Debug("ipc request", "method", m, "dur", time.Since(start))
+	}
 	return device.ErrIPCStatusHandled
+}
+
+// ipcMethod names the IPC method carried by req, for log records.
+func ipcMethod(req *protocol.IpcRequest) string {
+	switch req.Request.(type) {
+	case *protocol.IpcRequest_Status:
+		return "status"
+	case *protocol.IpcRequest_Probe:
+		return "probe"
+	case *protocol.IpcRequest_Reload:
+		return "reload"
+	case *protocol.IpcRequest_Trace:
+		return "trace"
+	default:
+		return "unknown"
+	}
 }
 
 func handleStatus(n *Nylon, req *protocol.StatusRequest) *protocol.IpcResponse {

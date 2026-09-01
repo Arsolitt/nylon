@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/encodeous/nylon/log"
 	"github.com/encodeous/nylon/state"
 	"github.com/fsnotify/fsnotify"
 )
@@ -135,7 +136,7 @@ func parseDynDelay(value string) (*time.Duration, error) {
 func scanDynamicPrefixDir(log *slog.Logger, dir string) []state.PrefixHealthWrapper {
 	dirents, err := os.ReadDir(dir)
 	if err != nil {
-		log.Error("cannot read dynamic prefixes dir", "dir", dir, "err", err.Error())
+		log.Error("cannot read dynamic prefixes dir", "dir", dir, "error", err)
 		return nil
 	}
 	var result []state.PrefixHealthWrapper
@@ -146,12 +147,12 @@ func scanDynamicPrefixDir(log *slog.Logger, dir string) []state.PrefixHealthWrap
 		}
 		data, err := os.ReadFile(filepath.Join(dir, dirent.Name()))
 		if err != nil {
-			log.Error("cannot read dynamic prefix file", "file", dirent.Name(), "err", err.Error())
+			log.Error("cannot read dynamic prefix file", "file", dirent.Name(), "error", err)
 			continue
 		}
 		entries, errs := parseDynamicPrefixFile(dirent.Name(), data)
 		for _, parseErr := range errs {
-			log.Error("invalid dynamic prefix file", "err", parseErr.Error())
+			log.Error("invalid dynamic prefix file", "error", parseErr)
 		}
 		for _, entry := range entries {
 			prefix := entry.GetPrefix()
@@ -170,7 +171,7 @@ func scanDynamicPrefixDir(log *slog.Logger, dir string) []state.PrefixHealthWrap
 // loadDynamicPrefixesDir rescans the dynamic prefixes directory into
 // n.dynamicPrefixes.
 func (n *Nylon) loadDynamicPrefixesDir() {
-	n.dynamicPrefixes = scanDynamicPrefixDir(n.Log, n.LocalCfg.DynamicPrefixesDir)
+	n.dynamicPrefixes = scanDynamicPrefixDir(n.Log.With("module", log.ScopePrefixes), n.LocalCfg.DynamicPrefixesDir)
 }
 
 // injectDynamicPrefixes appends the local dynamic prefixes to the local
@@ -188,7 +189,7 @@ func (n *Nylon) injectDynamicPrefixes(cfg *state.CentralCfg) {
 	for _, entry := range n.dynamicPrefixes {
 		prefix := entry.GetPrefix()
 		if _, ok := central[prefix]; ok {
-			n.Log.Error("dynamic prefix conflicts with central config; rejecting entry", "prefix", prefix.String())
+			n.Log.With("module", log.ScopePrefixes).Error("dynamic prefix conflicts with central config; rejecting entry", "prefix", prefix.String())
 			continue
 		}
 		central[prefix] = struct{}{}
@@ -202,17 +203,18 @@ func (n *Nylon) injectDynamicPrefixes(cfg *state.CentralCfg) {
 // when the nylon context is cancelled, the watched directory is removed, or
 // the watcher cannot be created (design §4.5).
 func (n *Nylon) watchDynamicPrefixes(dir string) {
+	dpLog := n.Log.With("module", log.ScopePrefixes)
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		n.Log.Error("cannot create dynamic prefixes watcher; feature disabled", "err", err.Error())
+		dpLog.Error("cannot create dynamic prefixes watcher; feature disabled", "error", err)
 		return
 	}
 	defer watcher.Close()
 	if err := watcher.Add(dir); err != nil {
-		n.Log.Error("cannot watch dynamic prefixes dir; feature disabled", "dir", dir, "err", err.Error())
+		dpLog.Error("cannot watch dynamic prefixes dir; feature disabled", "dir", dir, "error", err)
 		return
 	}
-	n.Log.Info("watching dynamic prefixes dir", "dir", dir)
+	dpLog.Info("watching dynamic prefixes dir", "dir", dir)
 
 	var timer *time.Timer
 	defer func() {
@@ -234,7 +236,7 @@ func (n *Nylon) watchDynamicPrefixes(dir string) {
 				n.loadDynamicPrefixesDir()
 				if n.centralCfgPristine != nil {
 					if _, err := n.ApplyCentralConfig(n.centralCfgPristine); err != nil {
-						n.Log.Warn("dynamic prefix re-apply incomplete; will retry on next event", "err", err.Error())
+						dpLog.Warn("dynamic prefix re-apply incomplete; will retry on next event", "error", err)
 					}
 				}
 				return nil // never cancels the main loop
@@ -244,7 +246,7 @@ func (n *Nylon) watchDynamicPrefixes(dir string) {
 				return
 			}
 			if event.Has(fsnotify.Remove) && filepath.Clean(event.Name) == filepath.Clean(dir) {
-				n.Log.Error("dynamic prefixes dir removed; watcher stopped", "dir", dir)
+				dpLog.Error("dynamic prefixes dir removed; watcher stopped", "dir", dir)
 				return
 			}
 			if timer != nil {
@@ -255,7 +257,7 @@ func (n *Nylon) watchDynamicPrefixes(dir string) {
 			if !ok {
 				return
 			}
-			n.Log.Error("dynamic prefixes watcher error", "err", err.Error())
+			dpLog.Error("dynamic prefixes watcher error", "error", err)
 		}
 	}
 }

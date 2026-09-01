@@ -232,7 +232,7 @@ func (n *Nylon) probeLinks(active bool) error {
 			if ep.IsActive() == active {
 				err := n.Probe(neigh.Id, ep.AsNylonEndpoint())
 				if err != nil {
-					n.Log.Debug("probe failed", "err", err.Error())
+					n.Log.Debug("probe failed", "error", err)
 				}
 			}
 		}
@@ -266,7 +266,7 @@ func (n *Nylon) probeNew() error {
 				continue
 			}
 			if err := n.Probe(peer, dpl); err != nil {
-				//n.Log.Debug("discovery probe failed", "err", err.Error())
+				n.Log.Debug("discovery probe failed", "peer", peer, "address", dpl.Address, "error", err)
 			}
 		}
 	}
