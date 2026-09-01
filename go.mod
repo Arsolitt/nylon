@@ -34,6 +34,11 @@ require (
 require (
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/google/go-jsonnet v0.22.0 // indirect
+	github.com/vishvananda/netlink v1.3.1 // indirect
+	github.com/vishvananda/netns v0.0.5 // indirect
+	k8s.io/api v0.33.13 // indirect
+	k8s.io/apimachinery v0.33.13 // indirect
+	k8s.io/client-go v0.33.13 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
