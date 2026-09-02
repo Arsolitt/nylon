@@ -12,9 +12,9 @@ Under the hood, nylon implements the [Babel routing protocol (RFC 8966)](https:/
 
 - **Multi-hop Routing**: Traffic flows through the lowest-latency path across your mesh. Unlike Tailscale, Nebula, or ZeroTier, nodes don't need to be directly reachable from each other. Nylon forwards through intermediate hops automatically.
 - **No Coordination Server**: No SaaS dependency, no single control-plane. Nodes exchange routes directly over the same WireGuard tunnel that carries your data.
-- **Single Binary, Single Port**: One statically-linked binary, one UDP port (`57175`), one YAML config. That's it.
-- **WireGuard Client Compatibility**: Connect stock WireGuard clients (iOS, Android, Windows) to the mesh with zero extra software. Mobile clients roam between gateways seamlessly.
-- **Native WireGuard Speeds**: Data-plane runs entirely in `wireguard-go` (polyamide), capable of 10+ Gbps throughput.
+- **Single Daemon Binary, Single Port**: One statically-linked daemon binary, one UDP port (`57175`), one YAML config — that's all a node runs. Optional companion tools ship separately: `nylon-lb` (anycast LoadBalancer VIPs) and `nylon-genesis` (mesh config generation).
+- **WireGuard Client Compatibility**: On meshes running the vanilla compatibility profile, stock WireGuard clients (iOS, Android, Windows) join with zero extra software, and mobile clients roam between gateways seamlessly. Obfuscated (AmneziaWG) profiles change the handshake format, so stock clients cannot connect to obfuscated nodes — see [Traffic Obfuscation](/guides/obfuscation).
+- **Native WireGuard Speeds**: Data-plane runs entirely in `wireguard-go` (polyamide), so forwarded traffic stays on the WireGuard data path with no extra proxy hop.
 
 ## Comparison
 
@@ -22,12 +22,14 @@ Under the hood, nylon implements the [Babel routing protocol (RFC 8966)](https:/
 | :-------------------- | :--------------------------------------------- | :--------------------------------------- | :---------------------- | :------------------------------------ |
 | **Topology**          | **Partial mesh: nodes forward for each other** | Full mesh (every pair needs a tunnel)    | Full mesh               | Partial mesh (manual setup)           |
 | **Routing**           | **Latency-aware, automatic multi-hop**         | No routing (relay only, no optimization) | No routing              | Yes (depends on daemon)               |
-| **Self-healing**      | **Yes, reroutes in \<10s**                     | Relies on coordination server            | No automatic failover   | Yes (depends on daemon)               |
+| **Self-healing**      | **Yes — mesh links heal in seconds**           | Relies on coordination server            | No automatic failover   | Yes (depends on daemon)               |
 | **Coordination**      | **None required (fully in-band)**              | Centralized (SaaS/Headscale)             | Lighthouse servers      | Manual (out-of-band protocol)         |
 | **WireGuard Clients** | **Stock iOS/Android/Windows clients work**     | Tailscale client only                    | Nebula client only      | Manual configuration                  |
 | **NAT Traversal**     | Port forward or public relay node              | **STUN/ICE/DERP (best-in-class)**        | Public lighthouse nodes | Manual                                |
 | **Configuration**     | Central YAML file                              | Web Dashboard / SSO                      | Certificates & CA       | Multiple configs + network namespaces |
 | **License**           | Apache 2.0                                     | Proprietary SaaS / BSD-3 client          | MIT                     | Various                               |
+
+Healing times depend on what failed. Measured in nylon's proof-of-concept testing: a broken mesh link heals in about **3 seconds**. Routes announced through dynamic prefix announcements (for example, Kubernetes pod CIDRs) converge in **20–25 seconds** — the route lags the mesh heal while Babel resolves the sequence-number request cycle. And when the original link comes back, restoring the direct path can take a couple of minutes (**102 s** observed) while Babel ages the stale route.
 
 :::caution[Encryption Model]
 Nylon uses WireGuard's encryption **hop-by-hop**, not end-to-end. Each link between adjacent nodes is encrypted, but intermediate nodes decrypt and re-encrypt forwarded traffic. This is the same model as DIY WireGuard+Babel setups. If you need end-to-end encryption between every pair of nodes, Tailscale or Nebula may be a better fit.
