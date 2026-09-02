@@ -1,0 +1,136 @@
+---
+title: Traffic Obfuscation
+description: Reshape nylon's WireGuard handshake traffic so DPI cannot fingerprint your mesh.
+sidebar:
+  order: 8
+---
+
+Vanilla WireGuard is easy to recognize on the wire. Every handshake packet starts with a fixed 4-byte message type (1 through 4) and has fixed sizes, so deep packet inspection (DPI) can identify and block WireGuard connections even though their content is encrypted. Nylon's obfuscation layer — wire-compatible with the AmneziaWG 2.0 format — lets you reshape that traffic so the mesh no longer looks like WireGuard.
+
+Obfuscation changes the shape of handshake packets:
+
+- **Junk packets** — meaningless packets sent before a handshake; receivers discard them without validating them.
+- **Custom type words** — each handshake message carries a type word drawn from a range you choose instead of the fixed 1–4.
+- **Custom padding** — each handshake message type is padded to a size you choose.
+- **Protocol templates** — initiation packets can be laid out to imitate another protocol such as QUIC, so a packet capture reads like ordinary application traffic.
+
+Obfuscation does **not** change anything else: the cryptography, the key exchange, and routing are exactly the same as vanilla WireGuard. Only the byte layout of packets on the wire differs.
+
+## Configuration Surface
+
+Obfuscation is configured at two levels in `central.yaml` (see [Configuration Reference](/reference/config) for the full field documentation):
+
+| Level | Fields | Scope |
+| --- | --- | --- |
+| Central `obf` profile | `jc`, `jmin`, `jmax`, `s1`–`s4`, `h1`–`h4` | One shared profile for the whole mesh |
+| Per-node `obf` (`routers[].obf`, `clients[].obf`) | `protocol`, `i1`–`i5` | Sender-local, may differ per node |
+
+A minimal central profile with a per-node QUIC-style template:
+
+```yaml title="central.yaml"
+obf:
+  jc: 5
+  jmin: 250
+  jmax: 800
+  s1: 32
+  s2: 28
+  s3: 20
+  s4: 16
+  h1:
+    min: 100
+    max: 5000000
+  h2:
+    min: 10000000
+    max: 200000000
+  h3:
+    min: 400000000
+    max: 800000000
+  h4:
+    min: 1000000000
+    max: 2100000000
+routers:
+- id: node1
+  obf:
+    protocol: quic
+    i1: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0040><b 0x00><b 0x01><t><r 40>
+    i2: <b 0xc0ff><b 0x00000001><b 0x08><d><b 0x00><b 0x00><b 0x0020><b 0x01><t><r 20>
+    i3: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0010><b 0x01><t><r 10>
+    i4: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0005><b 0x01><t><r 5>
+```
+
+### The Central Profile Must Match Mesh-Wide
+
+The `s1`–`s4` and `h1`–`h4` values are a wire contract between every pair of nodes:
+
+- A **sender** picks each outgoing message's type word from its own `h` ranges and pads the message by its own `s` values.
+- A **receiver** classifies incoming packets using **its own** `s`/`h` values.
+
+If two nodes carry different `s`/`h` values, the receiver fails to classify the sender's packets and drops them silently. The central profile — including the junk-packet knobs `jc`, `jmin`, `jmax` — must therefore be identical on every node. [nylon-genesis](/guides/genesis) enforces this by construction.
+
+### I-Patterns Are Sender-Local
+
+The `i1`–`i5` patterns (and the informational `protocol` label) describe only what **this node sends**. You never configure another node's I values anywhere, and receivers do not validate your patterns against their own. This is why two nodes can use different I-patterns — for example, different templates per site — while staying fully interoperable, as long as their central `s`/`h` profiles match.
+
+## The Default Profile Is Vanilla-Compatible
+
+If you omit the `obf` section entirely, nylon does **not** disable the obfuscation machinery. It pins the header ranges to the exact vanilla WireGuard message types — `h1=1-1` through `h4=4-4` — with zero padding, no junk packets, and no I-patterns. The mesh speaks byte-compatible vanilla WireGuard.
+
+::::caution
+This is deliberately **not** the AmneziaWG "all zeros" default, which would produce a type word of 0 and break interoperability with vanilla WireGuard. The converse also holds: any profile that deviates from these vanilla-pinned values breaks stock-client handshakes. To pin the vanilla-compatible values explicitly — for example across a version-skew window during a rollout — [nylon-genesis](/guides/genesis) `--compat` emits a profile with exactly these ranges (and zero padding, no junk packets, no I-patterns). The vanilla-compatible profile is the **only** mode in which a stock WireGuard client (iOS, Android, Windows, …) can complete a handshake with a nylon peer. See [WireGuard Clients](/guides/wg-clients).
+::::
+
+In practice:
+
+- Run the default (no `obf` section) if you need stock-client support anywhere in the mesh.
+- Enable an obfuscated profile only when every participant — every nylon node and every client — speaks the obfuscated format.
+
+## Initiation Packet Patterns
+
+Each `i1`–`i5` value is a pattern built from tags. Each tag describes one stage of the packet, and nylon renders the packet by concatenating every tag's output in order:
+
+| Tag | Produces |
+| --- | --- |
+| `<b 0x…>` | Fixed bytes written verbatim, e.g. `<b 0xc0ff>` |
+| `<r n>` | `n` random bytes |
+| `<rd n>` | `n` random digits |
+| `<rc n>` | `n` random letters |
+| `<t>` | The current Unix timestamp as a 4-byte big-endian value |
+| `<d>` | The packet's own data, passed through unchanged |
+| `<ds>` | The packet's own data, base64-encoded |
+| `<dz n>` | An `n`-byte field encoding the data size |
+
+A pattern expresses the shape of one initiation packet type: `i1` shapes the first message a node sends, `i2` the second, and so on. Reading the `i1` example above: it opens with fixed bytes that imitate the target protocol's header, injects random bytes, carries a timestamp, and ends with trailing random bytes — so each message has the length and layout of the chosen template rather than of WireGuard.
+
+::::note
+No I-pattern content is verified when a packet is received: the live receive path classifies packets purely by size and by the `h` ranges of the mesh-uniform central profile, matching upstream AmneziaWG 2.0 behavior. The patterns shape what a node sends; the cryptography — not the pattern — provides authenticity.
+::::
+
+### Validation Limits
+
+Nylon rejects invalid profiles at apply time rather than producing a broken mesh:
+
+- Header ranges (`h1`–`h4`) must not overlap each other; an overlapping set fails with an `overlap` error.
+- Genesis-generated header ranges must stay clear of the vanilla WireGuard type ids 1–4. This clearance is enforced at generation time by [nylon-genesis](/guides/genesis); a hand-written `central.yaml` overlapping 1–4 is not rejected at apply.
+- AmneziaWG 3.x-only parameters are rejected with a `3.x-only` error: `header_protection_key`, `content_padding_addition`, `random_trailers`, `disable_cookies`, `rekey_after_time`, `rekey_timeout`, `reject_after_time`, `keepalive_timeout`, and `max_handshake_attempts`. No non-2.0 wire format can be activated.
+
+## Generating Profiles with nylon-genesis
+
+Hand-writing a mesh-consistent profile is error-prone: one wrong `h` range on a single node blackholes that node's traffic. [nylon-genesis](/guides/genesis) is the recommended way to produce obfuscation config:
+
+- It generates the central `obf` profile and per-node I-patterns together, so the mesh-uniform values match by construction.
+- It offers named protocol templates (for example `quic`) that fill in realistic `i1`–`i4` patterns like the ones shown above.
+- Empty I-specs are never emitted, and `i5` stays empty for the named templates.
+
+If you are bootstrapping a new mesh, generate the config first and tune the obfuscation knobs in the generated file.
+
+## Operational Notes
+
+- **Profile switches are a maintenance event.** A changed profile applies live on config sync, but handshakes already in flight can fail for up to one rekey window while nodes converge on the new layout. Schedule profile changes accordingly.
+- **A brief packet loss at startup is benign.** Right after a profile change, packets sealed with the pre-profile layout are dropped and then retransmitted under the new one; connectivity recovers on its own.
+- **Correctness is pinned by tests.** The obfuscation layer is validated against golden vectors from upstream amneziawg-go (46 vectors over 3 profiles, pinned to a fixed upstream revision), and an interop harness runs nylon against an in-process reference device built from the upstream amneziawg-go implementation (`github.com/amnezia-vpn/amneziawg-go/v3`) over real UDP:
+
+```bash
+go test -tags awg_ref_interop ./interop/awgref/
+```
+
+See [Development](/guides/development) for the harness tags and how to run the interop suite.
