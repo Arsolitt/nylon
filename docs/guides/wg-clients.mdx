@@ -9,6 +9,10 @@ import { Steps } from '@astrojs/starlight/components';
 
 One of nylon's key features is compatibility with standard WireGuard clients (iOS, Android, Windows, etc.). These are called **Passive Nodes/Clients**.
 
+::::caution
+Stock WireGuard clients interoperate with a nylon mesh **only** when it uses a vanilla-compatible obfuscation profile (the default). Without an `obf` section in `central.yaml`, nylon pins the handshake headers to `h1=1-1` through `h4=4-4` — the vanilla WireGuard message types — so the mesh speaks byte-compatible vanilla WireGuard. The same byte-compatibility can be pinned explicitly with `nylon-genesis --compat`. If your mesh enables a profile that deviates from these vanilla-pinned values, stock WireGuard clients cannot complete handshakes with nylon peers. See [Obfuscation](/guides/obfuscation) for how profiles work.
+::::
+
 ## How it Works
 
 Passive nodes do not participate in the routing protocol. Instead, they connect to a **Gateway Node** (a regular nylon node) which advertises their presence to the rest of the network.
@@ -89,25 +93,25 @@ graph LR
 
 Even though passive nodes do not participate in routing, they can still benefit from nylon's dynamic routing capabilities. By configuring multiple VPN profiles using the same private key, a client can switch between gateways automatically.
 
-:::tip
+::::tip
 Depending on the WireGuard app, there may be features like Scene-based routing in [Shadowrocket](https://en.wikipedia.org/wiki/Shadowrocket) that can automatically switch the gateway node/VPN profile based on network conditions.
 
 This can help your passive node maintain optimal connectivity, even when you travel.
-:::
+::::
 
 ### No Keepalive Needed
 
-:::note
+::::note
 
 You do not need to enable Persistent Keepalive, or any heartbeat mechanism for this simple use case.
 
-:::
+::::
 
 Nylon retains the route for passive nodes indefinitely, ensuring they remain reachable even if they go idle for an extended period. You should only enable Keepalive if:
+
 1. You need other nodes to be able to initiate connections to the client after long periods of silence.
 2. You really wish to drain the battery of the client device for some reason...
 
 For mobile devices, leaving Keepalive disabled is recommended to maximize battery life.
-
 
 > For a deep dive into how nylon handles roaming and keeps idle clients reachable, see the [Passive Nodes Reference](/reference/passive-nodes).
