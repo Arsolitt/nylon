@@ -7,7 +7,7 @@ GOTESTSUM ?= go run gotest.tools/gotestsum@latest --
 export CGO_ENABLED ?= 0
 
 .DEFAULT_GOAL := build
-.PHONY: build nylon nylon-genesis nylon-lb test test-integration test-e2e proto clean
+.PHONY: build nylon nylon-genesis nylon-lb test test-integration test-e2e test-all image-nylon-lb image-nylon-lb-debug push-nylon-lb proto clean
 
 build: nylon nylon-genesis nylon-lb
 
@@ -28,6 +28,33 @@ test-integration:
 
 test-e2e:
 	$(GOTESTSUM) -tags=e2e ./e2e/... -parallel $(NPROC)
+
+test-all: test test-integration test-e2e
+
+## Container images (nylon-lb). Override on the command line:
+##   make push-nylon-lb REGISTRY=registry.example.com/infra IMAGE_NAME=nylon/nylon-lb \
+##        IMAGE_TAG=0.4.0 PLATFORMS=linux/amd64
+DOCKER ?= docker
+REGISTRY ?=                                   # e.g. ghcr.io/encodeous; empty = local-only image name
+IMAGE_NAME ?= nylon-lb
+IMAGE_TAG ?= $(VERSION)
+PLATFORMS ?= linux/amd64,linux/arm64
+IMAGE_EXTRA_ARGS ?=                           # extra buildx flags, e.g. additional -t tags
+IMAGE_REF := $(if $(REGISTRY),$(REGISTRY)/$(IMAGE_NAME),$(IMAGE_NAME)):$(IMAGE_TAG)
+LB_DOCKERFILE := cmd/nylon-lb/Dockerfile
+
+image-nylon-lb:
+	$(DOCKER) build $(IMAGE_EXTRA_ARGS) -f $(LB_DOCKERFILE) --target runtime \
+		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t $(IMAGE_REF) .
+
+image-nylon-lb-debug:
+	$(DOCKER) build $(IMAGE_EXTRA_ARGS) -f $(LB_DOCKERFILE) --target debug \
+		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t $(IMAGE_REF) .
+
+push-nylon-lb:
+	$(DOCKER) buildx build $(IMAGE_EXTRA_ARGS) -f $(LB_DOCKERFILE) --target runtime \
+		--platform $(PLATFORMS) \
+		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t $(IMAGE_REF) --push .
 
 proto:
 	go generate ./cmd/nylon

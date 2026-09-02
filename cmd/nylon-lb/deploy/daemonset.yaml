@@ -26,7 +26,7 @@ spec:
           operator: Exists
       containers:
         - name: nylon-lb
-          # Replace with your built image.
+          # Built with: make push-nylon-lb REGISTRY=<registry> IMAGE_NAME=<path>/nylon-lb IMAGE_TAG=<tag>
           image: ghcr.io/encodeous/nylon/nylon-lb:latest
           imagePullPolicy: IfNotPresent
           # NET_ADMIN for the lo address binding; root because netlink needs it.

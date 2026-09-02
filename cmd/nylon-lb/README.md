@@ -88,8 +88,10 @@ ever becomes `1` on the leader-elected allocator replica.
 DaemonSet (recommended):
 
 ```bash
-go build -o nylon-lb ./cmd/nylon-lb
-docker build -t ghcr.io/encodeous/nylon/nylon-lb:latest .   # replace with your built image
+# local image (native platform, loaded into the daemon):
+make image-nylon-lb REGISTRY=ghcr.io/encodeous/nylon IMAGE_TAG=latest
+# multi-arch build & push to any registry:
+make push-nylon-lb REGISTRY=ghcr.io/encodeous/nylon IMAGE_TAG=v0.4.0
 # edit --pool/--exclude in deploy/daemonset.yaml (one pool per cluster)
 kubectl apply -f cmd/nylon-lb/deploy/rbac.yaml
 kubectl apply -f cmd/nylon-lb/deploy/daemonset.yaml

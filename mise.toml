@@ -1,11 +1,3 @@
 [tools]
 go = "1.26.3"
 
-[tasks.router_test]
-run = "go run gotest.tools/gotestsum@latest -- --race -tags=router_test ./..."
-
-[tasks.integration]
-run = "go run gotest.tools/gotestsum@latest -- --race -tags=integration ./integration/..."
-
-[tasks.e2e]
-run = "go run gotest.tools/gotestsum@latest -- -tags=e2e ./e2e/... -parallel $(nproc)"
