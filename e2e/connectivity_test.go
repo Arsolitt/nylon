@@ -67,8 +67,8 @@ func TestConnectivity(t *testing.T) {
 
 	// 5. Wait for convergence
 	t.Log("Waiting for convergence...")
-	h.WaitForLog("node3", "installing new route prefix=10.0.0.1/32")
-	h.WaitForLog("node1", "installing new route prefix=10.0.0.2/31")
+	h.WaitForMatch("node3", `installing new route.*prefix=10\.0\.0\.1/32`)
+	h.WaitForMatch("node1", `installing new route.*prefix=10\.0\.0\.2/31`)
 
 	// 6. Test Connectivity
 	// Ping from node1 to node2's Nylon IP

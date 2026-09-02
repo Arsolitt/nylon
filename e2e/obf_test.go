@@ -107,8 +107,8 @@ func TestObfProfileConnectivity(t *testing.T) {
 	// 4. Wait for convergence: with a two-node graph each node announces its
 	// own /32, so each peer installs the other's nylon address as a route.
 	t.Log("Waiting for convergence...")
-	h.WaitForLog("node1", "installing new route prefix=10.0.0.2")
-	h.WaitForLog("node2", "installing new route prefix=10.0.0.1")
+	h.WaitForMatch("node1", `installing new route.*prefix=10\.0\.0\.2`)
+	h.WaitForMatch("node2", `installing new route.*prefix=10\.0\.0\.1`)
 
 	// 5. Test Connectivity through the obfuscated profile.
 	t.Logf("Pinging %s from node1...", node2NylonIP)

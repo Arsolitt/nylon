@@ -61,6 +61,6 @@ func TestJSONLogging(t *testing.T) {
 	)
 
 	t.Log("Waiting for JSON log pattern...")
-	h.WaitForMatch("node1", `\{"time":".*","level":".*","msg":".*"`)
-	h.WaitForMatch("node2", `\{"time":".*","level":".*","msg":".*"`)
+	h.WaitForMatch("node1", `\{"time":"[^"]*","level":"[^"]*".*"msg":"[^"]*"`)
+	h.WaitForMatch("node2", `\{"time":"[^"]*","level":"[^"]*".*"msg":"[^"]*"`)
 }

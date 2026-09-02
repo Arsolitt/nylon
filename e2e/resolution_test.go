@@ -217,8 +217,8 @@ node2.example.com. 0 IN A %s
 		return HasResolvedEndpoint(status, "node2.example.com", fmt.Sprintf("%s:57175", node2IP_A))
 	})
 
-	h.WaitForLog("node-1", "installing new route prefix=10.0.0.2")
-	h.WaitForLog("node-2", "installing new route prefix=10.0.0.1")
+	h.WaitForMatch("node-1", `installing new route.*prefix=10\.0\.0\.2`)
+	h.WaitForMatch("node-2", `installing new route.*prefix=10\.0\.0\.1`)
 
 	// Ping from node-1 to node-2
 	_, _, err := h.Exec("node-1", []string{"ping", "-c", "3", "10.0.0.2"})
@@ -256,7 +256,7 @@ node2.example.com. 0 IN A %s
 		return HasResolvedEndpoint(status, "node2.example.com", fmt.Sprintf("%s:57175", node2IP_B))
 	})
 
-	h.WaitForLog("node-2-new", "installing new route prefix=10.0.0.1/32")
+	h.WaitForMatch("node-2-new", `installing new route.*prefix=10\.0\.0\.1/32`)
 
 	// Ping from node-1 to node-2 (at new IP)
 	var lastErr error
