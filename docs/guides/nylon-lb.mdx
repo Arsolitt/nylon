@@ -1,0 +1,162 @@
+---
+title: Kubernetes LoadBalancer
+description: Allocate LoadBalancer IPs for type=LoadBalancer Services and announce them into the nylon mesh with nylon-lb.
+sidebar:
+  order: 9
+---
+
+`nylon-lb` gives Services of `type=LoadBalancer` real, reachable addresses inside a nylon mesh. It watches those Services, allocates a free IPv4 address from a pool you configure, writes the address into the Service's `status.loadBalancer.ingress`, and announces the address as a `/32` into the mesh by writing a file to the [dynamic prefixes directory](/reference/dynamic-prefixes). Cilium running in kube-proxy-replacement mode consumes `status.loadBalancer.ingress` and steers traffic to the Service.
+
+`nylon-lb` owns no datapath. Forwarding happens in the node's existing network stack; the controller only allocates addresses, and the speaker only makes the mesh aware of them.
+
+## Architecture
+
+One binary contains two components that you can enable and disable independently:
+
+- **Allocator** — runs once per cluster. It watches Services and EndpointSlices, picks the lowest free address from the pool for each LoadBalancer Service, and writes it to `status.loadBalancer.ingress` with single-object compare-and-swap updates. The allocator runs under leader election with a Lease named `nylon-lb-allocator`; the CAS status writes keep a partitioned ex-leader from corrupting anything.
+- **Speaker** — runs on every node. For each Service the node should announce, it binds the allocated address to the loopback interface (Linux netlink) and writes an announce file into the prefixes directory. Speakers are never leader-elected: every node announcing the same `/32` is the design, and Babel treats the copies as anycast.
+
+## Command-line flags
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--pool` | required | IPv4 CIDR to allocate LoadBalancer addresses from. |
+| `--exclude` | none | Excludes addresses from the pool. Repeat the flag as needed. |
+| `--prefixes-dir` | `/etc/nylon/prefixes.d` | Directory the speaker writes announce files into. |
+| `--bind-interface` | `lo` | Interface to bind announced addresses to. Set it empty (`--bind-interface=`) to disable binding. |
+| `--kubeconfig` | none | Path to a kubeconfig file. |
+| `--node-name` | hostname | Name of this node. Must match the Kubernetes node name for `externalTrafficPolicy: Local` to work. |
+| `--leader-elect` | `true` | Leader-elect the allocator. |
+| `--leader-namespace` | ServiceAccount namespace, else `kube-system` | Namespace for the leader-election Lease. |
+| `--resync` | `30s` | Informer resync period. |
+| `--health-addr` | `:9633` | Listen address for `/healthz`, `/readyz`, and `/metrics`. Set it empty to disable the server. |
+| `--speaker` | `true` | Enable the per-node announcer. |
+| `--allocator` | `true` | Enable the leader-elected IP allocator. |
+| `--log-level` | `$NYLON_LOG_LEVEL`, else `info` | Log level. |
+| `-v`, `--verbose` | off | Verbose logging. |
+| `--json` | off | Emit logs as JSON. |
+
+Logs are structured and carry the component name `nylon-lb`, `node=<name>`, and a module (`allocator` or `speaker`). Messages from klog (client-go) are bridged into the same log pipeline.
+
+## Allocation rules
+
+- nylon-lb claims **every** Service of `type=LoadBalancer` in the cluster. There is no `loadBalancerClass` filtering, so it must be the only LoadBalancer controller in the cluster.
+- A `spec.loadBalancerIP` set on a Service is honored when the address is free and inside the pool.
+- Allocation picks the lowest free address in the pool.
+- The pool prefix must be at least a `/30`: the network and broadcast addresses are never allocated, so smaller pools have nothing to hand out.
+- Allocation is **derived, not stored**. nylon-lb recomputes the mapping from live Services on every resync and keeps no state anywhere, so deleting a Service frees its IP unconditionally. The only residual window is announce-file withdrawal lag on a down speaker node: the stale announce file persists until that node's next resync, when the stale-announce garbage collection withdraws it. There is no collision risk, because announce files are garbage-collected together with the Service.
+- IPv4 only. One pool per cluster.
+
+## Announcement semantics
+
+### Announce files
+
+For every Service it should announce, the speaker writes one file named `lb-<namespace>-<service>.json` into `--prefixes-dir`:
+
+```json title="lb-default-web.json"
+{"version":1,"prefixes":[{"type":"static","prefix":"192.0.2.10/32","metric":0}]}
+```
+
+The file is compact JSON plus a trailing newline. The `lb-` prefix is the garbage-collection boundary: nylon-lb removes exactly the files it owns and never touches anything else in the directory, such as `00-vip.json`.
+
+Writes are atomic (write to a temp file, then rename). The temp file deliberately does not end in `.json`, because the nylon daemon globs `*.json` in that directory. Files whose content did not change are not rewritten, so the watcher sees no churn.
+
+### externalTrafficPolicy
+
+The Service's `spec.externalTrafficPolicy` decides which nodes announce:
+
+- `Cluster` (default) — every node announces every Service `/32`. Babel treats the identical prefixes as anycast, so when a node dies, traffic simply flows to the remaining announcers. Failover is free.
+- `Local` — only nodes that hold at least one ready local endpoint announce the Service. An endpoint with no `Ready` condition counts as ready.
+
+::::caution[Always pass --node-name]
+`deploy/daemonset.yaml` exports a `NODE_NAME` environment variable but does **not** pass `--node-name=$(NODE_NAME)` in the container args. Without the flag, nylon-lb falls back to the hostname, which does not match the Kubernetes node name inside a DaemonSet pod — so with `externalTrafficPolicy: Local` no node ever matches its local endpoints, and nothing gets announced. Add `--node-name=$(NODE_NAME)` to `args` in the DaemonSet before you rely on `Local` mode.
+::::
+
+### Reconcile order
+
+The speaker's ordering is load-bearing. It binds the address to the loopback interface **before** writing the announce file, so the address already exists on the node by the time the `/32` propagates (about 250 ms after the file lands, per the prefix watcher debounce). When withdrawing a Service, it removes the announce file **before** unbinding the address.
+
+## Requirements and caveats
+
+- **Configure the pool in every receiver.** The pool must sit inside `dynamic_prefix_ranges` in every receiver's `central.yaml`. Receivers fail closed: announcements for prefixes outside their configured ranges are dropped. See the [configuration reference](/reference/config) and the [dynamic prefixes reference](/reference/dynamic-prefixes).
+- **Run it alone.** nylon-lb adopts every LoadBalancer Service in the cluster regardless of `loadBalancerClass`. Running it beside servicelb, MetalLB, or kube-vip corrupts allocations.
+- **IPv4 only.** No IPv6 pools.
+- **One pool per cluster.**
+
+## Deployment
+
+### Build and push the image
+
+```bash
+make image-nylon-lb
+make push-nylon-lb
+```
+
+`make image-nylon-lb` builds a local, native-platform image with a plain `docker build`; only `make push-nylon-lb` builds multi-arch, via `docker buildx build --push`. The runtime image is built from `scratch` and exposes port 9633. A debug variant based on `ubuntu:24.04` is available with `make image-nylon-lb-debug`.
+
+### Install with the shipped manifests
+
+```bash
+kubectl apply -f cmd/nylon-lb/deploy/rbac.yaml
+kubectl apply -f cmd/nylon-lb/deploy/daemonset.yaml
+```
+
+`rbac.yaml` creates a ServiceAccount and a ClusterRole with get/list/watch on Services and EndpointSlices, update on `services/status`, get/create/update on Leases, and create/patch on Events.
+
+`daemonset.yaml` runs one pod per node in `kube-system`, tolerates control-plane nodes, mounts the prefixes directory from a hostPath, and runs as root (`runAsUser: 0`) with `NET_ADMIN` — both are required to bind addresses to `lo`. Liveness and readiness probes target port 9633.
+
+Before you enable `externalTrafficPolicy: Local`, add `--node-name=$(NODE_NAME)` to `args` in the DaemonSet as explained in the caution above.
+
+### Allocator-only replica
+
+An allocator-only replica needs neither root nor `NET_ADMIN`:
+
+```bash
+nylon-lb --pool=192.0.2.0/24 --allocator=true --speaker=false --bind-interface=
+```
+
+### Run as a bare binary
+
+You can run the binary directly instead of using the DaemonSet — for example under systemd, one instance per node:
+
+```bash
+nylon-lb \
+  --pool=192.0.2.0/24 \
+  --prefixes-dir=/etc/nylon/prefixes.d \
+  --node-name=node-1 \
+  --kubeconfig=/etc/nylon/kubeconfig
+```
+
+Point `--prefixes-dir` at the directory your nylon daemon watches and set `--node-name` explicitly. A speaker still needs root or `CAP_NET_ADMIN` for the loopback bind; the bind is implemented with netlink and exists on Linux only — builds for other platforms carry a stub.
+
+## Observability
+
+See [Observability](/guides/observability) for wiring these signals into your monitoring stack.
+
+### Metrics
+
+All metrics are exposed at `/metrics` on `--health-addr` with the `nylon_lb_` prefix:
+
+| Metric | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `nylon_lb_build_info` | gauge | `version`, `commit` | Build identification. |
+| `nylon_lb_leader` | gauge | `node` | 1 while this replica holds the allocator Lease. |
+| `nylon_lb_allocated_ips` | gauge | — | Addresses currently allocated. |
+| `nylon_lb_services` | gauge | — | LoadBalancer Services tracked. |
+| `nylon_lb_announces` | gauge | — | Active announcements. |
+| `nylon_lb_allocations_total` | counter | — | Address allocations. |
+| `nylon_lb_releases_total` | counter | — | Address releases. |
+| `nylon_lb_announce_writes_total` | counter | — | Announce-file writes. |
+| `nylon_lb_errors_total` | counter | `kind` | Errors by kind: `bind`, `write`, `reconcile`, `list`, `glob`. |
+
+### Health endpoints
+
+- `/healthz` — liveness. Returns 200 as soon as the HTTP server is serving.
+- `/readyz` — readiness. Returns 503 `informer caches not synced` until the Service and EndpointSlice informer caches have synced, then 200.
+- `/metrics` — Prometheus text format.
+
+## Shipped implementation vs. the design doc
+
+::::note
+`design.md` §6 sketches an earlier LoadBalancer design: a ConfigMap state store, finalizers, writes to `spec.externalIPs`, and single/anycast mode flags. None of that shipped. The controller in `cmd/nylon-lb/` derives allocation from live Services and expresses both announcement modes through `spec.externalTrafficPolicy`.
+::::
