@@ -1,0 +1,150 @@
+---
+title: Dynamic Prefixes
+description: Announce and retract mesh prefixes at runtime through watched JSON files in prefixes.d, with health checks and receiver-side range gating.
+sidebar:
+  order: 2
+---
+
+Dynamic prefixes let you add and remove advertised prefixes while a node is running. Instead of editing the central config and reloading, you drop JSON files into a directory the daemon watches, and nylon announces the prefixes into the mesh using the normal Babel routing machinery. Deleting a file retracts the announcement.
+
+The feature has two halves:
+
+- The **announcing node** watches its `dynamic_prefixes_dir` for `*.json` files and announces every valid prefix they describe, alongside the static prefixes from its central config.
+- Every **receiving node** accepts an announced dynamic prefix only if it falls inside its own central `dynamic_prefix_ranges` (or exactly matches a prefix it already knows). The default is fail-closed: with no ranges declared, receivers drop every dynamic announcement.
+
+## Configuration
+
+Two YAML keys control the feature. Both are optional; the feature is fully disabled unless you set the directory.
+
+| Key | Config level | Type | Default | Description |
+| --- | --- | --- | --- | --- |
+| `dynamic_prefixes_dir` | node | string | `""` (disabled) | Directory the daemon watches for `*.json` prefix files. The recommended location is `/etc/nylon/prefixes.d`. |
+| `dynamic_prefix_ranges` | central | list of CIDR prefixes | `[]` (fail-closed) | Receiver-side allowance: prefixes a node accepts from peers' dynamic announcements. Ranges must be valid and masked. |
+
+```yaml title="node config"
+# Enables the watcher on this node only.
+dynamic_prefixes_dir: /etc/nylon/prefixes.d
+```
+
+```yaml title="central config"
+# Allow dynamic announcements for pod CIDRs and the anycast VIP slice.
+dynamic_prefix_ranges:
+  - 10.42.0.0/16
+  - 10.87.0.0/24
+```
+
+Cross-node routing needs both halves: the announcer needs `dynamic_prefixes_dir` to announce, and every receiver needs a `dynamic_prefix_ranges` entry that covers the announced prefix. A receiver accepts an announced prefix when the prefix is **equal to one of its central prefixes** or **a subnet of one of the declared ranges**. Supernets of a declared range are rejected. The gate applies to route updates, ack-retracts, and seqno-requests alike.
+
+See the [config reference](/reference/config) for how these keys fit into the full node and central configs.
+
+## File contract
+
+The watched directory contains flat `*.json` files (subdirectories are ignored). Each file holds a schema-versioned list of prefix entries:
+
+```json title="prefixes.d/10-vip.json"
+{
+  "version": 1,
+  "prefixes": [
+    {"type": "static", "prefix": "10.42.1.0/24", "metric": 0},
+    {"type": "ping", "prefix": "10.1.0.0/24", "addr": "10.1.0.8",
+     "delay": "10s", "max_failures": 3, "bind_if": "", "metric": 5},
+    {"type": "http", "prefix": "10.2.0.0/24", "url": "http://example.com/healthz",
+     "delay": "15s", "metric": 5}
+  ]
+}
+```
+
+The schema is a field-for-field mirror of the prefix health config (`StaticPrefixHealth`, `PingPrefixHealth`, `HTTPPrefixHealth`), so dynamic prefixes support the same health checks as static prefixes.
+
+| Field | Type | Applies to | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `version` | int | file | yes | — | Must be `1`. Any other value skips the whole file. |
+| `prefixes` | array | file | yes | — | List of prefix entries. |
+| `type` | string | entry | yes | — | Discriminator: `static`, `ping`, or `http`. |
+| `prefix` | string (CIDR) | entry | yes | — | The prefix to announce. Must be masked — host bits set are a per-entry error. |
+| `metric` | uint32 | all | no | `0` (static); health-derived (ping/http) | For `static`: the advertised metric. For `ping`/`http`: overrides the health-derived metric. |
+| `addr` | string (IP) | `ping` | yes for `ping` | — | Address to ping. |
+| `max_failures` | int | `ping` | no | `3` | Failed probe round withdraws the prefix. |
+| `delay` | Go duration string | `ping`, `http` | no | `15s` | Interval between probes. Also used as the HTTP request timeout for `http` checks. |
+| `bind_if` | string | `ping` | no | `""` (all interfaces) | Local interface to bind the ping to. |
+| `url` | string | `http` | yes for `http` | — | URL to GET. |
+
+Durations use Go syntax: `10s`, `1m30s`, `500ms`.
+
+### Parsing rules
+
+Parsing is fail-closed at two levels:
+
+- **Whole file skipped**: malformed JSON, a top-level non-object, or an unsupported `version`. A file read error skips that file too. Other files still apply.
+- **Single entry skipped**: unparseable or unmasked `prefix`, an unknown `type`, a `ping` entry without a valid `addr`, an `http` entry without a `url`, or an invalid `delay`. Remaining entries in the same file still apply.
+
+Every skip is logged with the file name and entry index.
+
+## Runtime behavior
+
+- **Startup**: the daemon scans the directory, snapshots the pristine central config, and injects the parsed prefixes into its own node entry — all before the first routing reconcile, so the merged view is what the mesh sees first. A scan failure never blocks startup. Injection only happens if the node has an entry in the central config; a node absent from `routers`/`clients` announces nothing.
+- **Watching**: an fsnotify watcher fires on any change in the directory. After a 250 ms debounce (the timer resets on every event), the daemon fully rescans the directory and re-applies the pristine central config with the fresh dynamic set injected. If the directory is removed or the watcher cannot be created, the watcher stops and logs an error; the feature stays disabled until restart.
+- **Withdrawal**: deleting a file, emptying it, or breaking its JSON removes its prefixes from the merged set, and the existing Babel retraction machinery withdraws the announcements.
+- **Central config interplay**: injection happens inside `ApplyCentralConfig` after central-only validation and before the no-op check. The central config polls for updates every 10 s; each apply re-injects the dynamic set from the pristine snapshot, so central updates never clobber dynamic state. A steady state with unchanged files is a no-op.
+
+## Conflict rules
+
+| Situation | Behavior |
+| --- | --- |
+| Entry's prefix already exists in the central config for this node | Entry rejected with an error log — the central config wins. |
+| Same prefix in two `*.json` files | The file that comes first in lexicographic filename order wins; the later entry is rejected with a warning. |
+| Malformed JSON or unsupported `version` | Whole file skipped with an error; other files still apply. |
+| Invalid single entry | Only that entry is skipped; the rest of the file applies. |
+
+Number your files by writer to make the ordering deterministic (see [Writers](#writers)).
+
+## Health checks
+
+Dynamic `ping` and `http` prefixes reuse the full prefix-health monitor machinery, not just static advertisement.
+
+| Check | Probe | Healthy metric | Failed probe |
+| --- | --- | --- | --- |
+| `static` | none | configured `metric` (default `0`) | never fails — always advertised |
+| `ping` | ICMP ping of `addr` every `delay`; up to `max_failures` attempts, each timing out after `delay`/`max_failures`, stopping early on success | ping RTT in microseconds (or `metric` override) | prefix retracted (infinite metric) |
+| `http` | HTTP GET of `url` every `delay`; request timeout equals `delay` | request duration in microseconds (or `metric` override) | prefix retracted (infinite metric) |
+
+Details worth knowing:
+
+- Both monitors start retracted (infinite metric) and join the mesh after the first successful probe.
+- An `http` check fails on a transport error or any non-200 status code.
+- A failed probe round logs a warning and retracts the prefix through the normal Babel retraction path; a later successful round re-announces it.
+
+::::caution
+When you set `metric` on a `ping` or `http` entry, nylon advertises that fixed value and ignores the live health-derived metric — including failure retraction. The prefix then stays announced even when the probe target is down. Leave `metric` unset if you want health-driven withdrawal.
+::::
+
+## Security model
+
+`prefixes.d` is an **unauthenticated local control surface**: anyone who can write a `*.json` file into the directory controls what the node announces. Nylon does not check file permissions itself, so harden the directory at the OS level:
+
+- Root-owned directory with `0755`, root-owned files with `0644`.
+- Only trusted writers (root, or a hostPath-mounted agent) can write to the directory.
+
+Writers must replace files atomically: write to a temp file, then rename it over the final name. The temp file name **must not end in `.json`** — the daemon globs `*.json`, so a partially written temp file with that suffix would be parsed mid-write. Rename-into-directory is also what reliably triggers the fsnotify watcher.
+
+## Writers
+
+Files follow a one-writer-per-file convention. Give each writer its own file name so ownership and lexicographic tie-breaking stay deterministic, for example `10-podcidr.json` for a k8s sidecar.
+
+### nylon-lb
+
+The `nylon-lb` LoadBalancer agent is the reference writer. For each `type=LoadBalancer` Service it writes `lb-<namespace>-<name>.json` with a static `/32` entry:
+
+```json title="prefixes.d/lb-default-my-service.json"
+{"version":1,"prefixes":[{"type":"static","prefix":"10.87.0.100/32","metric":0}]}
+```
+
+It writes atomically (temp file, `0644`, rename), skips rewrites when the content is unchanged, and garbage-collects only files matching `lb-*.json` — it never touches files owned by other writers, such as `00-vip.json` or `10-podcidr.json`. Note that its pool must sit inside every receiver's `dynamic_prefix_ranges`, or the announcements are dropped. See the [nylon-lb guide](/guides/nylon-lb) for deployment.
+
+### Manual VIP announcement
+
+For a single anycast VIP without Kubernetes, use the stand-proven systemd pattern: a `nylon-vip.service` unit that owns one file, for example `prefixes.d/00-vip.json`, and binds the address to a local interface. Because the unit is the only writer of that file, updates and withdrawals stay race-free.
+
+## Troubleshooting
+
+If a node announces a dynamic prefix that peers never route, the receiver side is the usual suspect: without a matching `dynamic_prefix_ranges` entry the announcement is silently dropped, and the receiver logs a dropped-unknown-prefix warning throttled to once per hour per prefix. Check the announcer's logs for file-parse errors, and see the [troubleshooting guide](/guides/troubleshooting) for log locations and inspection commands.
