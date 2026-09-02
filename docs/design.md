@@ -1,6 +1,6 @@
 # Nylon Fork Design — polyamide-awg, Gossip Membership, Dynamic Prefixes, nylon-lb
 
-Status: **design document** — no production code changes in this round.
+Status: **design document** — the fork features have shipped: polyamide-awg obfuscation (§2), dynamic prefixes / `prefixes.d` (§4), nylon-lb (§6 — the shipped implementation differs; see its Implementation status note), and nylon-genesis; gossip membership (§3) and zones (§7) remain design-only.
 Date: 2026-08-22, round 2 2026-08-24 · Base: `c3f872d98aad9d474927c108c74a94de571f4bfc` (`v0.4.5-4-gc3f872d`) · Branch: `fork/design`
 
 Continuation of the "Nylon + AmneziaWG self-healing underlay for k3s" design (Obsidian note 2026-08-16).
@@ -208,6 +208,8 @@ binaries without a license review.
 
 ## 3. Gossip membership (design; not implemented this round)
 
+> **Implementation status:** Design-only — gossip membership is not implemented and no gossip code exists in the repository. Membership and config distribution still flow through the central config today.
+
 ### 3.1 Member record
 
 ```go
@@ -402,6 +404,8 @@ is impossible without a receiver-side allowance.
 
 ## 5. k8s integration
 
+> **Implementation status:** The pod-CIDR sidecar is design intent. It was validated manually during PoC stage 3 (§8), and no sidecar has shipped — any `prefixes.d` writer following §4 fills this role.
+
 Carried over from the 2026-08-16 note, updated to the JSON contract:
 
 - **Pod-CIDR sidecar** — hostNetwork DaemonSet reads `CiliumNode.spec.ipam.podCIDRs`
@@ -422,6 +426,8 @@ Carried over from the 2026-08-16 note, updated to the JSON contract:
 ---
 
 ## 6. nylon-lb — LoadBalancer over the mesh (design only, this round)
+
+> **Implementation status:** nylon-lb has shipped (`cmd/nylon-lb`) with a simpler architecture than this section: a single per-node DaemonSet runs one binary containing a **leader-elected allocator** and a **per-node speaker**. Allocation is stateless — derived from live Services against the `--pool` CIDR (lowest free address), not persisted in a ConfigMap (§6.3) — and there is no finalizer and no `spec.externalIPs` write (§6.2): the allocator sets `status.loadBalancer.ingress` and honors `spec.loadBalancerIP` when it is free and inside the pool. The `anycast`/`single` modes (§6.4) have no flags; they are expressed per Service via `spec.externalTrafficPolicy` (`Cluster` — every node announces the /32; `Local` — only nodes with a ready endpoint). The §6.7 TTL guard and the §6.8 probe-gated announce are not implemented: each node's speaker announces every eligible Service by writing a `lb-<namespace>-<name>.json` file (§4 schema) and optionally binds the /32 on `lo`.
 
 ### 6.1 Concept
 
@@ -499,6 +505,8 @@ User decision: the floating apiserver VIP uses **anycast** mode (§6.4).
 ---
 
 ## 7. Zones — org-wide multi-cluster mesh
+
+> **Implementation status:** Design-only — zones are not implemented and no zone or gossip code exists in the repository.
 
 ### 7.1 Model
 
