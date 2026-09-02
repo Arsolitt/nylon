@@ -1,0 +1,197 @@
+---
+title: Config Genesis
+description: Generate AWG 2.0 obfuscation parameters and a paste-ready central.yaml fragment with the internal nylon-genesis tool.
+sidebar:
+  order: 7
+---
+
+`nylon-genesis` is the internal companion tool that generates obfuscation parameters for a nylon mesh. It asks the [amnezigo](/guides/development) parameter oracle for a validated shared profile, generates per-node handshake camouflage, and writes the result as a paste-ready YAML fragment for your `central.yaml`: a top-level `obf:` block plus `routers:` entries that carry only `id` and `obf`.
+
+The tool generates obfuscation parameters only. WireGuard keys are a separate concern handled by `nylon key` — see [Getting started](/guides/getting-started).
+
+## What nylon-genesis generates
+
+Every run emits one fragment with two parts:
+
+- A mesh-wide shared profile under `obf:` — the junk (`jc`, `jmin`, `jmax`), padding sizes (`s1`–`s4`), and message-type header ranges (`h1`–`h4`) that every node in the mesh must share.
+- One `routers:` entry per node you list, each carrying only that node's `id` and its sender-local `obf` block with `i1`–`i5` CPS strings.
+
+The fragment unmarshals cleanly into the central config structure, but it does not merge itself — you paste it into `central.yaml` by hand (see [Generate a profile](#generate-a-profile)). The shared profile is mesh-uniform by construction: one oracle call fixes S/H/J for the whole mesh, and every node receives every peer's `i1`–`i5` spec through the central config while sending only with its own.
+
+The following output is the real committed fixture from this repository, generated with the command shown in [Step 5](#step-5-run-the-tool). Each additional id you pass to `--peers` appends another entry with the same shape:
+
+```yaml title="nylon-genesis output fragment"
+obf:
+  jc: 5
+  jmin: 250
+  jmax: 800
+  s1: 32
+  s2: 28
+  s3: 20
+  s4: 16
+  h1:
+    min: 100
+    max: 5000000
+  h2:
+    min: 10000000
+    max: 200000000
+  h3:
+    min: 400000000
+    max: 800000000
+  h4:
+    min: 1000000000
+    max: 2100000000
+routers:
+- id: node1
+  obf:
+    protocol: quic
+    i1: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0040><b 0x00><b 0x01><t><r 40>
+    i2: <b 0xc0ff><b 0x00000001><b 0x08><d><b 0x00><b 0x00><b 0x0020><b 0x01><t><r 20>
+    i3: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0010><b 0x01><t><r 10>
+    i4: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0005><b 0x01><t><r 5>
+```
+
+For the meaning of each field, see [Obfuscation](/guides/obfuscation).
+
+## Build the tool first
+
+`nylon-genesis` is built from the same repository as the daemon, but it links the GPL-3.0 `amnezigo` oracle through a local `replace` directive in `go.mod`. You need a sibling checkout before anything compiles:
+
+```bash
+git clone https://github.com/Arsolitt/amnezigo ../amnezigo
+make build
+```
+
+`make build` produces `bin/nylon-genesis` alongside `bin/nylon` and `bin/nylon-lb`. Running `go run ./cmd/nylon-genesis` from the repository works identically.
+
+::::caution
+Cloning the nylon repository alone is not enough to build `nylon-genesis` — the `replace github.com/Arsolitt/amnezigo => ../amnezigo` directive requires a checkout of `amnezigo` as a sibling directory of the nylon repository. See [Building and testing](/guides/development) for the full build setup.
+::::
+
+## Generate a profile
+
+### Step 1. Choose the shared profile source
+
+Decide where the mesh-wide S/H/J parameters come from:
+
+- **Preset** (default): a named amnezigo preset, `standard-1420` by default. The preset supplies the junk and padding profile and the default MTU.
+- **Random**: pass `--random` to have the oracle generate a random profile instead. The preset still seeds the random generation's size and junk parameters and provides the default MTU.
+
+### Step 2. Choose a protocol template
+
+`--protocol` selects the camouflage template for the per-node handshake packets: `quic`, `dns`, `dtls`, `stun`, `sip`, `rtp`, or `random` (the default). Named protocols use that protocol's template shape and fill `i1`–`i4`; `i5` is intentionally left empty. `random` does not pick a template — it generates randomized simple CPS patterns across all of `i1`–`i5`, including `i5`.
+
+### Step 3. Choose an MTU clamp (optional)
+
+`--mtu` clamps the generated I-packet and junk sizes to your underlay MTU. Leave it at the default `0` to use the preset's default MTU — `standard-1420` targets a 1420-byte underlay, and the fixture output above was generated with `--mtu 1420`.
+
+### Step 4. List your nodes
+
+`--peers` takes a comma-separated list of node ids. Use the same ids your routers carry in `central.yaml`, because you will merge each generated block into the matching router entry.
+
+### Step 5. Run the tool
+
+```bash
+bin/nylon-genesis --preset standard-1420 --protocol quic --mtu 1420 --peers node1,node2
+```
+
+The fragment goes to stdout. Pass `--out obf-fragment.yaml` to write it to a file instead (mode `0644`), and `-v`/`--verbose` for debug logging on stderr:
+
+```bash
+bin/nylon-genesis --protocol quic --peers node1,node2 --out obf-fragment.yaml -v
+```
+
+### Step 6. Merge the fragment into central.yaml
+
+Paste the `obf:` block at the top level of `central.yaml`, then merge each `routers:` entry into your existing `routers:` list:
+
+```yaml title="central.yaml (excerpt after merging)"
+# Top level: paste the generated obf block verbatim.
+obf:
+  jc: 5
+  # ... rest of the generated obf block ...
+
+routers:
+  - id: node1
+    # Keep every existing key of this router and add obf alongside them.
+    obf:
+      protocol: quic
+      i1: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0040><b 0x00><b 0x01><t><r 40>
+      # ... i2, i3, i4 from the generated fragment ...
+```
+
+The full field semantics — what S/H/J do on receive, why S/H must match mesh-wide, and how sender-local `i1`–`i5` are used — are covered in [Obfuscation](/guides/obfuscation), and the complete field reference lives in [Configuration reference](/reference/config).
+
+::::caution
+The fragment does not merge itself. Each `routers:` entry contains only `id` and `obf`, so never paste the fragment's `routers:` list over your existing one — merge each `obf` block into the matching node's entry and keep that node's other keys intact.
+::::
+
+### Step 7. Distribute and reload
+
+Ship the updated `central.yaml` to your mesh the same way you distribute any config change — via [config distribution](/guides/config-distribution) or a direct reload. Nodes pick up the new profile on their next config sync.
+
+::::caution
+Treat an obfuscation profile rollout as a maintenance action. The new parameters apply live when each node syncs, but in-flight handshakes can fail for one rekey window during the transition.
+::::
+
+## Flag reference
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--preset` | `standard-1420` | amnezigo preset name for the shared profile. |
+| `--random` | `false` | Generate a random shared profile via amnezigo's `GenerateConfig` instead of the preset. |
+| `--protocol` | `random` | Per-peer I1–I5 template: `quic`, `dns`, `dtls`, `stun`, `sip`, `rtp`, or `random`. |
+| `--mtu` | `0` | Underlay MTU clamp for I/junk sizes; `0` uses the preset default. |
+| `--peers` | empty | Comma-separated node ids to generate per-node I1–I5 for. |
+| `--compat` | `false` | Emit the fixed vanilla-compat profile; the output does not depend on `--preset` or `--protocol`, but they are still validated. |
+| `--out` | stdout | Write to `FILE` instead of stdout (file mode `0644`). |
+| `-v`, `--verbose` | `false` | Log debug detail to stderr. |
+
+Print the stamped build version with the `--version` flag: `nylon-genesis --version` outputs `nylon-genesis version dev` (`dev` for local builds without version ldflags). There is no `version` subcommand — an unknown positional word is not an error, so `nylon-genesis version` silently generates a full obfuscation profile on stdout.
+
+## Vanilla compatibility (--compat)
+
+Pass `--compat` to generate the vanilla-compat profile instead of an obfuscated one. It pins `h1`–`h4` to the exact vanilla WireGuard message types and leaves everything else at zero — no junk, no padding, and no per-node `obf` blocks. This is the profile that keeps stock WireGuard clients working against your mesh during a version-skew window:
+
+```yaml title="nylon-genesis --compat output"
+obf:
+  h1:
+    min: 1
+    max: 1
+  h2:
+    min: 2
+    max: 2
+  h3:
+    min: 3
+    max: 3
+  h4:
+    min: 4
+    max: 4
+routers:
+- id: node1
+- id: node2
+```
+
+Two things to know about this mode:
+
+- The compat output does not depend on `--preset` or `--protocol`, but they are still validated: an unknown value fails before any output is produced.
+- It deliberately skips the header-range viability checks that normal generation runs, because pinning headers to 1–4 is exactly what those checks reject: obfuscated ranges must stay clear of the vanilla message types.
+
+If your whole mesh speaks vanilla WireGuard anyway, you can also omit the `obf` key from `central.yaml` altogether — a mesh with no profile pins the same 1–4 header types. See [Obfuscation](/guides/obfuscation) for the profile semantics, and [WireGuard clients](/guides/wg-clients) for attaching stock clients to a mesh.
+
+## Validation and failure behavior
+
+Before writing anything, the tool validates its own output:
+
+1. Structural checks on the profile: `jmin` must not exceed `jmax`, and every `h1`–`h4` range must have `min` no greater than `max`.
+2. Per-header range viability via the amnezigo validator.
+3. The packet-size classification invariant for the S-padded handshake sizes and the junk range.
+4. A re-check of the freshly generated per-peer `i1`–`i5` lengths.
+
+An unknown `--protocol` or `--preset` name fails before any output is produced, so a failed run never leaves a half-written `--out` file behind.
+
+## Provenance and licensing
+
+`nylon-genesis` links the GPL-3.0 amnezigo parameter oracle, which makes the tool internal-only: build it from source for your own organization and do not redistribute the binary. This is a deliberate split — the nylon daemon itself links only MIT-licensed device code and Apache-2.0 nylon code, and the public release artifacts ship the daemon only, never `nylon-genesis`.
+
+For build requirements (including the sibling `../amnezigo` checkout the `replace` directive demands), see [Building and testing](/guides/development).
