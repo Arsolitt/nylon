@@ -1,0 +1,158 @@
+---
+title: Building & Testing
+description: Build nylon from source, run the unit, integration, and e2e suites, and understand the release pipeline.
+sidebar:
+  order: 10
+---
+
+Everything in nylon's development workflow routes through one file: the `Makefile`. You build with `make build` (or the per-binary targets `make nylon`, `make nylon-genesis`, `make nylon-lb`), run tests with `make test*`, regenerate protobufs with `make proto`, and cut container images with `make image-nylon-lb`. This page walks through the prerequisites, every make target, the build tags that gate each test suite, and how releases and the demo tooling work.
+
+## Prerequisites
+
+- **Go 1.26.3** — the toolchain is pinned to this exact version in `mise.toml`, `go.mod`, the CI `GO_VERSION`, and both Dockerfiles, so every environment builds with the same compiler.
+- **Docker** — required for the e2e suite, which runs real containers through [testcontainers](https://go.testcontainers.org/). The unit and integration suites do not need it.
+- **A sibling `../amnezigo` checkout** — `go.mod` carries `replace github.com/Arsolitt/amnezigo => ../amnezigo`. The `nylon-genesis` tool imports `amnezigo` as its genesis oracle, so builds that compile it — plain `go build ./...` and `make build`, which builds `nylon-genesis` — need that sibling checkout to exist. The e2e suite does not: its image-build step compiles only `./cmd/nylon` (the root `Dockerfile`), so Docker alone is enough for it.
+
+::::caution
+Cloning only the nylon repo is not enough. Check out [amnezigo](https://github.com/Arsolitt/amnezigo) next to it (as `../amnezigo`) or `go build ./...` fails to resolve the replacement module.
+::::
+
+The Makefile exports `CGO_ENABLED=0` for all builds, so you get fully static binaries without touching your shell environment.
+
+For the configs that `nylon-genesis` generates, see the [genesis guide](/guides/genesis).
+
+## Make Targets
+
+| Target | What it does |
+| --- | --- |
+| `make build` | Builds `bin/nylon`, `bin/nylon-genesis`, and `bin/nylon-lb`, stamping version/commit via `-ldflags` (`git describe` / `git rev-parse`). |
+| `make nylon` | Builds `bin/nylon` only, from `./cmd/nylon`. |
+| `make nylon-genesis` | Builds `bin/nylon-genesis` only, from `./cmd/nylon-genesis`. |
+| `make nylon-lb` | Builds `bin/nylon-lb` only, from `./cmd/nylon-lb`. |
+| `make test` | Runs the unit suite: `gotestsum --race -tags=router_test ./...`. |
+| `make test-integration` | Runs the in-process integration suite (`-tags=integration ./integration/...`) — needs no Docker. |
+| `make test-e2e` | Runs the e2e suite (`-tags=e2e ./e2e/... -parallel $(NPROC)`) — requires Docker. |
+| `make test-all` | Runs all three suites in sequence. |
+| `make proto` | Runs `go generate ./cmd/nylon` to regenerate `protocol/*.pb.go`. |
+| `make image-nylon-lb` | Builds the `nylon-lb` container image (runtime stage of `cmd/nylon-lb/Dockerfile`). |
+| `make image-nylon-lb-debug` | Builds the debug variant (debug stage: extra tooling such as `curl`, `iproute2`, and `tcpdump`). |
+| `make push-nylon-lb` | Rebuilds the `nylon-lb` runtime image multi-platform (`$PLATFORMS`) via `buildx --push` and pushes it to `$REGISTRY` — it does not push the local image left behind by `make image-nylon-lb`. |
+| `make clean` | Removes `bin/`. |
+
+After `make build`, you have all three binaries in `bin/`. To configure and run the daemon, continue with [Getting Started](/guides/getting-started).
+
+## Build Tags
+
+All test-only code sits behind build tags. The `interop/awgref` package (`awg_ref_interop`) and the `sys_virtual` layer (`integration`) stay out of a default `go build ./...` — the production `sys_physical` layer is the inverse (`!integration`), so it is always part of the default build and only swaps out for `sys_virtual` when the integration suite runs.
+
+| Tag | Gates |
+| --- | --- |
+| `router_test` | The core routing test suite: the Babel scenario tests in `core/router_test.go` (21+ topology tests) plus their `core/router_harness.go` scaffolding — the only two files carrying this tag. The `sys_route`, `nylon_tc`, `future`, `scheduler`, and `observability` tests are untagged and run under any `go test`. |
+| `integration` | The `./integration/...` suite: an in-process `VirtualHarness` built on `ChannelTUN` with configurable latency/jitter/loss links, checked for leaks with `goleak.VerifyNone`. |
+| `e2e` | The `./e2e/...` suite: full multi-node scenarios in Docker via testcontainers. |
+| `awg_ref_interop` | The `interop/awgref` interoperability suite, which validates nylon's [obfuscation](/guides/obfuscation) extensions against the reference AmneziaWG implementation. |
+
+### The `nylon-debug` Image
+
+The e2e suite needs a test-node image with real networking tools. Before any e2e test runs, `TestMain` pre-builds a `nylon-debug:latest` image from the `debug` target of the root `Dockerfile`: Ubuntu plus `ping`, `iperf3`, `curl`, `iproute2`, `iptables`, `fping`, `mtr`, `wireguard-tools`, `net-tools`, `tcpdump`, `dnsutils`, `nc`, `tmux`, `asciinema`, and `python3`. Expect the first `make test-e2e` run to take longer while this image builds.
+
+The e2e harness also allocates its Docker networks dynamically: it picks a free `10.200`–`10.250.x.x/24` subnet at runtime so the suite never collides with networks you already have.
+
+## Test Suites
+
+### Unit: `make test`
+
+Runs everything tagged `router_test` with the race detector enabled — routing algorithm scenarios, route-table handling, traffic-control plumbing, the scheduler, and observability. This is the fastest feedback loop and needs no Docker.
+
+### Integration: `make test-integration`
+
+Starts real nylon logic against an in-process virtual network, so there are no TUN devices, no root, and no Docker. The harness wires nodes together over `ChannelTUN` links with tunable latency, jitter, and loss, and every test asserts clean shutdown with `goleak`.
+
+What the suite covers:
+
+- Basic lifecycle and connectivity: `TestStartStop`, `TestSimplePing`, `TestSimpleRoutedPing`.
+- Best-path selection under faster probes: `TestOptimalConvergence`.
+- In-process routing, TUN-less relay forwarding, and TTL expiry: `TestInProcessRouting`, `TestInProcessRoutingThroughTUNLessRelay`, `TestTTL`.
+- Wire-format behavior: `TestAckRetractSentOnWire`.
+- Central config application: live neighbour removal, restart-required local-node removal, and key rotation that keeps the next hop (`TestApplyCentralConfig*`).
+- Dynamic prefixes: writing to `prefixes.d` announces a prefix, deleting it retracts it (`TestDynamicPrefixAnnounceAndWithdraw`).
+- The full IPC matrix: status, probe timeout, reload, non-neighbour rejection, trace-disabled, malformed input, and clean no-errno responses (`TestIPC*`).
+- Race safety under rapid config applies (`TestRapidToggleConfig`).
+
+### E2E: `make test-e2e`
+
+Boots multi-node topologies as Docker containers (the `nylon-debug` image from above) and asserts on real traffic. Tests run in parallel across your CPU count.
+
+| Scenario | What it proves |
+| --- | --- |
+| `TestConnectivity` | A 3-node line graph converges and pings across. |
+| `TestRecoveryExample` | Blackholing the alice→bob route forces a reroute via vps; pings recover. |
+| `TestEndpointResolution` | Nodes resolve endpoints from CoreDNS A and SRV records. |
+| `TestDynamicResolution` | A DNS record change at runtime re-resolves the endpoint to the new IP. |
+| `TestProbeReportsResolvedDNSAndLatency` | Probe JSON shows `resolved=` and latency on a REPLIED hop. |
+| `TestProbeReportsResolveErrorForMissingDNS` | A missing DNS record yields a resolve-error status. |
+| `TestProbeReportsTimeout` | An unreachable hop yields a timeout status. |
+| `TestObfProfileConnectivity` | A genesis fixture obfuscation profile connects 2 nodes over obfuscated wire, with startup retransmit retry. |
+| `TestPassiveRoaming` | A kernel WireGuard client container roams node3→node2 and pings recover. |
+| `TestTUNLessRelay` | A `no_tun` relay forwards traffic; the TTL-expired hop shows up in traces. |
+| `TestDistribution` | A sealed bundle served by a lightweight Python HTTP server container applies on a new timestamp. |
+| `TestDistributionRejectsLocalNodeRemoval` | A bundle removing the local node is rejected; the timestamp stays unchanged. |
+| `TestDistributionRejectsInvalidCentralConfig` | An invalid bundle is rejected. |
+| `TestHealthcheckPing` | Two nodes anycast a ping-checked /32 and fail over by metric. |
+| `TestHealthcheckHTTP` | An HTTP-checked service IP fails over from backup (static metric 1000) to primary (HTTP metric 10) when the server starts. |
+| `TestJSONLogging` | `--json` emits slog JSON records. |
+| `TestIPCRawSocketJSONHasNoErrnoTrailer` | A raw UAPI `get=nylon` returns pure protojson with no errno trailer. |
+
+### Continuous Integration
+
+The `go-test.yml` workflow runs all three suites on every push and PR to `main` (ignoring changes under `docs/**` and `README.md`), with e2e parallelism set to the machine's CPU count — the same `make` targets you run locally.
+
+## Container Images
+
+The `nylon-lb` load balancer ships as a container image, built from `cmd/nylon-lb/Dockerfile`:
+
+```bash
+# runtime variant
+make image-nylon-lb
+
+# debug variant (extra tooling)
+make image-nylon-lb-debug
+
+# push to your registry
+REGISTRY=ghcr.io/yourorg make push-nylon-lb
+```
+
+The targets take these variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `REGISTRY` | — | Registry to push to (`push-nylon-lb`). |
+| `IMAGE_NAME` | `nylon-lb` | Image repository name. |
+| `IMAGE_TAG` | `$(VERSION)` | Image tag; defaults to the stamped version. |
+| `PLATFORMS` | `linux/amd64,linux/arm64` | Multi-arch build platforms. |
+| `IMAGE_EXTRA_ARGS` | — | Extra flags passed through to the image build. |
+
+For what the balancer actually does at runtime, see the [nylon-lb guide](/guides/nylon-lb).
+
+The root `Dockerfile` (for the nylon daemon itself) has two relevant stages: the `runtime` stage is `FROM scratch` with `ENTRYPOINT nylon run` and `WORKDIR /app/config`, while the `debug` stage adds `-v -w --dbg-trace-tc` to the entrypoint for verbose, traced runs — handy when you are [troubleshooting](/guides/troubleshooting) a live mesh.
+
+## Release Process
+
+The `release.yml` workflow ships exactly one artifact: the `nylon` daemon binary from `cmd/nylon`, built for:
+
+- Linux: `386`, `amd64`, `arm64`
+- macOS: `amd64`, `arm64` (no `386`)
+- Windows: `amd64` and `arm64`, each bundling the `wintun 0.14.1` DLL
+
+`nylon-genesis` and `nylon-lb` are **not** released — build them from source with `make build`.
+
+Version stamping works through `internal/buildinfo`: the defaults are `Version='dev'` and `Commit='none'`, and `make build` overrides both via `-ldflags -X` using `git describe` and `git rev-parse`. If a binary was built inside a git tree without explicit stamps, `nylon version` falls back to `debug.ReadBuildInfo` and reports the `vcs.revision`, truncated to 8 characters.
+
+## Demo Tooling
+
+The `demo/` directory packages a self-contained mesh stand for demos and screenshots:
+
+- **`demo/docker-compose.yml`** — brings up a 3-node nylon mesh on `172.31.0.10`–`172.31.0.12` with one command.
+- **`demo/record.sh`** — records the routing-recovery GIF end to end. It builds the debug image, generates fresh keys and configs into `demo/configs/`, starts the 3-node compose stand, cuts the `alice`–`charlie` link with `iptables` to force a reroute, and arranges a `tmux` layout running `mtr` and `ping` so the failover is visible. The whole run takes about 2 minutes and requires Docker Compose v2 plus `python3`.
+
+Run it when you want a reproducible, visual proof that rerouting works — no cluster or manual setup needed.
