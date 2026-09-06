@@ -16,7 +16,7 @@ type Metrics struct {
 	// Gauges: current state, overwritten on every successful reconcile.
 	Leader       atomic.Int64 // 1 while this replica holds the allocator Lease
 	AllocatedIPs atomic.Int64 // distinct in-pool addresses claimed by Services
-	Services     atomic.Int64 // type=LoadBalancer Services in the cluster
+	Services     atomic.Int64 // type=LoadBalancer Services owned by this controller
 	Announces    atomic.Int64 // /32s this node currently announces
 
 	// Counters: monotonic totals since process start.
@@ -65,7 +65,7 @@ func (m *Metrics) Handler() http.Handler {
 			map[string]string{"node": m.node}, float64(m.Leader.Load()))
 		p.Metric("nylon_lb_allocated_ips", "Distinct pool addresses currently claimed by Service ingress or spec.loadBalancerIP.", "gauge",
 			nil, float64(m.AllocatedIPs.Load()))
-		p.Metric("nylon_lb_services", "type=LoadBalancer Services currently in the cluster.", "gauge",
+		p.Metric("nylon_lb_services", "type=LoadBalancer Services owned by this controller (empty --lb-class: all of them).", "gauge",
 			nil, float64(m.Services.Load()))
 		p.Metric("nylon_lb_announces", "LoadBalancer /32s this node currently announces.", "gauge",
 			nil, float64(m.Announces.Load()))

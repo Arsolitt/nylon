@@ -19,11 +19,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ctrlHarness wires a Controller over a fake clientset with a 100 ms resync
-// informer factory, starts the factory and the controller, and returns the
-// clientset, the buffered event recorder, and an early-stop func. The context
-// is cancelled again by t.Cleanup, so tests need not call the func themselves.
+// ctrlHarness wires a claim-all Controller (empty --lb-class); see
+// ctrlHarnessWithClass.
 func ctrlHarness(t *testing.T, pool *Pool) (*fake.Clientset, *record.FakeRecorder, func()) {
+	t.Helper()
+	return ctrlHarnessWithClass(t, pool, "")
+}
+
+// ctrlHarnessWithClass is ctrlHarness with --lb-class set to lbClass,
+// scoping the controller to Services carrying that spec.loadBalancerClass.
+func ctrlHarnessWithClass(t *testing.T, pool *Pool, lbClass string) (*fake.Clientset, *record.FakeRecorder, func()) {
 	t.Helper()
 	cs := fake.NewSimpleClientset()
 	recorder := record.NewFakeRecorder(64)
@@ -32,6 +37,7 @@ func ctrlHarness(t *testing.T, pool *Pool) (*fake.Clientset, *record.FakeRecorde
 		Client:   cs,
 		Factory:  factory,
 		Pool:     pool,
+		LBClass:  lbClass,
 		Recorder: recorder,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -92,6 +98,14 @@ func ctrlService(name string, mutate func(*corev1.Service)) *corev1.Service {
 		mutate(svc)
 	}
 	return svc
+}
+
+// ctrlWithClass returns a ctrlService mutate setting spec.loadBalancerClass.
+func ctrlWithClass(class string) func(*corev1.Service) {
+	return func(s *corev1.Service) {
+		c := class
+		s.Spec.LoadBalancerClass = &c
+	}
 }
 
 // ctrlStatusIngress returns the ingress IPs currently on the service status.
@@ -272,4 +286,122 @@ func TestControllerReplacesForeignIngress(t *testing.T) {
 
 	ctrlAwaitIngress(t, cs, "stale", "192.0.2.1")
 	ctrlAwaitEvent(t, rec, "Allocated")
+}
+
+// A class-scoped controller allocates for a Service carrying exactly its
+// loadBalancerClass.
+func TestControllerAllocatesMatchingClassService(t *testing.T) {
+	pool, err := ParsePool("192.0.2.0/29", nil)
+	require.NoError(t, err)
+	cs, rec, _ := ctrlHarnessWithClass(t, pool, "nylon")
+
+	_, err = cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("web", ctrlWithClass("nylon")), metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	ctrlAwaitIngress(t, cs, "web", "192.0.2.1")
+	ctrlAwaitEvent(t, rec, "Allocated")
+}
+
+// A Service carrying a foreign loadBalancerClass is never given an ingress
+// and produces no events: it belongs to another controller.
+func TestControllerIgnoresForeignClassService(t *testing.T) {
+	pool, err := ParsePool("192.0.2.0/29", nil)
+	require.NoError(t, err)
+	cs, rec, _ := ctrlHarnessWithClass(t, pool, "nylon")
+
+	_, err = cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("foreign", ctrlWithClass("other")), metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	assert.Never(t, func() bool {
+		return len(ctrlStatusIngress(t, cs, "foreign")) > 0
+	}, time.Second, 50*time.Millisecond, "foreign-class Service must never get an ingress")
+	assert.Empty(t, ctrlDrainEvents(rec), "foreign-class Service must produce no events")
+}
+
+// While --lb-class is set, an unclassed Service stays pending for another
+// controller: strict match, not fallback-to-unclaimed.
+func TestControllerIgnoresUnclassedServiceWhenClassSet(t *testing.T) {
+	pool, err := ParsePool("192.0.2.0/29", nil)
+	require.NoError(t, err)
+	cs, _, _ := ctrlHarnessWithClass(t, pool, "nylon")
+
+	_, err = cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("unclassed", nil), metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	assert.Never(t, func() bool {
+		return len(ctrlStatusIngress(t, cs, "unclassed")) > 0
+	}, time.Second, 50*time.Millisecond, "unclassed Service must stay pending")
+}
+
+// Flipping an owned Service's class away hands it over: the status we wrote
+// stays exactly as it was — never re-written, never wiped. The new class's
+// controller owns the Service now; never clear an address on a Service this
+// controller no longer owns.
+func TestControllerHandsOffOnClassChangeAway(t *testing.T) {
+	pool, err := ParsePool("192.0.2.0/29", nil)
+	require.NoError(t, err)
+	cs, rec, _ := ctrlHarnessWithClass(t, pool, "nylon")
+
+	_, err = cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("flip", ctrlWithClass("nylon")), metav1.CreateOptions{})
+	require.NoError(t, err)
+	ctrlAwaitIngress(t, cs, "flip", "192.0.2.1")
+
+	svc, err := cs.CoreV1().Services("default").Get(context.Background(), "flip", metav1.GetOptions{})
+	require.NoError(t, err)
+	updated := svc.DeepCopy()
+	c := "other"
+	updated.Spec.LoadBalancerClass = &c
+	_, err = cs.CoreV1().Services("default").Update(context.Background(), updated, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	assert.Never(t, func() bool {
+		return !slices.Equal(ctrlStatusIngress(t, cs, "flip"), []string{"192.0.2.1"})
+	}, time.Second, 50*time.Millisecond, "handed-off Service status must stay untouched")
+	assert.False(t, slices.ContainsFunc(ctrlDrainEvents(rec), func(ev string) bool {
+		return strings.Contains(ev, "Released")
+	}), "handing off must not release the address")
+}
+
+// A foreign-class Service's status is untouchable even when it is out of
+// pool: another controller wrote it, and nylon-lb never clears addresses it
+// did not allocate.
+func TestControllerPreservesForeignIngressOnNotOwned(t *testing.T) {
+	pool, err := ParsePool("192.0.2.0/29", nil)
+	require.NoError(t, err)
+	cs, _, _ := ctrlHarnessWithClass(t, pool, "nylon")
+
+	seeded := ctrlService("foreign", ctrlWithClass("other"))
+	seeded.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "203.0.113.9"}}
+	_, err = cs.CoreV1().Services("default").Create(context.Background(), seeded, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	assert.Never(t, func() bool {
+		return !slices.Equal(ctrlStatusIngress(t, cs, "foreign"), []string{"203.0.113.9"})
+	}, time.Second, 50*time.Millisecond, "foreign-class status must stay untouched")
+}
+
+// The taken set is class-agnostic: an in-pool address held by a
+// foreign-class Service still counts as taken, so it is never handed to an
+// owned Service — overlapping pools must never double-assign.
+func TestControllerForeignInPoolIngressCountsAsTaken(t *testing.T) {
+	pool, err := ParsePool("192.0.2.0/30", nil) // usable: .1, .2
+	require.NoError(t, err)
+	cs, _, _ := ctrlHarnessWithClass(t, pool, "nylon")
+
+	foreign := ctrlService("foreign", ctrlWithClass("other"))
+	foreign.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "192.0.2.1"}}
+	_, err = cs.CoreV1().Services("default").Create(context.Background(), foreign, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	_, err = cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("web", ctrlWithClass("nylon")), metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	ctrlAwaitIngress(t, cs, "web", "192.0.2.2")
+	assert.Equal(t, []string{"192.0.2.1"}, ctrlStatusIngress(t, cs, "foreign"),
+		"the foreign-class holder keeps its address (hands off)")
 }

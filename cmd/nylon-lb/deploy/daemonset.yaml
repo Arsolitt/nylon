@@ -36,9 +36,14 @@ spec:
               add: ["NET_ADMIN"]
           # One pool per cluster: every node must use the same --pool, with the
           # same --exclude for reserved addresses (e.g. the stand probe IP).
+          # --lb-class scopes nylon-lb to Services carrying exactly that
+          # spec.loadBalancerClass (edit per cluster), so other class-scoped
+          # LB controllers can coexist; drop the flag to claim every
+          # LoadBalancer Service.
           args:
             - --pool=10.110.0.0/24
             - --exclude=10.110.0.1
+            - --lb-class=nylon
           env:
             # The container hostname is the pod name, not the node name; pass
             # --node-name=$(NODE_NAME) in args when running with

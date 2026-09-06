@@ -97,6 +97,13 @@ type spkHarness struct {
 
 func newSpkHarness(t *testing.T, nodeName string) *spkHarness {
 	t.Helper()
+	return newSpkHarnessWithClass(t, nodeName, "")
+}
+
+// newSpkHarnessWithClass is newSpkHarness with --lb-class set to lbClass,
+// scoping the speaker to Services carrying that spec.loadBalancerClass.
+func newSpkHarnessWithClass(t *testing.T, nodeName, lbClass string) *spkHarness {
+	t.Helper()
 	h := &spkHarness{
 		t:      t,
 		client: fake.NewSimpleClientset(),
@@ -115,6 +122,7 @@ func newSpkHarness(t *testing.T, nodeName string) *spkHarness {
 		Client:      h.client,
 		Factory:     h.factory,
 		Pool:        h.pool,
+		LBClass:     lbClass,
 		PrefixesDir: h.dir,
 		NodeName:    nodeName,
 		Binder:      h.binder,
@@ -341,4 +349,44 @@ func TestSpeakerLocalPolicyNilReadyMeansReady(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		return slices.Contains(h.binder.ensuredList(), ip)
 	}, 2*time.Second, 10*time.Millisecond, "binder should have ensured the ingress IP")
+}
+
+// A class-scoped speaker announces and binds its own class's Service like
+// the claim-all speaker does.
+func TestSpeakerAnnouncesMatchingClassService(t *testing.T) {
+	h := newSpkHarnessWithClass(t, "uk-node-1", "nylon")
+	ip := mustAddr(t, "10.110.0.16")
+
+	svc := spkService("default", "web", ip.String(), "")
+	c := "nylon"
+	svc.Spec.LoadBalancerClass = &c
+	h.createService(svc)
+
+	path := filepath.Join(h.dir, fileName("default", "web"))
+	assert.Eventually(t, func() bool {
+		data, err := os.ReadFile(path)
+		return err == nil && string(data) == spkGolden(ip)
+	}, 2*time.Second, 10*time.Millisecond, "announce file should hold exactly the golden bytes")
+	assert.Eventually(t, func() bool {
+		return slices.Contains(h.binder.ensuredList(), ip)
+	}, 2*time.Second, 10*time.Millisecond, "binder should have ensured the ingress IP")
+}
+
+// A foreign-class Service is never announced here, even when its status
+// holds an in-pool address: that allocation is another controller's, and
+// announcing it would hijack the traffic.
+func TestSpeakerSkipsForeignClassService(t *testing.T) {
+	h := newSpkHarnessWithClass(t, "uk-node-1", "nylon")
+	ip := mustAddr(t, "10.110.0.15")
+
+	svc := spkService("default", "web", ip.String(), "")
+	c := "other"
+	svc.Spec.LoadBalancerClass = &c
+	h.createService(svc)
+
+	path := filepath.Join(h.dir, fileName("default", "web"))
+	assert.Never(t, func() bool { return spkExists(path) }, time.Second, 10*time.Millisecond,
+		"a foreign-class Service must never announce on this node")
+	assert.Never(t, func() bool { return len(h.binder.ensuredList()) > 0 }, time.Second, 10*time.Millisecond,
+		"the binder must never be called for a foreign-class Service")
 }

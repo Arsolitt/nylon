@@ -17,6 +17,7 @@ propagates — the same stand-proven pattern as `nylon-vip.service` +
 |---|---|---|
 | `--pool` | (required) | IPv4 CIDR to allocate LoadBalancer addresses from. |
 | `--exclude` | — | Repeatable IPv4 address never to allocate, e.g. the stand probe IP. |
+| `--lb-class` | — | `loadBalancerClass` to claim. Empty claims all `type=LoadBalancer` Services; set it to coexist with other class-scoped LB controllers. |
 | `--prefixes-dir` | `/etc/nylon/prefixes.d` | Directory nylon-lb writes `lb-*.json` dynamic-prefix files to. |
 | `--bind-interface` | `lo` | Interface to bind allocated addresses on; empty string disables binding. |
 | `--kubeconfig` | — | Path to a kubeconfig; falls back to in-cluster config, `$KUBECONFIG`, then `~/.kube/config`. |
@@ -73,7 +74,7 @@ version/commit stamped at link time (see `Makefile` `-ldflags`).
 | `nylon_lb_build_info` | gauge | `version`, `commit` | Build stamp; always `1`. |
 | `nylon_lb_leader` | gauge | `node` | `1` while this replica holds the allocator Lease. |
 | `nylon_lb_allocated_ips` | gauge | — | Distinct pool addresses currently claimed by Service ingress or `spec.loadBalancerIP`. |
-| `nylon_lb_services` | gauge | — | `type=LoadBalancer` Services currently in the cluster. |
+| `nylon_lb_services` | gauge | — | `type=LoadBalancer` Services owned by this controller (empty `--lb-class`: all of them). |
 | `nylon_lb_announces` | gauge | — | LoadBalancer /32s this node currently announces. |
 | `nylon_lb_allocations_total` | counter | — | Fresh ingress assignments since start. |
 | `nylon_lb_releases_total` | counter | — | Ingress clearances (Service deleted or no longer LoadBalancer) since start. |
@@ -92,7 +93,7 @@ DaemonSet (recommended):
 make image-nylon-lb REGISTRY=ghcr.io/encodeous/nylon IMAGE_TAG=latest
 # multi-arch build & push to any registry:
 make push-nylon-lb REGISTRY=ghcr.io/encodeous/nylon IMAGE_TAG=v0.4.0
-# edit --pool/--exclude in deploy/daemonset.yaml (one pool per cluster)
+# edit --pool/--exclude/--lb-class in deploy/daemonset.yaml (one pool per cluster)
 kubectl apply -f cmd/nylon-lb/deploy/rbac.yaml
 kubectl apply -f cmd/nylon-lb/deploy/daemonset.yaml
 ```
@@ -118,9 +119,13 @@ Restart=always
 - The pool must be inside every receiver's `dynamic_prefix_ranges`; peers reject
   announced prefixes outside it (receiver-side fail-closed). Cross-zone traffic
   follows the gateway's static aggregate first, then the intra-zone /32.
-- nylon-lb must be the ONLY LoadBalancer controller in the cluster: it owns ALL
-  `type=LoadBalancer` Services (no `loadBalancerClass` filtering). Running it
-  next to another controller (servicelb, MetalLB, kube-vip) corrupts allocations.
+- With `--lb-class` set, nylon-lb owns only Services carrying exactly that
+  `spec.loadBalancerClass`; Services with another or no class are left to their
+  own controllers (unclassed ones stay `<pending>`), so other class-scoped
+  LoadBalancer controllers can coexist. With the flag empty it claims ALL
+  `type=LoadBalancer` Services and must be the only LoadBalancer controller in
+  the cluster: running claim-all next to another controller (servicelb,
+  MetalLB, kube-vip) corrupts allocations.
 - Allocation state is derived from live Services, never stored. An IP can leak
   (stay unused) only if a Service is deleted while every replica is down; the
   next allocation still cannot collide, because announce files are garbage

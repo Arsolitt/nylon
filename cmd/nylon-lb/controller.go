@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -37,8 +38,9 @@ func (e poolExhaustedError) Error() string {
 }
 
 // Controller is the allocator half of nylon-lb: it gives every LoadBalancer
-// Service exactly one ingress IP from the pool and writes it to
-// status.loadBalancer.ingress. Announcing the /32 into the mesh is the
+// Service it owns (empty --lb-class: all of them; otherwise exactly those
+// with a matching spec.loadBalancerClass) one ingress IP from the pool and
+// writes it to status.loadBalancer.ingress. Announcing the /32 into the mesh is the
 // speaker's job. Allocation state is derived, never stored: the taken set is
 // recomputed from the live Services on every reconcile, so the controller
 // keeps no bookkeeping and restarts without losing anything.
@@ -46,6 +48,7 @@ type Controller struct {
 	client   kubernetes.Interface
 	factory  informers.SharedInformerFactory
 	pool     *Pool
+	lbClass  string               // empty claims all LoadBalancer Services (see ownsService)
 	recorder record.EventRecorder // nil disables events
 	logger   *slog.Logger
 	metrics  *Metrics // nil disables metrics
@@ -70,6 +73,7 @@ type ControllerOptions struct {
 	Client   kubernetes.Interface
 	Factory  informers.SharedInformerFactory
 	Pool     *Pool
+	LBClass  string               // empty claims all LoadBalancer Services
 	Recorder record.EventRecorder // nil = no events
 	Logger   *slog.Logger
 	Metrics  *Metrics // nil disables metrics
@@ -88,6 +92,7 @@ func NewController(opts ControllerOptions) *Controller {
 		client:    opts.Client,
 		factory:   opts.Factory,
 		pool:      opts.Pool,
+		lbClass:   opts.LBClass,
 		recorder:  opts.Recorder,
 		logger:    logger,
 		metrics:   opts.Metrics,
@@ -197,7 +202,10 @@ func (c *Controller) reqCtx() context.Context {
 // reconcile applies the allocation decision tree for one Service key:
 //
 //  1. Service gone -> nothing to do.
-//  2. Not a LoadBalancer Service -> clear any leftover ingress (Released).
+//  2. Not ours: a LoadBalancer Service outside our class (including unclassed
+//     ones while --lb-class is set) -> hands off, status untouched; a
+//     non-LoadBalancer Service -> release our leftover in-pool ingress
+//     (Released), foreign entries untouched.
 //  3. Status already holds exactly one usable in-pool IPv4 -> keep it.
 //  4. Otherwise re-derive the taken set from every live Service and allocate:
 //     the requested spec.loadBalancerIP wins when it is a free in-pool
@@ -224,15 +232,31 @@ func (c *Controller) reconcile(key string) error {
 		return err
 	}
 
-	// Anything that is not a LoadBalancer Service must not keep an address
-	// allocated: clear a leftover status so the address returns to the pool.
-	if svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
-		if len(svc.Status.LoadBalancer.Ingress) == 0 {
+	// A LoadBalancer Service this controller does not own — a different
+	// or absent spec.loadBalancerClass while --lb-class scopes it —
+	// belongs to another controller. Hands off its status entirely:
+	// never allocate for it, and never clear an address this controller
+	// did not allocate itself.
+	if !ownsService(svc, c.lbClass) {
+		if svc.Spec.Type == corev1.ServiceTypeLoadBalancer {
 			return nil
 		}
-		released := ingressIPStrings(svc.Status.LoadBalancer.Ingress)
+		// Not a LoadBalancer Service (anymore): release the in-pool
+		// ingress so the address returns to the pool. Foreign entries
+		// are not ours to clear and stay untouched.
+		mine := inPoolIngress(svc.Status.LoadBalancer.Ingress, c.pool)
+		if len(mine) == 0 {
+			return nil
+		}
+		released := ingressIPStrings(mine)
+		var kept []corev1.LoadBalancerIngress
+		for _, ing := range svc.Status.LoadBalancer.Ingress {
+			if !slices.ContainsFunc(mine, func(m corev1.LoadBalancerIngress) bool { return m.IP == ing.IP }) {
+				kept = append(kept, ing)
+			}
+		}
 		updated := svc.DeepCopy()
-		updated.Status.LoadBalancer = corev1.LoadBalancerStatus{}
+		updated.Status.LoadBalancer.Ingress = kept
 		_, err = c.client.CoreV1().Services(ns).UpdateStatus(ctx, updated, metav1.UpdateOptions{})
 		if err != nil {
 			if apierrors.IsConflict(err) {
@@ -279,7 +303,7 @@ func (c *Controller) assignIngress(ctx context.Context, key, ns, name string) er
 	var svc *corev1.Service
 	for i := range list.Items {
 		s := &list.Items[i]
-		if s.Spec.Type == corev1.ServiceTypeLoadBalancer {
+		if ownsService(s, c.lbClass) {
 			lbServices++
 		}
 		if s.Namespace == ns && s.Name == name {
@@ -296,6 +320,12 @@ func (c *Controller) assignIngress(ctx context.Context, key, ns, name string) er
 	}
 	if svc == nil {
 		c.logger.Debug("service is gone; nothing to do", "key", key)
+		return nil
+	}
+	if !ownsService(svc, c.lbClass) {
+		// The Service left our class between the informer view and this
+		// live List: not ours to allocate. The reconcile gate hands it
+		// off on the next pass.
 		return nil
 	}
 
@@ -366,6 +396,19 @@ func (c *Controller) event(svc *corev1.Service, eventtype, reason, message strin
 	c.recorder.Event(svc, eventtype, reason, message)
 }
 
+// ownsService reports whether svc belongs to this controller: a
+// type=LoadBalancer Service that, when lbClass is set, carries exactly that
+// spec.loadBalancerClass. An empty lbClass claims all LoadBalancer Services.
+func ownsService(svc *corev1.Service, lbClass string) bool {
+	if svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
+		return false
+	}
+	if lbClass == "" {
+		return true
+	}
+	return svc.Spec.LoadBalancerClass != nil && *svc.Spec.LoadBalancerClass == lbClass
+}
+
 // keepIngressIP reports whether ingress is exactly one entry holding a
 // non-empty IPv4 address inside the pool, returning that address. This is the
 // settled state reconciliation aims for.
@@ -397,6 +440,18 @@ func takeServiceIPs(taken map[netip.Addr]struct{}, pool *Pool, s *corev1.Service
 			}
 		}
 	}
+}
+
+// inPoolIngress returns the ingress entries holding an in-pool IPv4
+// address — this controller's own allocations.
+func inPoolIngress(ingress []corev1.LoadBalancerIngress, pool *Pool) []corev1.LoadBalancerIngress {
+	out := make([]corev1.LoadBalancerIngress, 0, len(ingress))
+	for _, ing := range ingress {
+		if ip, err := netip.ParseAddr(ing.IP); err == nil && ip.Is4() && pool.Contains(ip) {
+			out = append(out, ing)
+		}
+	}
+	return out
 }
 
 // ingressIPStrings returns the raw IP strings of a status ingress list.

@@ -49,6 +49,7 @@ type SpeakerOptions struct {
 	Client      kubernetes.Interface
 	Factory     informers.SharedInformerFactory
 	Pool        *Pool
+	LBClass     string // empty claims all LoadBalancer Services
 	PrefixesDir string
 	NodeName    string
 	Binder      AddrBinder // nil disables binding
@@ -65,6 +66,7 @@ type SpeakerOptions struct {
 type Speaker struct {
 	client        kubernetes.Interface
 	pool          *Pool
+	lbClass       string
 	dir           string
 	nodeName      string
 	binder        AddrBinder
@@ -118,6 +120,7 @@ func NewSpeaker(opts SpeakerOptions) (*Speaker, error) {
 	s := &Speaker{
 		client:        opts.Client,
 		pool:          opts.Pool,
+		lbClass:       opts.LBClass,
 		dir:           opts.PrefixesDir,
 		nodeName:      opts.NodeName,
 		binder:        opts.Binder,
@@ -190,9 +193,10 @@ type announce struct {
 // the announces this node should currently hold, sorted by file name for
 // deterministic reconciliation.
 //
-// A type=LoadBalancer Service is announced when its status carries exactly
-// one IPv4 ingress address inside the pool (the allocator's output — the
-// speaker never allocates) and:
+// A type=LoadBalancer Service owned by this controller (empty --lb-class:
+// all of them) is announced when its status carries exactly one IPv4
+// ingress address inside the pool (the allocator's output — the speaker
+// never allocates) and:
 //
 //   - externalTrafficPolicy != Local (the Cluster default): always. Every
 //     node announces the /32; Babel anycast picks the closest one and
@@ -210,7 +214,7 @@ func (s *Speaker) desiredAnnounces() []announce {
 	}
 	var out []announce
 	for _, svc := range services {
-		ip, ok := serviceIngressIP(svc, s.pool)
+		ip, ok := serviceIngressIP(svc, s.pool, s.lbClass)
 		if !ok {
 			continue
 		}
@@ -231,11 +235,14 @@ func (s *Speaker) desiredAnnounces() []announce {
 
 // serviceIngressIP extracts the single pool-contained IPv4 address from a
 // Service's status.loadBalancer.ingress, or reports that there is nothing to
-// announce: not a LoadBalancer Service, zero or ambiguous ingress entries,
-// a non-IPv4 address, or an address outside the pool (foreign or stale —
-// replaced by the allocator, never announced by the speaker).
-func serviceIngressIP(svc *corev1.Service, pool *Pool) (netip.Addr, bool) {
-	if svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
+// announce: not a LoadBalancer Service, not owned by this controller (a
+// loadBalancerClass mismatch while --lb-class scopes it — a foreign-class
+// Service holding an in-pool address is another controller's to announce),
+// zero or ambiguous ingress entries, a non-IPv4 address, or an address
+// outside the pool (foreign or stale — replaced by the allocator, never
+// announced by the speaker).
+func serviceIngressIP(svc *corev1.Service, pool *Pool, lbClass string) (netip.Addr, bool) {
+	if !ownsService(svc, lbClass) {
 		return netip.Addr{}, false
 	}
 	ingress := svc.Status.LoadBalancer.Ingress

@@ -52,6 +52,7 @@ const (
 type lbOptions struct {
 	pool            string
 	excludes        []string
+	lbClass         string
 	prefixesDir     string
 	bindInterface   string
 	kubeconfig      string
@@ -89,7 +90,12 @@ serves the data plane; this controller owns only allocation and announce.
 The allocator (status writes) runs leader-elected cluster-wide; the speaker
 (announce + bind) runs on every node so per-node announce placement
 (externalTrafficPolicy=Cluster announces everywhere, Local only where ready
-endpoints live) is decided locally.`,
+endpoints live) is decided locally.
+
+When --lb-class names a loadBalancerClass, only Services carrying exactly
+that spec.loadBalancerClass are reconciled; Services with another or no
+class are left to their own controllers. An empty --lb-class claims every
+LoadBalancer Service.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(&opts)
@@ -100,6 +106,7 @@ endpoints live) is decided locally.`,
 
 	cmd.Flags().StringVar(&opts.pool, "pool", "", "IPv4 CIDR pool to allocate LoadBalancer ingress IPs from")
 	cmd.Flags().StringArrayVar(&opts.excludes, "exclude", nil, "pool IP to never allocate (repeatable; e.g. a stand's probe IP)")
+	cmd.Flags().StringVar(&opts.lbClass, "lb-class", "", "loadBalancerClass to claim; empty claims all type=LoadBalancer Services")
 	cmd.Flags().StringVar(&opts.prefixesDir, "prefixes-dir", "/etc/nylon/prefixes.d", "nylon dynamic_prefixes_dir to write announce files into")
 	cmd.Flags().StringVar(&opts.bindInterface, "bind-interface", "lo", "interface to bind allocated IPs on (empty string disables binding)")
 	cmd.Flags().StringVar(&opts.kubeconfig, "kubeconfig", "", "path to a kubeconfig (empty: in-cluster config, then the default loading rules)")
@@ -172,6 +179,7 @@ func run(opts *lbOptions) (err error) {
 		"commit", buildinfo.Commit,
 		"node", nodeName,
 		"pool", opts.pool,
+		"lb_class", opts.lbClass,
 		"prefixes_dir", opts.prefixesDir,
 		"health_addr", opts.healthAddr,
 		"leader_elect", opts.leaderElect,
@@ -213,6 +221,7 @@ func run(opts *lbOptions) (err error) {
 		Client:   clientset,
 		Factory:  factory,
 		Pool:     pool,
+		LBClass:  opts.lbClass,
 		Recorder: recorder,
 		Logger:   logger.With("module", log.ScopeAllocator),
 		Metrics:  metrics,
@@ -229,6 +238,7 @@ func run(opts *lbOptions) (err error) {
 		Client:      clientset,
 		Factory:     factory,
 		Pool:        pool,
+		LBClass:     opts.lbClass,
 		PrefixesDir: opts.prefixesDir,
 		NodeName:    nodeName,
 		Binder:      binder,
