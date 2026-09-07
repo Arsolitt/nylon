@@ -19,16 +19,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ctrlHarness wires a claim-all Controller (empty --lb-class); see
-// ctrlHarnessWithClass.
-func ctrlHarness(t *testing.T, pool *Pool) (*fake.Clientset, *record.FakeRecorder, func()) {
+// ctrlHarness wires a claim-all Controller (empty --lb-class) over pools;
+// see ctrlHarnessWithClass.
+func ctrlHarness(t *testing.T, pools *PoolSet) (*fake.Clientset, *record.FakeRecorder, func()) {
 	t.Helper()
-	return ctrlHarnessWithClass(t, pool, "")
+	return ctrlHarnessWithClass(t, pools, "")
 }
 
 // ctrlHarnessWithClass is ctrlHarness with --lb-class set to lbClass,
 // scoping the controller to Services carrying that spec.loadBalancerClass.
-func ctrlHarnessWithClass(t *testing.T, pool *Pool, lbClass string) (*fake.Clientset, *record.FakeRecorder, func()) {
+func ctrlHarnessWithClass(t *testing.T, pools *PoolSet, lbClass string) (*fake.Clientset, *record.FakeRecorder, func()) {
 	t.Helper()
 	cs := fake.NewSimpleClientset()
 	recorder := record.NewFakeRecorder(64)
@@ -36,7 +36,7 @@ func ctrlHarnessWithClass(t *testing.T, pool *Pool, lbClass string) (*fake.Clien
 	controller := NewController(ControllerOptions{
 		Client:   cs,
 		Factory:  factory,
-		Pool:     pool,
+		Pools:    pools,
 		LBClass:  lbClass,
 		Recorder: recorder,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -52,6 +52,19 @@ func ctrlHarnessWithClass(t *testing.T, pool *Pool, lbClass string) (*fake.Clien
 	go func() { _ = controller.Run(ctx) }()
 	t.Cleanup(cancel)
 	return cs, recorder, cancel
+}
+
+// mustPoolSet parses specs of the form name=cidr into a PoolSet, failing
+// the test on a bad spec. With no specs it defaults to a single pool named
+// test spanning 192.0.2.0/29 (usable .1-.6).
+func mustPoolSet(t *testing.T, specs ...string) *PoolSet {
+	t.Helper()
+	if len(specs) == 0 {
+		specs = []string{"test=192.0.2.0/29"}
+	}
+	pools, err := ParsePoolSet(specs, nil)
+	require.NoError(t, err)
+	return pools
 }
 
 // ctrlDrainEvents collects whatever is currently buffered on the fake
@@ -88,14 +101,16 @@ func ctrlAwaitEvent(t *testing.T, rec *record.FakeRecorder, substr string) []str
 }
 
 // ctrlService builds a minimal LoadBalancer Service in the default namespace;
-// mutate adjusts it per case.
-func ctrlService(name string, mutate func(*corev1.Service)) *corev1.Service {
+// each mutate adjusts it in order (nil mutates are skipped).
+func ctrlService(name string, mutate ...func(*corev1.Service)) *corev1.Service {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name},
 		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
 	}
-	if mutate != nil {
-		mutate(svc)
+	for _, m := range mutate {
+		if m != nil {
+			m(svc)
+		}
 	}
 	return svc
 }
@@ -105,6 +120,17 @@ func ctrlWithClass(class string) func(*corev1.Service) {
 	return func(s *corev1.Service) {
 		c := class
 		s.Spec.LoadBalancerClass = &c
+	}
+}
+
+// ctrlWithPool returns a ctrlService mutate selecting the named allocation
+// pool via the nylon.io/lb-pool annotation.
+func ctrlWithPool(name string) func(*corev1.Service) {
+	return func(s *corev1.Service) {
+		if s.Annotations == nil {
+			s.Annotations = map[string]string{}
+		}
+		s.Annotations[PoolAnnotation] = name
 	}
 }
 
@@ -128,12 +154,10 @@ func ctrlAwaitIngress(t *testing.T, cs *fake.Clientset, name string, want ...str
 // A LoadBalancer Service is allocated the pool's lowest usable address: for
 // 192.0.2.0/29 that is 192.0.2.1 (network .0 and broadcast .7 are skipped).
 func TestControllerAllocatesLowestFreeIP(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, _, _ := ctrlHarness(t, pool)
+	cs, _, _ := ctrlHarness(t, mustPoolSet(t))
 
-	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("web", nil), metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("web", ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	ctrlAwaitIngress(t, cs, "web", "192.0.2.1")
@@ -141,17 +165,15 @@ func TestControllerAllocatesLowestFreeIP(t *testing.T) {
 
 // A second Service gets the next free address and the first keeps its own.
 func TestControllerAllocatesDistinctIPs(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, _, _ := ctrlHarness(t, pool)
+	cs, _, _ := ctrlHarness(t, mustPoolSet(t))
 
-	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("one", nil), metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("one", ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 	ctrlAwaitIngress(t, cs, "one", "192.0.2.1")
 
 	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("two", nil), metav1.CreateOptions{})
+		context.Background(), ctrlService("two", ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 	ctrlAwaitIngress(t, cs, "two", "192.0.2.2")
 
@@ -161,13 +183,11 @@ func TestControllerAllocatesDistinctIPs(t *testing.T) {
 
 // A spec.loadBalancerIP that is in-pool and free is honored verbatim.
 func TestControllerHonorsRequestedIP(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, rec, _ := ctrlHarness(t, pool)
+	cs, rec, _ := ctrlHarness(t, mustPoolSet(t))
 
-	_, err = cs.CoreV1().Services("default").Create(
+	_, err := cs.CoreV1().Services("default").Create(
 		context.Background(),
-		ctrlService("req", func(s *corev1.Service) { s.Spec.LoadBalancerIP = "192.0.2.5" }),
+		ctrlService("req", ctrlWithPool("test"), func(s *corev1.Service) { s.Spec.LoadBalancerIP = "192.0.2.5" }),
 		metav1.CreateOptions{})
 	require.NoError(t, err)
 
@@ -184,13 +204,11 @@ func TestControllerHonorsRequestedIP(t *testing.T) {
 // A spec.loadBalancerIP outside the pool draws a BadLoadBalancerIP warning and
 // the service still ends up with a pool-allocated address.
 func TestControllerWarnsOnOutOfPoolRequestedIP(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, rec, _ := ctrlHarness(t, pool)
+	cs, rec, _ := ctrlHarness(t, mustPoolSet(t))
 
-	_, err = cs.CoreV1().Services("default").Create(
+	_, err := cs.CoreV1().Services("default").Create(
 		context.Background(),
-		ctrlService("ext", func(s *corev1.Service) { s.Spec.LoadBalancerIP = "10.9.9.9" }),
+		ctrlService("ext", ctrlWithPool("test"), func(s *corev1.Service) { s.Spec.LoadBalancerIP = "10.9.9.9" }),
 		metav1.CreateOptions{})
 	require.NoError(t, err)
 
@@ -201,18 +219,16 @@ func TestControllerWarnsOnOutOfPoolRequestedIP(t *testing.T) {
 // A spec.loadBalancerIP already held by another service's ingress is refused
 // with a BadLoadBalancerIP warning and a different pool address is allocated.
 func TestControllerWarnsOnTakenRequestedIP(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, rec, _ := ctrlHarness(t, pool)
+	cs, rec, _ := ctrlHarness(t, mustPoolSet(t))
 
-	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("one", nil), metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("one", ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 	ctrlAwaitIngress(t, cs, "one", "192.0.2.1")
 
 	_, err = cs.CoreV1().Services("default").Create(
 		context.Background(),
-		ctrlService("two", func(s *corev1.Service) { s.Spec.LoadBalancerIP = "192.0.2.1" }),
+		ctrlService("two", ctrlWithPool("test"), func(s *corev1.Service) { s.Spec.LoadBalancerIP = "192.0.2.1" }),
 		metav1.CreateOptions{})
 	require.NoError(t, err)
 
@@ -225,12 +241,10 @@ func TestControllerWarnsOnTakenRequestedIP(t *testing.T) {
 // Flipping a Service to ClusterIP releases the address: the ingress is cleared
 // and a Released event is emitted.
 func TestControllerReleasesIngressOnTypeChange(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, rec, _ := ctrlHarness(t, pool)
+	cs, rec, _ := ctrlHarness(t, mustPoolSet(t))
 
-	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("flip", nil), metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("flip", ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 	ctrlAwaitIngress(t, cs, "flip", "192.0.2.1")
 
@@ -248,20 +262,18 @@ func TestControllerReleasesIngressOnTypeChange(t *testing.T) {
 // With a /30 pool (usable .1 and .2) two services exhaust it; a third never
 // gets an ingress and surfaces the AllocationFailed warning instead.
 func TestControllerBacksOffWhenPoolExhausted(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/30", nil)
-	require.NoError(t, err)
-	cs, rec, _ := ctrlHarness(t, pool)
+	cs, rec, _ := ctrlHarness(t, mustPoolSet(t, "test=192.0.2.0/30"))
 
 	for _, name := range []string{"a", "b"} {
-		_, err = cs.CoreV1().Services("default").Create(
-			context.Background(), ctrlService(name, nil), metav1.CreateOptions{})
+		_, err := cs.CoreV1().Services("default").Create(
+			context.Background(), ctrlService(name, ctrlWithPool("test")), metav1.CreateOptions{})
 		require.NoError(t, err)
 	}
 	ctrlAwaitIngress(t, cs, "a", "192.0.2.1")
 	ctrlAwaitIngress(t, cs, "b", "192.0.2.2")
 
-	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("c", nil), metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("c", ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	// Absence cannot be proven, only sampled: hold for a full second and
@@ -275,13 +287,11 @@ func TestControllerBacksOffWhenPoolExhausted(t *testing.T) {
 // A service seeded with a foreign (out-of-pool) ingress gets it replaced by a
 // pool address plus an Allocated event.
 func TestControllerReplacesForeignIngress(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, rec, _ := ctrlHarness(t, pool)
+	cs, rec, _ := ctrlHarness(t, mustPoolSet(t))
 
-	seeded := ctrlService("stale", nil)
+	seeded := ctrlService("stale", ctrlWithPool("test"))
 	seeded.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "203.0.113.9"}}
-	_, err = cs.CoreV1().Services("default").Create(context.Background(), seeded, metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(context.Background(), seeded, metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	ctrlAwaitIngress(t, cs, "stale", "192.0.2.1")
@@ -291,12 +301,10 @@ func TestControllerReplacesForeignIngress(t *testing.T) {
 // A class-scoped controller allocates for a Service carrying exactly its
 // loadBalancerClass.
 func TestControllerAllocatesMatchingClassService(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, rec, _ := ctrlHarnessWithClass(t, pool, "nylon")
+	cs, rec, _ := ctrlHarnessWithClass(t, mustPoolSet(t), "nylon")
 
-	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("web", ctrlWithClass("nylon")), metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("web", ctrlWithClass("nylon"), ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	ctrlAwaitIngress(t, cs, "web", "192.0.2.1")
@@ -306,12 +314,10 @@ func TestControllerAllocatesMatchingClassService(t *testing.T) {
 // A Service carrying a foreign loadBalancerClass is never given an ingress
 // and produces no events: it belongs to another controller.
 func TestControllerIgnoresForeignClassService(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, rec, _ := ctrlHarnessWithClass(t, pool, "nylon")
+	cs, rec, _ := ctrlHarnessWithClass(t, mustPoolSet(t), "nylon")
 
-	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("foreign", ctrlWithClass("other")), metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("foreign", ctrlWithClass("other"), ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	assert.Never(t, func() bool {
@@ -323,12 +329,10 @@ func TestControllerIgnoresForeignClassService(t *testing.T) {
 // While --lb-class is set, an unclassed Service stays pending for another
 // controller: strict match, not fallback-to-unclaimed.
 func TestControllerIgnoresUnclassedServiceWhenClassSet(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, _, _ := ctrlHarnessWithClass(t, pool, "nylon")
+	cs, _, _ := ctrlHarnessWithClass(t, mustPoolSet(t), "nylon")
 
-	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("unclassed", nil), metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("unclassed", ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	assert.Never(t, func() bool {
@@ -341,12 +345,10 @@ func TestControllerIgnoresUnclassedServiceWhenClassSet(t *testing.T) {
 // controller owns the Service now; never clear an address on a Service this
 // controller no longer owns.
 func TestControllerHandsOffOnClassChangeAway(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, rec, _ := ctrlHarnessWithClass(t, pool, "nylon")
+	cs, rec, _ := ctrlHarnessWithClass(t, mustPoolSet(t), "nylon")
 
-	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("flip", ctrlWithClass("nylon")), metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("flip", ctrlWithClass("nylon"), ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 	ctrlAwaitIngress(t, cs, "flip", "192.0.2.1")
 
@@ -370,13 +372,11 @@ func TestControllerHandsOffOnClassChangeAway(t *testing.T) {
 // pool: another controller wrote it, and nylon-lb never clears addresses it
 // did not allocate.
 func TestControllerPreservesForeignIngressOnNotOwned(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/29", nil)
-	require.NoError(t, err)
-	cs, _, _ := ctrlHarnessWithClass(t, pool, "nylon")
+	cs, _, _ := ctrlHarnessWithClass(t, mustPoolSet(t), "nylon")
 
-	seeded := ctrlService("foreign", ctrlWithClass("other"))
+	seeded := ctrlService("foreign", ctrlWithClass("other"), ctrlWithPool("test"))
 	seeded.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "203.0.113.9"}}
-	_, err = cs.CoreV1().Services("default").Create(context.Background(), seeded, metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(context.Background(), seeded, metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	assert.Never(t, func() bool {
@@ -388,20 +388,134 @@ func TestControllerPreservesForeignIngressOnNotOwned(t *testing.T) {
 // foreign-class Service still counts as taken, so it is never handed to an
 // owned Service — overlapping pools must never double-assign.
 func TestControllerForeignInPoolIngressCountsAsTaken(t *testing.T) {
-	pool, err := ParsePool("192.0.2.0/30", nil) // usable: .1, .2
-	require.NoError(t, err)
-	cs, _, _ := ctrlHarnessWithClass(t, pool, "nylon")
+	// /30: usable .1 and .2
+	cs, _, _ := ctrlHarnessWithClass(t, mustPoolSet(t, "test=192.0.2.0/30"), "nylon")
 
-	foreign := ctrlService("foreign", ctrlWithClass("other"))
+	foreign := ctrlService("foreign", ctrlWithClass("other"), ctrlWithPool("test"))
 	foreign.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "192.0.2.1"}}
-	_, err = cs.CoreV1().Services("default").Create(context.Background(), foreign, metav1.CreateOptions{})
+	_, err := cs.CoreV1().Services("default").Create(context.Background(), foreign, metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	_, err = cs.CoreV1().Services("default").Create(
-		context.Background(), ctrlService("web", ctrlWithClass("nylon")), metav1.CreateOptions{})
+		context.Background(), ctrlService("web", ctrlWithClass("nylon"), ctrlWithPool("test")), metav1.CreateOptions{})
 	require.NoError(t, err)
 
 	ctrlAwaitIngress(t, cs, "web", "192.0.2.2")
 	assert.Equal(t, []string{"192.0.2.1"}, ctrlStatusIngress(t, cs, "foreign"),
 		"the foreign-class holder keeps its address (hands off)")
+}
+
+// A LoadBalancer Service without the pool annotation fails closed: a
+// MissingPoolAnnotation warning is emitted and the status never gains an
+// ingress.
+func TestControllerMissingPoolAnnotationFailClosed(t *testing.T) {
+	cs, rec, _ := ctrlHarness(t, mustPoolSet(t))
+
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("bare"), metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	ctrlAwaitEvent(t, rec, "MissingPoolAnnotation")
+	assert.Never(t, func() bool {
+		return len(ctrlStatusIngress(t, cs, "bare")) > 0
+	}, time.Second, 50*time.Millisecond, "unannotated Service must stay pending")
+}
+
+// An annotation naming a pool that does not exist fails closed the same
+// way: an UnknownPool warning and no ingress.
+func TestControllerUnknownPoolFailClosed(t *testing.T) {
+	cs, rec, _ := ctrlHarness(t, mustPoolSet(t))
+
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("lost", ctrlWithPool("nope")), metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	ctrlAwaitEvent(t, rec, "UnknownPool")
+	assert.Never(t, func() bool {
+		return len(ctrlStatusIngress(t, cs, "lost")) > 0
+	}, time.Second, 50*time.Millisecond, "unknown-pool Service must stay pending")
+}
+
+// Stripping the pool annotation from an allocated Service releases the
+// address: the ingress is emptied and a Released event is emitted.
+func TestControllerMissingAnnotationReleasesStaleIngress(t *testing.T) {
+	cs, rec, _ := ctrlHarness(t, mustPoolSet(t))
+
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("web", ctrlWithPool("test")), metav1.CreateOptions{})
+	require.NoError(t, err)
+	ctrlAwaitIngress(t, cs, "web", "192.0.2.1")
+
+	svc, err := cs.CoreV1().Services("default").Get(context.Background(), "web", metav1.GetOptions{})
+	require.NoError(t, err)
+	updated := svc.DeepCopy()
+	delete(updated.Annotations, PoolAnnotation)
+	_, err = cs.CoreV1().Services("default").Update(context.Background(), updated, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	ctrlAwaitIngress(t, cs, "web")
+	ctrlAwaitEvent(t, rec, "Released")
+}
+
+// Each Service allocates from the pool its annotation selects: addresses
+// never cross pools and stay lowest-free within a pool.
+func TestControllerPoolSelection(t *testing.T) {
+	cs, _, _ := ctrlHarness(t, mustPoolSet(t, "shared=192.0.2.0/29", "private=198.51.100.0/29"))
+
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("a", ctrlWithPool("shared")), metav1.CreateOptions{})
+	require.NoError(t, err)
+	_, err = cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("b", ctrlWithPool("private")), metav1.CreateOptions{})
+	require.NoError(t, err)
+	_, err = cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("c", ctrlWithPool("shared")), metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	ctrlAwaitIngress(t, cs, "a", "192.0.2.1")
+	ctrlAwaitIngress(t, cs, "b", "198.51.100.1")
+	ctrlAwaitIngress(t, cs, "c", "192.0.2.2")
+}
+
+// Re-pointing the annotation at another pool reassigns from the newly
+// selected pool, and the freed address returns to the old one.
+func TestControllerAnnotationFlipReassigns(t *testing.T) {
+	cs, _, _ := ctrlHarness(t, mustPoolSet(t, "shared=192.0.2.0/29", "private=198.51.100.0/29"))
+
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("web", ctrlWithPool("shared")), metav1.CreateOptions{})
+	require.NoError(t, err)
+	ctrlAwaitIngress(t, cs, "web", "192.0.2.1")
+
+	svc, err := cs.CoreV1().Services("default").Get(context.Background(), "web", metav1.GetOptions{})
+	require.NoError(t, err)
+	updated := svc.DeepCopy()
+	updated.Annotations[PoolAnnotation] = "private"
+	_, err = cs.CoreV1().Services("default").Update(context.Background(), updated, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	ctrlAwaitIngress(t, cs, "web", "198.51.100.1")
+
+	// The freed shared address is immediately reusable by the next shared
+	// Service.
+	_, err = cs.CoreV1().Services("default").Create(
+		context.Background(), ctrlService("next", ctrlWithPool("shared")), metav1.CreateOptions{})
+	require.NoError(t, err)
+	ctrlAwaitIngress(t, cs, "next", "192.0.2.1")
+}
+
+// A spec.loadBalancerIP inside a configured pool but outside the SELECTED
+// pool is refused with a BadLoadBalancerIP warning; the Service still
+// allocates from the pool its annotation selects.
+func TestControllerLoadBalancerIPOutsideSelectedPool(t *testing.T) {
+	cs, rec, _ := ctrlHarness(t, mustPoolSet(t, "shared=192.0.2.0/29", "private=198.51.100.0/29"))
+
+	_, err := cs.CoreV1().Services("default").Create(
+		context.Background(),
+		ctrlService("web", ctrlWithPool("private"), func(s *corev1.Service) { s.Spec.LoadBalancerIP = "192.0.2.3" }),
+		metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	ctrlAwaitEvent(t, rec, "BadLoadBalancerIP")
+	ctrlAwaitIngress(t, cs, "web", "198.51.100.1")
 }

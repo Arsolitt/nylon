@@ -22,11 +22,16 @@ import (
 // Event reasons emitted by the allocator. These are pinned vocabulary: other
 // tooling matches on them, so they must not be reworded.
 const (
-	reasonAllocated         = "Allocated"
-	reasonReleased          = "Released"
-	reasonAllocationFailed  = "AllocationFailed"
-	reasonBadLoadBalancerIP = "BadLoadBalancerIP"
+	reasonAllocated             = "Allocated"
+	reasonReleased              = "Released"
+	reasonAllocationFailed      = "AllocationFailed"
+	reasonBadLoadBalancerIP     = "BadLoadBalancerIP"
+	reasonMissingPoolAnnotation = "MissingPoolAnnotation"
+	reasonUnknownPool           = "UnknownPool"
 )
+
+// PoolAnnotation selects which named pool allocates a Service's ingress IP.
+const PoolAnnotation = "nylon.io/lb-pool"
 
 // poolExhaustedError is returned when Allocate finds no free address. The
 // worker treats any non-nil reconcile error as a rate-limited requeue, so an
@@ -39,15 +44,18 @@ func (e poolExhaustedError) Error() string {
 
 // Controller is the allocator half of nylon-lb: it gives every LoadBalancer
 // Service it owns (empty --lb-class: all of them; otherwise exactly those
-// with a matching spec.loadBalancerClass) one ingress IP from the pool and
-// writes it to status.loadBalancer.ingress. Announcing the /32 into the mesh is the
-// speaker's job. Allocation state is derived, never stored: the taken set is
-// recomputed from the live Services on every reconcile, so the controller
-// keeps no bookkeeping and restarts without losing anything.
+// with a matching spec.loadBalancerClass) one ingress IP from the pool its
+// nylon.io/lb-pool annotation selects, and writes it to
+// status.loadBalancer.ingress. Announcing the /32 into the mesh is the
+// speaker's job. A Service whose annotation is missing or names an unknown
+// pool gets no address, and any stale in-pool ingress this controller
+// allocated for it is released. Allocation state is derived, never stored:
+// the taken set is recomputed from the live Services on every reconcile, so
+// the controller keeps no bookkeeping and restarts without losing anything.
 type Controller struct {
 	client   kubernetes.Interface
 	factory  informers.SharedInformerFactory
-	pool     *Pool
+	pools    *PoolSet
 	lbClass  string               // empty claims all LoadBalancer Services (see ownsService)
 	recorder record.EventRecorder // nil disables events
 	logger   *slog.Logger
@@ -72,7 +80,7 @@ type Controller struct {
 type ControllerOptions struct {
 	Client   kubernetes.Interface
 	Factory  informers.SharedInformerFactory
-	Pool     *Pool
+	Pools    *PoolSet
 	LBClass  string               // empty claims all LoadBalancer Services
 	Recorder record.EventRecorder // nil = no events
 	Logger   *slog.Logger
@@ -91,7 +99,7 @@ func NewController(opts ControllerOptions) *Controller {
 	c := &Controller{
 		client:    opts.Client,
 		factory:   opts.Factory,
-		pool:      opts.Pool,
+		pools:     opts.Pools,
 		lbClass:   opts.LBClass,
 		recorder:  opts.Recorder,
 		logger:    logger,
@@ -206,11 +214,17 @@ func (c *Controller) reqCtx() context.Context {
 //     ones while --lb-class is set) -> hands off, status untouched; a
 //     non-LoadBalancer Service -> release our leftover in-pool ingress
 //     (Released), foreign entries untouched.
-//  3. Status already holds exactly one usable in-pool IPv4 -> keep it.
-//  4. Otherwise re-derive the taken set from every live Service and allocate:
-//     the requested spec.loadBalancerIP wins when it is a free in-pool
-//     address (BadLoadBalancerIP warning otherwise), then the pool's lowest
-//     free address (AllocationFailed warning when exhausted).
+//  3. Ours but no pool selected: the nylon.io/lb-pool annotation is missing
+//     or names an unknown pool -> fail closed: release our in-pool ingress
+//     (Released) and warn (MissingPoolAnnotation / UnknownPool); the
+//     Service stays pending.
+//  4. Status already holds exactly one usable IPv4 inside the selected
+//     pool -> keep it.
+//  5. Otherwise re-derive the taken set from every live Service (global
+//     across pools) and allocate: the requested spec.loadBalancerIP wins
+//     when it is a free address inside the selected pool (BadLoadBalancerIP
+//     warning otherwise), then the selected pool's lowest free address
+//     (AllocationFailed warning when exhausted).
 //
 // Conflicts requeue rate-limited; the next pass re-fetches and wins the race.
 func (c *Controller) reconcile(key string) error {
@@ -242,40 +256,39 @@ func (c *Controller) reconcile(key string) error {
 			return nil
 		}
 		// Not a LoadBalancer Service (anymore): release the in-pool
-		// ingress so the address returns to the pool. Foreign entries
-		// are not ours to clear and stay untouched.
-		mine := inPoolIngress(svc.Status.LoadBalancer.Ingress, c.pool)
-		if len(mine) == 0 {
-			return nil
-		}
-		released := ingressIPStrings(mine)
-		var kept []corev1.LoadBalancerIngress
-		for _, ing := range svc.Status.LoadBalancer.Ingress {
-			if !slices.ContainsFunc(mine, func(m corev1.LoadBalancerIngress) bool { return m.IP == ing.IP }) {
-				kept = append(kept, ing)
-			}
-		}
-		updated := svc.DeepCopy()
-		updated.Status.LoadBalancer.Ingress = kept
-		_, err = c.client.CoreV1().Services(ns).UpdateStatus(ctx, updated, metav1.UpdateOptions{})
-		if err != nil {
-			if apierrors.IsConflict(err) {
-				c.queue.AddRateLimited(key)
-				return nil
-			}
+		// ingress so the address returns to the pool.
+		return c.releaseIngress(ctx, key, ns, svc)
+	}
+
+	// Selection: the nylon.io/lb-pool annotation names the pool that
+	// allocates this Service's address. Missing or unknown -> fail closed:
+	// never allocate, and release any in-pool ingress this controller
+	// previously allocated so the address returns to its pool. A plain
+	// return (no error) relies on resyncs and annotation-update informer
+	// events to re-trigger; the repeating warning matches the
+	// AllocationFailed-on-exhaustion precedent and the recorder aggregates
+	// same-reason events.
+	poolName := svc.Annotations[PoolAnnotation]
+	selected, known := c.pools.Get(poolName)
+	if !known {
+		if err := c.releaseIngress(ctx, key, ns, svc); err != nil {
 			return err
 		}
-		c.logger.Info("released load balancer ingress", "key", key, "ips", released)
-		c.event(svc, corev1.EventTypeNormal, reasonReleased, "released load balancer ingress "+joinIPs(released))
-		if c.metrics != nil {
-			c.metrics.Releases.Add(1)
+		if poolName == "" {
+			c.event(svc, corev1.EventTypeWarning, reasonMissingPoolAnnotation,
+				"no "+PoolAnnotation+" annotation: no pool selected; not allocating")
+		} else {
+			c.event(svc, corev1.EventTypeWarning, reasonUnknownPool,
+				PoolAnnotation+" annotation references unknown pool \""+poolName+"\"; not allocating")
 		}
 		return nil
 	}
 
-	// Idempotent fast path: exactly one usable in-pool IPv4 is the state the
-	// allocator leaves Services in, so resyncs stop here without churn.
-	if ip, ok := keepIngressIP(svc.Status.LoadBalancer.Ingress, c.pool); ok {
+	// Idempotent fast path: exactly one usable IPv4 inside the selected pool
+	// is the state the allocator leaves Services in, so resyncs stop here
+	// without churn. Re-pointing the annotation at another pool fails this
+	// check and forces reassignment below.
+	if ip, ok := keepIngressIP(svc.Status.LoadBalancer.Ingress, selected); ok {
 		c.logger.Debug("keeping existing load balancer allocation", "key", key, "ip", ip.String())
 		return nil
 	}
@@ -283,17 +296,53 @@ func (c *Controller) reconcile(key string) error {
 	// The derive→allocate→update section must be serialized across workers
 	// (see allocMu); conflicts requeue and re-derive from scratch.
 	c.allocMu.Lock()
-	err = c.assignIngress(ctx, key, ns, name)
+	err = c.assignIngress(ctx, key, ns, name, selected)
 	c.allocMu.Unlock()
 	return err
+}
+
+// releaseIngress clears this controller's own in-pool ingress entries from
+// svc so the addresses return to their pools; foreign entries are not ours
+// to clear and stay untouched. It is a no-op when nothing of ours is left.
+// Status conflicts requeue rate-limited; the next pass re-fetches and wins
+// the race.
+func (c *Controller) releaseIngress(ctx context.Context, key, ns string, svc *corev1.Service) error {
+	mine := inPoolIngress(svc.Status.LoadBalancer.Ingress, c.pools)
+	if len(mine) == 0 {
+		return nil
+	}
+	released := ingressIPStrings(mine)
+	var kept []corev1.LoadBalancerIngress
+	for _, ing := range svc.Status.LoadBalancer.Ingress {
+		if !slices.ContainsFunc(mine, func(m corev1.LoadBalancerIngress) bool { return m.IP == ing.IP }) {
+			kept = append(kept, ing)
+		}
+	}
+	updated := svc.DeepCopy()
+	updated.Status.LoadBalancer.Ingress = kept
+	_, err := c.client.CoreV1().Services(ns).UpdateStatus(ctx, updated, metav1.UpdateOptions{})
+	if err != nil {
+		if apierrors.IsConflict(err) {
+			c.queue.AddRateLimited(key)
+			return nil
+		}
+		return err
+	}
+	c.logger.Info("released load balancer ingress", "key", key, "ips", released)
+	c.event(svc, corev1.EventTypeNormal, reasonReleased, "released load balancer ingress "+joinIPs(released))
+	if c.metrics != nil {
+		c.metrics.Releases.Add(1)
+	}
+	return nil
 }
 
 // assignIngress is the allocation half of reconcile, called with allocMu held:
 // it re-derives the target from a live cluster-wide List (never the informer
 // cache, which can lag behind this controller's own status writes), computes
-// the taken set, honors a free in-pool spec.loadBalancerIP, and otherwise
-// allocates the pool's lowest free address.
-func (c *Controller) assignIngress(ctx context.Context, key, ns, name string) error {
+// the taken set across every configured pool, honors a free
+// spec.loadBalancerIP inside the selected pool, and otherwise allocates the
+// selected pool's lowest free address.
+func (c *Controller) assignIngress(ctx context.Context, key, ns, name string, selected *Pool) error {
 	list, err := c.client.CoreV1().Services("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -313,10 +362,10 @@ func (c *Controller) assignIngress(ctx context.Context, key, ns, name string) er
 			// this very Service is the point of the field. Its
 			// status ingress still counts, so a stale multi-entry
 			// status cannot get its own addresses handed back out.
-			takeServiceIPs(taken, c.pool, s, false)
+			takeServiceIPs(taken, c.pools, s, false)
 			continue
 		}
-		takeServiceIPs(taken, c.pool, s, true)
+		takeServiceIPs(taken, c.pools, s, true)
 	}
 	if svc == nil {
 		c.logger.Debug("service is gone; nothing to do", "key", key)
@@ -329,15 +378,16 @@ func (c *Controller) assignIngress(ctx context.Context, key, ns, name string) er
 		return nil
 	}
 
-	// A requested spec.loadBalancerIP wins when it is free and in-pool; any
-	// other request warns and falls through to a pool allocation.
+	// A requested spec.loadBalancerIP wins when it is free and inside the
+	// selected pool; any other request warns and falls through to a pool
+	// allocation.
 	candidate, requested := netip.Addr{}, svc.Spec.LoadBalancerIP
 	if requested != "" {
 		ip, perr := netip.ParseAddr(requested)
 		switch {
-		case perr != nil || !ip.Is4() || !c.pool.Contains(ip):
+		case perr != nil || !ip.Is4() || !selected.Contains(ip):
 			c.event(svc, corev1.EventTypeWarning, reasonBadLoadBalancerIP,
-				"requested LoadBalancerIP "+requested+" is outside the pool; allocating a pool address instead")
+				"requested LoadBalancerIP "+requested+" is outside the selected pool; allocating a pool address instead")
 		default:
 			if _, busy := taken[ip]; busy {
 				c.event(svc, corev1.EventTypeWarning, reasonBadLoadBalancerIP,
@@ -351,10 +401,10 @@ func (c *Controller) assignIngress(ctx context.Context, key, ns, name string) er
 	ip := candidate
 	if !ip.IsValid() {
 		var ok bool
-		ip, ok = c.pool.Allocate(taken)
+		ip, ok = selected.Allocate(taken)
 		if !ok {
 			c.event(svc, corev1.EventTypeWarning, reasonAllocationFailed,
-				"load balancer pool is exhausted; no address available")
+				"load balancer pool "+selected.name+" is exhausted; no address available")
 			return poolExhaustedError{key: key}
 		}
 	}
@@ -410,8 +460,9 @@ func ownsService(svc *corev1.Service, lbClass string) bool {
 }
 
 // keepIngressIP reports whether ingress is exactly one entry holding a
-// non-empty IPv4 address inside the pool, returning that address. This is the
-// settled state reconciliation aims for.
+// non-empty IPv4 address inside the selected pool, returning that address.
+// This is the settled state reconciliation aims for; selecting a different
+// pool deliberately fails the check and forces reassignment.
 func keepIngressIP(ingress []corev1.LoadBalancerIngress, pool *Pool) (netip.Addr, bool) {
 	if len(ingress) != 1 || ingress[0].IP == "" {
 		return netip.Addr{}, false
@@ -425,29 +476,32 @@ func keepIngressIP(ingress []corev1.LoadBalancerIngress, pool *Pool) (netip.Addr
 
 // takeServiceIPs adds addresses claimed by s to taken: its status ingress
 // IPs always, and its requested spec.loadBalancerIP only when withRequested
-// is set (the reconciled Service's own request is a candidate, not a claim).
-// Each address counts only when it is an IPv4 address inside the pool.
-func takeServiceIPs(taken map[netip.Addr]struct{}, pool *Pool, s *corev1.Service, withRequested bool) {
+// is set (the reconciled Service's own request is a candidate, not a
+// claim). Each address counts only when it is an IPv4 address inside any
+// configured pool, which makes the taken set global across pools and keeps
+// overlapping pools from double-assigning.
+func takeServiceIPs(taken map[netip.Addr]struct{}, pools *PoolSet, s *corev1.Service, withRequested bool) {
 	for _, ing := range s.Status.LoadBalancer.Ingress {
-		if ip, err := netip.ParseAddr(ing.IP); err == nil && ip.Is4() && pool.Contains(ip) {
+		if ip, err := netip.ParseAddr(ing.IP); err == nil && ip.Is4() && pools.Contains(ip) {
 			taken[ip] = struct{}{}
 		}
 	}
 	if withRequested {
 		if req := s.Spec.LoadBalancerIP; req != "" {
-			if ip, err := netip.ParseAddr(req); err == nil && ip.Is4() && pool.Contains(ip) {
+			if ip, err := netip.ParseAddr(req); err == nil && ip.Is4() && pools.Contains(ip) {
 				taken[ip] = struct{}{}
 			}
 		}
 	}
 }
 
-// inPoolIngress returns the ingress entries holding an in-pool IPv4
-// address — this controller's own allocations.
-func inPoolIngress(ingress []corev1.LoadBalancerIngress, pool *Pool) []corev1.LoadBalancerIngress {
+// inPoolIngress returns the ingress entries holding an IPv4 address inside
+// any configured pool — this controller's own allocations, whichever pool
+// they came from.
+func inPoolIngress(ingress []corev1.LoadBalancerIngress, pools *PoolSet) []corev1.LoadBalancerIngress {
 	out := make([]corev1.LoadBalancerIngress, 0, len(ingress))
 	for _, ing := range ingress {
-		if ip, err := netip.ParseAddr(ing.IP); err == nil && ip.Is4() && pool.Contains(ip) {
+		if ip, err := netip.ParseAddr(ing.IP); err == nil && ip.Is4() && pools.Contains(ip) {
 			out = append(out, ing)
 		}
 	}

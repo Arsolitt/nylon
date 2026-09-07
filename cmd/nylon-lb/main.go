@@ -50,7 +50,7 @@ const (
 
 // lbOptions is the parsed flag set; bound by newRootCmd, consumed by run.
 type lbOptions struct {
-	pool            string
+	pools           []string
 	excludes        []string
 	lbClass         string
 	prefixesDir     string
@@ -81,11 +81,17 @@ func newRootCmd() *cobra.Command {
 		Use:   "nylon-lb",
 		Short: "Nylon mesh LoadBalancer controller for Kubernetes Services",
 		Long: `nylon-lb watches type=LoadBalancer Services and, for each one, allocates
-an IP from a configured pool, publishes it via status.loadBalancer.ingress,
-and announces the /32 into the nylon mesh by writing a dynamic-prefix file
-into the node's prefixes.d dir and binding the address on the bind interface.
-Cilium's kube-proxy-replacement consumes status.loadBalancer.ingress and
-serves the data plane; this controller owns only allocation and announce.
+an IP from the pool its nylon.io/lb-pool annotation selects, publishes it via
+status.loadBalancer.ingress, and announces the /32 into the nylon mesh by
+writing a dynamic-prefix file into the node's prefixes.d dir and binding the
+address on the bind interface. Cilium's kube-proxy-replacement consumes
+status.loadBalancer.ingress and serves the data plane; this controller owns
+only allocation and announce.
+
+Pools are named and repeatable (--pool name=cidr); every LoadBalancer
+Service must carry the nylon.io/lb-pool annotation naming one of them.
+A Service with a missing or unknown pool annotation gets no address and
+any stale allocation for it is released.
 
 The allocator (status writes) runs leader-elected cluster-wide; the speaker
 (announce + bind) runs on every node so per-node announce placement
@@ -104,7 +110,7 @@ LoadBalancer Service.`,
 
 	cmd.Version = buildinfo.Version
 
-	cmd.Flags().StringVar(&opts.pool, "pool", "", "IPv4 CIDR pool to allocate LoadBalancer ingress IPs from")
+	cmd.Flags().StringArrayVar(&opts.pools, "pool", nil, "named IPv4 pool to allocate LoadBalancer ingress IPs from (repeatable; name=cidr, e.g. shared=10.110.0.0/24)")
 	cmd.Flags().StringArrayVar(&opts.excludes, "exclude", nil, "pool IP to never allocate (repeatable; e.g. a stand's probe IP)")
 	cmd.Flags().StringVar(&opts.lbClass, "lb-class", "", "loadBalancerClass to claim; empty claims all type=LoadBalancer Services")
 	cmd.Flags().StringVar(&opts.prefixesDir, "prefixes-dir", "/etc/nylon/prefixes.d", "nylon dynamic_prefixes_dir to write announce files into")
@@ -135,7 +141,7 @@ func run(opts *lbOptions) (err error) {
 		os.Exit(1)
 	}
 
-	pool, err := ParsePool(opts.pool, opts.excludes)
+	pools, err := ParsePoolSet(opts.pools, opts.excludes)
 	if err != nil {
 		return fmt.Errorf("invalid pool configuration: %w", err)
 	}
@@ -178,7 +184,7 @@ func run(opts *lbOptions) (err error) {
 		"version", buildinfo.Version,
 		"commit", buildinfo.Commit,
 		"node", nodeName,
-		"pool", opts.pool,
+		"pools", pools.Names(),
 		"lb_class", opts.lbClass,
 		"prefixes_dir", opts.prefixesDir,
 		"health_addr", opts.healthAddr,
@@ -220,7 +226,7 @@ func run(opts *lbOptions) (err error) {
 	controller := NewController(ControllerOptions{
 		Client:   clientset,
 		Factory:  factory,
-		Pool:     pool,
+		Pools:    pools,
 		LBClass:  opts.lbClass,
 		Recorder: recorder,
 		Logger:   logger.With("module", log.ScopeAllocator),
@@ -229,7 +235,7 @@ func run(opts *lbOptions) (err error) {
 
 	var binder AddrBinder
 	if opts.bindInterface != "" {
-		binder, err = newNetlinkBinder(opts.bindInterface, pool)
+		binder, err = newNetlinkBinder(opts.bindInterface, pools)
 		if err != nil {
 			return err
 		}
@@ -237,7 +243,7 @@ func run(opts *lbOptions) (err error) {
 	speaker, err := NewSpeaker(SpeakerOptions{
 		Client:      clientset,
 		Factory:     factory,
-		Pool:        pool,
+		Pools:       pools,
 		LBClass:     opts.lbClass,
 		PrefixesDir: opts.prefixesDir,
 		NodeName:    nodeName,

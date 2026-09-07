@@ -17,13 +17,13 @@ import (
 // (CAP_NET_ADMIN), matching the root DaemonSet/systemd deployment.
 type netlinkBinder struct {
 	linkName string
-	pool     *Pool
+	pools    *PoolSet
 }
 
 // newNetlinkBinder binds announced /32s on linkName (netlink is Linux-only;
 // other platforms get a refusing stub in binder_other.go).
-func newNetlinkBinder(linkName string, pool *Pool) (AddrBinder, error) {
-	return &netlinkBinder{linkName: linkName, pool: pool}, nil
+func newNetlinkBinder(linkName string, pools *PoolSet) (AddrBinder, error) {
+	return &netlinkBinder{linkName: linkName, pools: pools}, nil
 }
 
 // Ensure idempotently replaces the /32 for ip on the bound interface.
@@ -58,7 +58,7 @@ func (b *netlinkBinder) Remove(ip netip.Addr) error {
 }
 
 // ListInPool returns every IPv4 address on the bound interface that falls
-// inside the pool — the set reconcile sweeps for drift.
+// inside any configured pool — the set reconcile sweeps for drift.
 func (b *netlinkBinder) ListInPool() ([]netip.Addr, error) {
 	link, err := netlink.LinkByName(b.linkName)
 	if err != nil {
@@ -77,7 +77,7 @@ func (b *netlinkBinder) ListInPool() ([]netip.Addr, error) {
 		if !ok || !prefix.Addr().Is4() {
 			continue
 		}
-		if b.pool.Contains(prefix.Addr()) {
+		if b.pools.Contains(prefix.Addr()) {
 			ips = append(ips, prefix.Addr())
 		}
 	}

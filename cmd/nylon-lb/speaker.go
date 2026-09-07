@@ -40,7 +40,7 @@ type AddrBinder interface {
 	// Remove unbinds ip; an absent address counts as success.
 	Remove(ip netip.Addr) error
 	// ListInPool returns the IPv4 addresses currently bound that fall
-	// inside the pool — the set reconcile sweeps for drift.
+	// inside any configured pool — the set reconcile sweeps for drift.
 	ListInPool() ([]netip.Addr, error)
 }
 
@@ -48,7 +48,7 @@ type AddrBinder interface {
 type SpeakerOptions struct {
 	Client      kubernetes.Interface
 	Factory     informers.SharedInformerFactory
-	Pool        *Pool
+	Pools       *PoolSet
 	LBClass     string // empty claims all LoadBalancer Services
 	PrefixesDir string
 	NodeName    string
@@ -65,7 +65,7 @@ type SpeakerOptions struct {
 // makes node failover automatic.
 type Speaker struct {
 	client        kubernetes.Interface
-	pool          *Pool
+	pools         *PoolSet
 	lbClass       string
 	dir           string
 	nodeName      string
@@ -99,8 +99,8 @@ func NewSpeaker(opts SpeakerOptions) (*Speaker, error) {
 		return nil, errors.New("building speaker: kubernetes client is required")
 	case opts.Factory == nil:
 		return nil, errors.New("building speaker: shared informer factory is required")
-	case opts.Pool == nil:
-		return nil, errors.New("building speaker: address pool is required")
+	case opts.Pools == nil:
+		return nil, errors.New("building speaker: address pools are required")
 	case opts.PrefixesDir == "":
 		return nil, errors.New("building speaker: prefixes directory is required")
 	case opts.NodeName == "":
@@ -119,7 +119,7 @@ func NewSpeaker(opts SpeakerOptions) (*Speaker, error) {
 	sliceInformer := opts.Factory.Discovery().V1().EndpointSlices().Informer()
 	s := &Speaker{
 		client:        opts.Client,
-		pool:          opts.Pool,
+		pools:         opts.Pools,
 		lbClass:       opts.LBClass,
 		dir:           opts.PrefixesDir,
 		nodeName:      opts.NodeName,
@@ -195,8 +195,8 @@ type announce struct {
 //
 // A type=LoadBalancer Service owned by this controller (empty --lb-class:
 // all of them) is announced when its status carries exactly one IPv4
-// ingress address inside the pool (the allocator's output — the speaker
-// never allocates) and:
+// ingress address inside any configured pool (the allocator's output —
+// the speaker never allocates) and:
 //
 //   - externalTrafficPolicy != Local (the Cluster default): always. Every
 //     node announces the /32; Babel anycast picks the closest one and
@@ -214,7 +214,7 @@ func (s *Speaker) desiredAnnounces() []announce {
 	}
 	var out []announce
 	for _, svc := range services {
-		ip, ok := serviceIngressIP(svc, s.pool, s.lbClass)
+		ip, ok := serviceIngressIP(svc, s.pools, s.lbClass)
 		if !ok {
 			continue
 		}
@@ -233,15 +233,15 @@ func (s *Speaker) desiredAnnounces() []announce {
 	return out
 }
 
-// serviceIngressIP extracts the single pool-contained IPv4 address from a
-// Service's status.loadBalancer.ingress, or reports that there is nothing to
-// announce: not a LoadBalancer Service, not owned by this controller (a
-// loadBalancerClass mismatch while --lb-class scopes it — a foreign-class
-// Service holding an in-pool address is another controller's to announce),
-// zero or ambiguous ingress entries, a non-IPv4 address, or an address
-// outside the pool (foreign or stale — replaced by the allocator, never
-// announced by the speaker).
-func serviceIngressIP(svc *corev1.Service, pool *Pool, lbClass string) (netip.Addr, bool) {
+// serviceIngressIP extracts the single IPv4 address from a Service's
+// status.loadBalancer.ingress when it falls inside any configured pool, or
+// reports that there is nothing to announce: not a LoadBalancer Service, not
+// owned by this controller (a loadBalancerClass mismatch while --lb-class
+// scopes it — a foreign-class Service holding an in-pool address is another
+// controller's to announce), zero or ambiguous ingress entries, a non-IPv4
+// address, or an address outside every configured pool (foreign or stale —
+// replaced by the allocator, never announced by the speaker).
+func serviceIngressIP(svc *corev1.Service, pools *PoolSet, lbClass string) (netip.Addr, bool) {
 	if !ownsService(svc, lbClass) {
 		return netip.Addr{}, false
 	}
@@ -250,7 +250,7 @@ func serviceIngressIP(svc *corev1.Service, pool *Pool, lbClass string) (netip.Ad
 		return netip.Addr{}, false
 	}
 	ip, err := netip.ParseAddr(ingress[0].IP)
-	if err != nil || !ip.Is4() || !pool.Contains(ip) {
+	if err != nil || !ip.Is4() || !pools.Contains(ip) {
 		return netip.Addr{}, false
 	}
 	return ip, true
@@ -404,17 +404,18 @@ func (s *Speaker) staleAnnounces(keep map[string]struct{}) []staleAnnounce {
 		}
 		st := staleAnnounce{file: file}
 		if data, err := os.ReadFile(path); err == nil {
-			st.ips = fileAnnouncedIPs(data, s.pool)
+			st.ips = fileAnnouncedIPs(data, s.pools)
 		}
 		out = append(out, st)
 	}
 	return out
 }
 
-// fileAnnouncedIPs parses announce-file content and returns the in-pool IPv4
-// /32 addresses it holds. Malformed content yields no addresses — the file
-// is garbage-collected regardless, the unbind is merely skipped.
-func fileAnnouncedIPs(data []byte, pool *Pool) []netip.Addr {
+// fileAnnouncedIPs parses announce-file content and returns the IPv4 /32
+// addresses it holds inside any configured pool. Malformed content yields no
+// addresses — the file is garbage-collected regardless, the unbind is merely
+// skipped.
+func fileAnnouncedIPs(data []byte, pools *PoolSet) []netip.Addr {
 	var file lbPrefixFile
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil
@@ -425,7 +426,7 @@ func fileAnnouncedIPs(data []byte, pool *Pool) []netip.Addr {
 		if err != nil || !prefix.IsSingleIP() {
 			continue
 		}
-		if ip := prefix.Addr(); ip.Is4() && pool.Contains(ip) {
+		if ip := prefix.Addr(); ip.Is4() && pools.Contains(ip) {
 			ips = append(ips, ip)
 		}
 	}

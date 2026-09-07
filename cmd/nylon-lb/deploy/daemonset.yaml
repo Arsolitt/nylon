@@ -34,14 +34,15 @@ spec:
             runAsUser: 0
             capabilities:
               add: ["NET_ADMIN"]
-          # One pool per cluster: every node must use the same --pool, with the
-          # same --exclude for reserved addresses (e.g. the stand probe IP).
+          # Pools are named and repeatable (--pool=name=cidr): every node must
+          # run the same --pool set with the same --exclude, and each Service
+          # selects its pool via the nylon.io/lb-pool annotation.
           # --lb-class scopes nylon-lb to Services carrying exactly that
           # spec.loadBalancerClass (edit per cluster), so other class-scoped
           # LB controllers can coexist; drop the flag to claim every
           # LoadBalancer Service.
           args:
-            - --pool=10.110.0.0/24
+            - --pool=shared=10.110.0.0/24
             - --exclude=10.110.0.1
             - --lb-class=nylon
           env:

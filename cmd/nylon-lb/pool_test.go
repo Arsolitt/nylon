@@ -190,3 +190,122 @@ func TestParsePoolMasksPrefix(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, mustAddr(t, "10.0.0.73"), ip)
 }
+
+func TestParsePoolSetValid(t *testing.T) {
+	pools, err := ParsePoolSet(
+		[]string{"shared=192.0.2.0/29", "private=198.51.100.0/29"},
+		[]string{"192.0.2.1", "198.51.100.2"},
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"shared", "private"}, pools.Names(),
+		"Names must preserve declaration order")
+
+	shared, ok := pools.Get("shared")
+	require.True(t, ok, "shared pool must resolve")
+	ip, ok := shared.Allocate(takenOf("192.0.2.1", "192.0.2.2"))
+	require.True(t, ok)
+	assert.Equal(t, mustAddr(t, "192.0.2.3"), ip,
+		"the containing pool's exclude (.1) must be skipped")
+
+	_, ok = pools.Get("other")
+	assert.False(t, ok, "unknown pool name must not resolve")
+
+	// Any-pool membership spans every member.
+	assert.True(t, pools.Contains(mustAddr(t, "192.0.2.4")))
+	assert.True(t, pools.Contains(mustAddr(t, "198.51.100.7")))
+	assert.False(t, pools.Contains(mustAddr(t, "203.0.113.1")))
+}
+
+func TestParsePoolSetRejects(t *testing.T) {
+	tests := []struct {
+		name    string
+		specs   []string
+		exclude []string
+		wantErr string
+	}{
+		{
+			name:    "no specs at all",
+			specs:   nil,
+			wantErr: "no pools configured: pass --pool name=cidr",
+		},
+		{
+			name:    "unnamed spec",
+			specs:   []string{"192.0.2.0/24"},
+			wantErr: `must be name=cidr`,
+		},
+		{
+			name:    "uppercase name",
+			specs:   []string{"Shared=192.0.2.0/29"},
+			wantErr: "pool name",
+		},
+		{
+			name:    "name with a space",
+			specs:   []string{"a b=192.0.2.0/29"},
+			wantErr: "pool name",
+		},
+		{
+			name:    "name starting with a dash",
+			specs:   []string{"-shared=192.0.2.0/29"},
+			wantErr: "pool name",
+		},
+		{
+			name:    "duplicate name",
+			specs:   []string{"shared=192.0.2.0/29", "shared=198.51.100.0/29"},
+			wantErr: `duplicate pool name "shared"`,
+		},
+		{
+			name:    "per-pool validation still fires on /31",
+			specs:   []string{"shared=10.0.0.0/31"},
+			wantErr: "leaves no usable host",
+		},
+		{
+			name:    "per-pool validation still fires on IPv6",
+			specs:   []string{"shared=2001:db8::/64"},
+			wantErr: "only IPv4 pools are supported",
+		},
+		{
+			name:    "exclude outside every pool",
+			specs:   []string{"shared=192.0.2.0/29"},
+			exclude: []string{"198.51.100.1"},
+			wantErr: `exclude "198.51.100.1" is outside every pool`,
+		},
+		{
+			name:    "malformed exclude IP",
+			specs:   []string{"shared=192.0.2.0/29"},
+			exclude: []string{"not-an-ip"},
+			wantErr: `parsing pool exclusion "not-an-ip"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pools, err := ParsePoolSet(tt.specs, tt.exclude)
+			require.Error(t, err)
+			assert.Nil(t, pools)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestPoolSetExcludeScopedToContainingPool(t *testing.T) {
+	pools, err := ParsePoolSet(
+		[]string{"shared=192.0.2.0/29", "private=198.51.100.0/29"},
+		[]string{"192.0.2.1"},
+	)
+	require.NoError(t, err)
+
+	shared, ok := pools.Get("shared")
+	require.True(t, ok)
+	private, ok := pools.Get("private")
+	require.True(t, ok)
+
+	ip, ok := shared.Allocate(nil)
+	require.True(t, ok)
+	assert.Equal(t, mustAddr(t, "192.0.2.2"), ip,
+		"the excluded .1 must be skipped inside the containing pool")
+
+	ip, ok = private.Allocate(nil)
+	require.True(t, ok)
+	assert.Equal(t, mustAddr(t, "198.51.100.1"), ip,
+		"the exclude must not leak into the sibling pool")
+}

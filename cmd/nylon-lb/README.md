@@ -15,7 +15,7 @@ propagates — the same stand-proven pattern as `nylon-vip.service` +
 
 | Flag | Default | Description |
 |---|---|---|
-| `--pool` | (required) | IPv4 CIDR to allocate LoadBalancer addresses from. |
+| `--pool` | (required) | Named IPv4 pool to allocate LoadBalancer addresses from, as `name=cidr` (e.g. `--pool=shared=10.110.0.0/24`); repeatable. |
 | `--exclude` | — | Repeatable IPv4 address never to allocate, e.g. the stand probe IP. |
 | `--lb-class` | — | `loadBalancerClass` to claim. Empty claims all `type=LoadBalancer` Services; set it to coexist with other class-scoped LB controllers. |
 | `--prefixes-dir` | `/etc/nylon/prefixes.d` | Directory nylon-lb writes `lb-*.json` dynamic-prefix files to. |
@@ -31,6 +31,19 @@ propagates — the same stand-proven pattern as `nylon-vip.service` +
 | `--log-level` | env `NYLON_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `-v` / `--verbose` | `false` | Shorthand for debug-level logging. |
 | `--json` | `false` | Log to stderr as JSON instead of tinted text. |
+
+## Pool selection
+
+- Every `type=LoadBalancer` Service this controller owns must carry the
+  `nylon.io/lb-pool` annotation naming one of the configured pools.
+- Selection is fail-closed: a Service with no annotation
+  (`MissingPoolAnnotation` event) or naming an unknown pool (`UnknownPool`
+  event) gets no address and stays `<pending>`; an ingress address this
+  controller previously allocated for it is released.
+- Allocation picks the lowest free address within the Service's selected pool.
+- The taken set is global across all pools, so overlapping pools never
+  double-assign an address.
+- Each `--exclude` address applies to every pool that contains it.
 
 ## Announce semantics
 
@@ -73,7 +86,7 @@ version/commit stamped at link time (see `Makefile` `-ldflags`).
 |---|---|---|---|
 | `nylon_lb_build_info` | gauge | `version`, `commit` | Build stamp; always `1`. |
 | `nylon_lb_leader` | gauge | `node` | `1` while this replica holds the allocator Lease. |
-| `nylon_lb_allocated_ips` | gauge | — | Distinct pool addresses currently claimed by Service ingress or `spec.loadBalancerIP`. |
+| `nylon_lb_allocated_ips` | gauge | — | Distinct pool addresses currently claimed by Service ingress or `spec.loadBalancerIP`, across all pools. |
 | `nylon_lb_services` | gauge | — | `type=LoadBalancer` Services owned by this controller (empty `--lb-class`: all of them). |
 | `nylon_lb_announces` | gauge | — | LoadBalancer /32s this node currently announces. |
 | `nylon_lb_allocations_total` | counter | — | Fresh ingress assignments since start. |
@@ -93,7 +106,7 @@ DaemonSet (recommended):
 make image-nylon-lb REGISTRY=ghcr.io/encodeous/nylon IMAGE_TAG=latest
 # multi-arch build & push to any registry:
 make push-nylon-lb REGISTRY=ghcr.io/encodeous/nylon IMAGE_TAG=v0.4.0
-# edit --pool/--exclude/--lb-class in deploy/daemonset.yaml (one pool per cluster)
+# edit --pool/--exclude/--lb-class in deploy/daemonset.yaml (identical --pool set on every node)
 kubectl apply -f cmd/nylon-lb/deploy/rbac.yaml
 kubectl apply -f cmd/nylon-lb/deploy/daemonset.yaml
 ```
@@ -105,7 +118,7 @@ allocator):
 ```ini
 [Service]
 ExecStart=/usr/local/bin/nylon-lb \
-  --pool=10.110.0.0/24 \
+  --pool=shared=10.110.0.0/24 \
   --exclude=10.110.0.1 \
   --prefixes-dir=/etc/nylon/prefixes.d \
   --bind-interface=lo \
@@ -116,9 +129,10 @@ Restart=always
 
 ## Requirements and caveats
 
-- The pool must be inside every receiver's `dynamic_prefix_ranges`; peers reject
-  announced prefixes outside it (receiver-side fail-closed). Cross-zone traffic
-  follows the gateway's static aggregate first, then the intra-zone /32.
+- Every pool must be inside every receiver's `dynamic_prefix_ranges`; peers
+  reject announced prefixes outside it (receiver-side fail-closed). Cross-zone
+  traffic follows the gateway's static aggregate first, then the intra-zone
+  /32.
 - With `--lb-class` set, nylon-lb owns only Services carrying exactly that
   `spec.loadBalancerClass`; Services with another or no class are left to their
   own controllers (unclassed ones stay `<pending>`), so other class-scoped
@@ -130,7 +144,7 @@ Restart=always
   (stay unused) only if a Service is deleted while every replica is down; the
   next allocation still cannot collide, because announce files are garbage
   collected together with the Service. Same caveat as kube-vip.
-- IPv4 only; one pool per cluster.
+- IPv4 only; every replica must run the identical `--pool` set.
 
 ## Build
 

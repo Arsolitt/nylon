@@ -89,7 +89,7 @@ type spkHarness struct {
 	client  *fake.Clientset
 	factory informers.SharedInformerFactory
 	binder  *spkBinder
-	pool    *Pool
+	pools   *PoolSet
 	dir     string
 	cancel  context.CancelFunc
 	done    chan struct{}
@@ -111,9 +111,9 @@ func newSpkHarnessWithClass(t *testing.T, nodeName, lbClass string) *spkHarness 
 		dir:    t.TempDir(),
 		done:   make(chan struct{}),
 	}
-	pool, err := ParsePool("10.110.0.0/24", []string{"10.110.0.1"})
+	pools, err := ParsePoolSet([]string{"shared=10.110.0.0/24", "private=198.51.100.0/24"}, []string{"10.110.0.1"})
 	assert.NoError(t, err)
-	h.pool = pool
+	h.pools = pools
 	h.factory = informers.NewSharedInformerFactory(h.client, 100*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -121,7 +121,7 @@ func newSpkHarnessWithClass(t *testing.T, nodeName, lbClass string) *spkHarness 
 	speaker, err := NewSpeaker(SpeakerOptions{
 		Client:      h.client,
 		Factory:     h.factory,
-		Pool:        h.pool,
+		Pools:       h.pools,
 		LBClass:     lbClass,
 		PrefixesDir: h.dir,
 		NodeName:    nodeName,
@@ -389,4 +389,51 @@ func TestSpeakerSkipsForeignClassService(t *testing.T) {
 		"a foreign-class Service must never announce on this node")
 	assert.Never(t, func() bool { return len(h.binder.ensuredList()) > 0 }, time.Second, 10*time.Millisecond,
 		"the binder must never be called for a foreign-class Service")
+}
+
+// TestSpeakerAnnouncesAcrossPools: the speaker mirrors the allocator's
+// output for any configured pool — two Services with manually set statuses,
+// one per pool, both Cluster policy, each write their announce file with the
+// golden bytes and both /32s get bound.
+func TestSpeakerAnnouncesAcrossPools(t *testing.T) {
+	h := newSpkHarness(t, "uk-node-1")
+	shared := mustAddr(t, "10.110.0.10")
+	private := mustAddr(t, "198.51.100.10")
+
+	h.createService(spkService("default", "web", shared.String(), ""))
+	h.createService(spkService("default", "mesh", private.String(), ""))
+
+	for _, tc := range []struct {
+		path string
+		ip   netip.Addr
+	}{
+		{filepath.Join(h.dir, fileName("default", "web")), shared},
+		{filepath.Join(h.dir, fileName("default", "mesh")), private},
+	} {
+		assert.Eventually(t, func() bool {
+			data, err := os.ReadFile(tc.path)
+			return err == nil && string(data) == spkGolden(tc.ip)
+		}, 2*time.Second, 10*time.Millisecond, "announce file should hold exactly the golden bytes")
+	}
+	assert.Eventually(t, func() bool {
+		ensured := h.binder.ensuredList()
+		return slices.Contains(ensured, shared) && slices.Contains(ensured, private)
+	}, 2*time.Second, 10*time.Millisecond, "binder should have ensured both pools' ingress IPs")
+}
+
+// TestSpeakerGCUnbindsForeignPoolAnnounce: an announce file orphaned by a
+// removed Service whose address lives in the private pool is garbage-
+// collected and its address unbound — any-pool fileAnnouncedIPs is what
+// drives the unbind; scoped to the shared pool alone it would be skipped.
+func TestSpeakerGCUnbindsForeignPoolAnnounce(t *testing.T) {
+	h := newSpkHarness(t, "uk-node-1")
+	ghost := mustAddr(t, "198.51.100.7")
+	spkWriteAnnounceFile(t, h.dir, "lb-default-ghost.json", ghost)
+
+	path := filepath.Join(h.dir, "lb-default-ghost.json")
+	assert.Eventually(t, func() bool { return !spkExists(path) },
+		2*time.Second, 10*time.Millisecond, "ghost announce should be garbage-collected")
+	assert.Eventually(t, func() bool {
+		return slices.Contains(h.binder.removedList(), ghost)
+	}, 2*time.Second, 10*time.Millisecond, "withdrawn ghost announce should unbind its private-pool address")
 }

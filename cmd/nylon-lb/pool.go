@@ -1,14 +1,19 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
+	"slices"
+	"strings"
 )
 
 // Pool is a pure IPv4 address allocator for LoadBalancer Service ingress IPs.
 // It holds no allocation state of its own: the caller derives the taken set
 // from the live Services on every reconcile and passes it to Allocate.
 type Pool struct {
+	name     string // pool name as configured; set by ParsePoolSet only
 	cidr     netip.Prefix
 	excluded map[netip.Addr]struct{}
 }
@@ -40,6 +45,94 @@ func ParsePool(cidr string, excludes []string) (*Pool, error) {
 		excluded[addr] = struct{}{}
 	}
 	return &Pool{cidr: prefix, excluded: excluded}, nil
+}
+
+// poolNameRe is the shape of a legal --pool name: lowercase alphanumerics
+// and inner dashes, 1-63 characters, mirroring a DNS label relaxed to allow
+// leading digits.
+var poolNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// PoolSet is the configured set of named pools. The controller selects one
+// member pool per Service via the nylon.io/lb-pool annotation; membership
+// checks (Contains) span every member, so release and drift logic treat all
+// pools uniformly and the global taken set keeps overlapping pools safe.
+type PoolSet struct {
+	order  []string // declaration order, for deterministic logs
+	byName map[string]*Pool
+}
+
+// ParsePoolSet parses repeatable --pool specs of the form name=cidr into a
+// PoolSet. Each CIDR goes through the single-pool validation (IPv4, masked,
+// /30 or shorter); overlapping pools are allowed. Every exclude must fall
+// inside at least one pool and is registered in every pool containing it.
+func ParsePoolSet(specs, excludes []string) (*PoolSet, error) {
+	if len(specs) == 0 {
+		return nil, errors.New("no pools configured: pass --pool name=cidr")
+	}
+	set := &PoolSet{byName: make(map[string]*Pool, len(specs))}
+	for _, spec := range specs {
+		name, cidr, ok := strings.Cut(spec, "=")
+		if !ok {
+			return nil, fmt.Errorf("pool spec %q must be name=cidr (e.g. shared=10.110.0.0/24)", spec)
+		}
+		if !poolNameRe.MatchString(name) {
+			return nil, fmt.Errorf("pool name %q in %q must match %s", name, spec, poolNameRe)
+		}
+		if _, dup := set.byName[name]; dup {
+			return nil, fmt.Errorf("duplicate pool name %q", name)
+		}
+		pool, err := ParsePool(cidr, nil)
+		if err != nil {
+			return nil, fmt.Errorf("pool %q: %w", name, err)
+		}
+		pool.name = name
+		set.byName[name] = pool
+		set.order = append(set.order, name)
+	}
+	for _, ex := range excludes {
+		addr, err := netip.ParseAddr(ex)
+		if err != nil {
+			return nil, fmt.Errorf("parsing pool exclusion %q: %w", ex, err)
+		}
+		contained := false
+		for _, name := range set.order {
+			if pool := set.byName[name]; pool.Contains(addr) {
+				pool.exclude(addr)
+				contained = true
+			}
+		}
+		if !contained {
+			return nil, fmt.Errorf("exclude %q is outside every pool", ex)
+		}
+	}
+	return set, nil
+}
+
+// Get returns the member pool named name and whether it exists.
+func (p *PoolSet) Get(name string) (*Pool, bool) {
+	pool, ok := p.byName[name]
+	return pool, ok
+}
+
+// Contains reports whether ip falls inside ANY member pool.
+func (p *PoolSet) Contains(ip netip.Addr) bool {
+	for _, name := range p.order {
+		if p.byName[name].Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// Names returns the configured pool names in declaration order.
+func (p *PoolSet) Names() []string {
+	return slices.Clone(p.order)
+}
+
+// exclude registers addr as never allocatable in this pool; ParsePoolSet
+// uses it to push each --exclude address into every pool containing it.
+func (p *Pool) exclude(addr netip.Addr) {
+	p.excluded[addr] = struct{}{}
 }
 
 // Contains reports whether ip falls inside the pool's CIDR range. This is a

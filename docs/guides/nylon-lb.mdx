@@ -13,14 +13,14 @@ sidebar:
 
 One binary contains two components that you can enable and disable independently:
 
-- **Allocator** — runs once per cluster. It watches Services and EndpointSlices, picks the lowest free address from the pool for each LoadBalancer Service, and writes it to `status.loadBalancer.ingress` with single-object compare-and-swap updates. The allocator runs under leader election with a Lease named `nylon-lb-allocator`; the CAS status writes keep a partitioned ex-leader from corrupting anything.
+- **Allocator** — runs once per cluster. It watches Services and EndpointSlices, picks the lowest free address from the Service's selected pool for each LoadBalancer Service, and writes it to `status.loadBalancer.ingress` with single-object compare-and-swap updates. The allocator runs under leader election with a Lease named `nylon-lb-allocator`; the CAS status writes keep a partitioned ex-leader from corrupting anything.
 - **Speaker** — runs on every node. For each Service the node should announce, it binds the allocated address to the loopback interface (Linux netlink) and writes an announce file into the prefixes directory. Speakers are never leader-elected: every node announcing the same `/32` is the design, and Babel treats the copies as anycast.
 
 ## Command-line flags
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--pool` | required | IPv4 CIDR to allocate LoadBalancer addresses from. |
+| `--pool` | required | Named IPv4 pool to allocate LoadBalancer addresses from, as `name=cidr` (e.g. `shared=192.0.2.0/24`). Repeat the flag for each pool. |
 | `--exclude` | none | Excludes addresses from the pool. Repeat the flag as needed. |
 | `--lb-class` | none | `loadBalancerClass` to claim. Empty claims all `type=LoadBalancer` Services; set it to scope nylon-lb to its own class and coexist with other LB controllers. |
 | `--prefixes-dir` | `/etc/nylon/prefixes.d` | Directory the speaker writes announce files into. |
@@ -42,11 +42,14 @@ Logs are structured and carry the component name `nylon-lb`, `node=<name>`, and 
 ## Allocation rules
 
 - nylon-lb claims **every** Service of `type=LoadBalancer` in the cluster **unless `--lb-class` scopes it**: with the flag set, only Services whose `spec.loadBalancerClass` matches exactly are claimed — unclassed Services are left pending for another controller.
-- A `spec.loadBalancerIP` set on a Service is honored when the address is free and inside the pool.
-- Allocation picks the lowest free address in the pool.
+- Every Service selects its pool with the `nylon.io/lb-pool` annotation. Selection is fail-closed: a Service with no annotation (`MissingPoolAnnotation` event) or naming an unknown pool (`UnknownPool` event) gets no address and stays `<pending>`; an ingress address previously allocated for it is released.
+- A `spec.loadBalancerIP` set on a Service is honored when the address is free and inside the selected pool.
+- Allocation picks the lowest free address in the selected pool.
+- The taken set is global across all pools, so overlapping pools never hand out the same address twice.
+- An `--exclude` address applies to every pool that contains it.
 - The pool prefix must be at least a `/30`: the network and broadcast addresses are never allocated, so smaller pools have nothing to hand out.
 - Allocation is **derived, not stored**. nylon-lb recomputes the mapping from live Services on every resync and keeps no state anywhere, so deleting a Service frees its IP unconditionally. The only residual window is announce-file withdrawal lag on a down speaker node: the stale announce file persists until that node's next resync, when the stale-announce garbage collection withdraws it. There is no collision risk, because announce files are garbage-collected together with the Service.
-- IPv4 only. One pool per cluster.
+- IPv4 only.
 
 ## Announcement semantics
 
@@ -79,10 +82,10 @@ The speaker's ordering is load-bearing. It binds the address to the loopback int
 
 ## Requirements and caveats
 
-- **Configure the pool in every receiver.** The pool must sit inside `dynamic_prefix_ranges` in every receiver's `central.yaml`. Receivers fail closed: announcements for prefixes outside their configured ranges are dropped. See the [configuration reference](/reference/config) and the [dynamic prefixes reference](/reference/dynamic-prefixes).
+- **Configure every pool in every receiver.** Each pool must sit inside `dynamic_prefix_ranges` in every receiver's `central.yaml`. Receivers fail closed: announcements for prefixes outside their configured ranges are dropped. See the [configuration reference](/reference/config) and the [dynamic prefixes reference](/reference/dynamic-prefixes).
 - **Scope it with `--lb-class` to coexist.** With `--lb-class` set, nylon-lb owns only Services carrying that `loadBalancerClass`, and other class-scoped LoadBalancer controllers (servicelb, MetalLB, kube-vip) may run beside it; every other controller in the cluster must also be class-scoped, and unclassed Services stay `<pending>`. With the flag empty, nylon-lb claims every LoadBalancer Service and must be the only LoadBalancer controller in the cluster.
 - **IPv4 only.** No IPv6 pools.
-- **One pool per cluster.**
+- **Run the identical pool set on every replica.** Every replica (all DaemonSet pods or bare-binary instances) must run the same `--pool` flags with the same `--exclude` addresses; each Service picks its pool with the `nylon.io/lb-pool` annotation.
 
 ## Deployment
 
@@ -113,7 +116,7 @@ Before you enable `externalTrafficPolicy: Local`, add `--node-name=$(NODE_NAME)`
 An allocator-only replica needs neither root nor `NET_ADMIN`:
 
 ```bash
-nylon-lb --pool=192.0.2.0/24 --allocator=true --speaker=false --bind-interface=
+nylon-lb --pool=shared=192.0.2.0/24 --allocator=true --speaker=false --bind-interface=
 ```
 
 ### Run as a bare binary
@@ -122,7 +125,7 @@ You can run the binary directly instead of using the DaemonSet — for example u
 
 ```bash
 nylon-lb \
-  --pool=192.0.2.0/24 \
+  --pool=shared=192.0.2.0/24 \
   --prefixes-dir=/etc/nylon/prefixes.d \
   --node-name=node-1 \
   --kubeconfig=/etc/nylon/kubeconfig
