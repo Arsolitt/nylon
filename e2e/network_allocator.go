@@ -16,7 +16,7 @@ func AllocateDockerSubnet(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	defer provider.Close()
+	defer func() { _ = provider.Close() }()
 
 	networks, err := provider.Client().NetworkList(ctx, client.NetworkListOptions{})
 	if err != nil {

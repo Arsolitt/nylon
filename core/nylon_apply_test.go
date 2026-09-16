@@ -20,13 +20,13 @@ func TestReconcileAdvertisedPrefixesStartsChangedPrefixHealth(t *testing.T) {
 	}
 	n := testNylonWithPrefixes(oldPrefix)
 	n.RouterState.Advertised[prefix] = state.Advertisement{
-		NodeId:   n.LocalCfg.Id,
+		NodeId:   n.Id,
 		Expiry:   maxConfigTime,
 		MetricFn: func() uint32 { return 0 },
 	}
 
 	delay := time.Millisecond
-	next := testCentralConfig(n.LocalCfg.Id, state.PrefixHealthWrapper{
+	next := testCentralConfig(n.Id, state.PrefixHealthWrapper{
 		PrefixHealth: &state.HTTPPrefixHealth{
 			Prefix: prefix,
 			URL:    "http://127.0.0.1:1/healthz",
@@ -47,13 +47,13 @@ func TestReconcileAdvertisedPrefixesStartsChangedPingPrefixHealth(t *testing.T) 
 	}
 	n := testNylonWithPrefixes(oldPrefix)
 	n.RouterState.Advertised[prefix] = state.Advertisement{
-		NodeId:   n.LocalCfg.Id,
+		NodeId:   n.Id,
 		Expiry:   maxConfigTime,
 		MetricFn: func() uint32 { return 0 },
 	}
 
 	delay := 100 * time.Millisecond
-	next := testCentralConfig(n.LocalCfg.Id, state.PrefixHealthWrapper{
+	next := testCentralConfig(n.Id, state.PrefixHealthWrapper{
 		PrefixHealth: &state.PingPrefixHealth{
 			Prefix: prefix,
 			Addr:   netip.MustParseAddr("127.0.0.1"),
@@ -87,13 +87,13 @@ func TestReconcileAdvertisedPrefixesReusesUnchangedMonitor(t *testing.T) {
 		},
 	}
 	n.RouterState.Advertised[prefix] = state.Advertisement{
-		NodeId:   n.LocalCfg.Id,
+		NodeId:   n.Id,
 		Expiry:   maxConfigTime,
 		MetricFn: monitor.GetMetric,
 		ExpiryFn: monitor.Stop,
 	}
 
-	next := testCentralConfig(n.LocalCfg.Id, state.PrefixHealthWrapper{
+	next := testCentralConfig(n.Id, state.PrefixHealthWrapper{
 		PrefixHealth: &state.HTTPPrefixHealth{
 			Prefix: prefix,
 			URL:    "http://127.0.0.1:1/healthz",

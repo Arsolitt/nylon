@@ -88,7 +88,7 @@ func NewNylon(ccfg state.CentralCfg, ncfg state.LocalCfg, logger *slog.Logger, c
 	ctx, cancel := context.WithCancelCause(context.Background())
 
 	dispatch := make(chan func() error, 128)
-	err, runtimeCfg := ccfg.Clone()
+	runtimeCfg, err := ccfg.Clone()
 	if err != nil {
 		cancel(err)
 		return nil, err
@@ -129,7 +129,7 @@ func NewNylon(ccfg state.CentralCfg, ncfg state.LocalCfg, logger *slog.Logger, c
 		// Load and inject dynamic prefixes before Init so the first
 		// reconcile sees the merged view (design §4.3). Never fails startup.
 		n.loadDynamicPrefixesDir()
-		if cerr, pristine := n.CentralCfg.Clone(); cerr == nil {
+		if pristine, cerr := n.Clone(); cerr == nil {
 			n.centralCfgPristine = pristine
 		}
 		n.injectDynamicPrefixes(&n.CentralCfg)
@@ -225,8 +225,8 @@ func (n *Nylon) Init() error {
 		}
 		n.RepeatTask(func() error { return checkForConfigUpdates(n) }, n.CentralUpdateDelay)
 	}
-	if n.LocalCfg.DynamicPrefixesDir != "" {
-		go n.watchDynamicPrefixes(n.LocalCfg.DynamicPrefixesDir)
+	if n.DynamicPrefixesDir != "" {
+		go n.watchDynamicPrefixes(n.DynamicPrefixesDir)
 	}
 	return nil
 }
@@ -244,7 +244,7 @@ func (n *Nylon) Start() error {
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		select {
-		case _ = <-c:
+		case <-c:
 			n.Cancel(errors.New("received shutdown signal"))
 		case <-n.Context.Done():
 			return
@@ -316,8 +316,12 @@ func (n *Nylon) Cleanup() error {
 		health.monitor.Stop()
 	}
 
-	n.CleanupRouter()
-	n.Trace.Cleanup()
+	if err := n.CleanupRouter(); err != nil {
+		n.Log.Error("cleanup router failed", "error", err)
+	}
+	if err := n.Trace.Cleanup(); err != nil {
+		n.Log.Error("cleanup trace failed", "error", err)
+	}
 
 	return n.cleanupWireGuard()
 }

@@ -42,8 +42,8 @@ func TestRapidToggleConfig(t *testing.T) {
 	// Wait for initial convergence.
 	time.Sleep(3 * time.Second)
 
-	_, baseCfg := vh.Central.Clone()
-	_, extraCfg := vh.Central.Clone()
+	baseCfg, _ := vh.Central.Clone()
+	extraCfg, _ := vh.Central.Clone()
 
 	aIdx := vh.IndexOf("a")
 	extraRouter := extraCfg.Routers[aIdx]
@@ -85,7 +85,7 @@ func TestRapidToggleConfig(t *testing.T) {
 		}
 		cfg.Timestamp = baseCfg.Timestamp + int64(i) + 2
 		done := make(chan struct{})
-		_, ccfg := cfg.Clone()
+		ccfg, _ := cfg.Clone()
 		a.Dispatch(func() error {
 			defer close(done)
 			_, err := a.ApplyCentralConfig(ccfg)

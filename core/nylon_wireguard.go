@@ -54,7 +54,7 @@ func obfDeviceIPC(obf *state.ObfProfile, local *state.ObfPeerParams) string {
 }
 
 func (n *Nylon) obfDeviceIPC() string {
-	return obfDeviceIPC(n.CentralCfg.Obf, n.GetNode(n.LocalCfg.Id).Obf)
+	return obfDeviceIPC(n.Obf, n.GetNode(n.LocalCfg.Id).Obf)
 }
 
 func (n *Nylon) initWireGuard() error {
@@ -194,7 +194,7 @@ func (n *Nylon) SyncWireGuard() error {
 		return fmt.Errorf("failed to apply obf profile: %v", err)
 	}
 	desired := make(map[state.NodeId]state.NyPublicKey)
-	for _, peer := range n.GetPeers(n.LocalCfg.Id) {
+	for _, peer := range n.GetPeers(n.Id) {
 		ncfg := n.GetNode(peer)
 		desired[peer] = ncfg.PubKey
 	}
@@ -202,7 +202,7 @@ func (n *Nylon) SyncWireGuard() error {
 	// Prepare every desired peer before removing any old peer. In particular,
 	// public-key rotation must keep the old peer alive until the forwarding
 	// table has been rebound to the replacement.
-	for _, peer := range slices.Sorted(slices.Values(n.GetPeers(n.LocalCfg.Id))) {
+	for _, peer := range slices.Sorted(slices.Values(n.GetPeers(n.Id))) {
 		ncfg := n.GetNode(peer)
 		wgPeer := n.Device.LookupPeer(device.NoisePublicKey(ncfg.PubKey))
 		if wgPeer == nil {
@@ -251,7 +251,7 @@ func (n *Nylon) syncWireGuardEndpoints() error {
 	dev := n.Device
 
 	// configure endpoints
-	for _, peer := range slices.Sorted(slices.Values(n.GetPeers(n.LocalCfg.Id))) {
+	for _, peer := range slices.Sorted(slices.Values(n.GetPeers(n.Id))) {
 		if n.IsClient(peer) {
 			continue
 		}

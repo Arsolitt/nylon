@@ -18,7 +18,7 @@ func (n *Nylon) reconcileAdvertisedPrefixes(next *state.CentralCfg) {
 	if n.prefixHealth == nil {
 		n.prefixHealth = make(map[netip.Prefix]advertisedPrefixHealth)
 	}
-	nextNode := next.TryGetNode(n.LocalCfg.Id)
+	nextNode := next.TryGetNode(n.Id)
 	if nextNode == nil {
 		return
 	}
@@ -29,7 +29,7 @@ func (n *Nylon) reconcileAdvertisedPrefixes(next *state.CentralCfg) {
 	}
 
 	for prefix, adv := range n.RouterState.Advertised {
-		if adv.NodeId != n.LocalCfg.Id {
+		if adv.NodeId != n.Id {
 			continue
 		}
 		if _, ok := desiredLocal[prefix]; !ok {
@@ -58,7 +58,7 @@ func (n *Nylon) reconcileAdvertisedPrefixes(next *state.CentralCfg) {
 			n.prefixHealth[prefix] = health
 		}
 		n.RouterState.Advertised[prefix] = state.Advertisement{
-			NodeId:   n.LocalCfg.Id,
+			NodeId:   n.Id,
 			Expiry:   maxConfigTime,
 			MetricFn: health.monitor.GetMetric,
 			ExpiryFn: func() {

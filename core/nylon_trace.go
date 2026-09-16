@@ -14,5 +14,5 @@ func (n *NylonTrace) Init(core *Nylon) error {
 }
 
 func (n *NylonTrace) Cleanup() error {
-	return n.Broadcaster.Close()
+	return n.Close()
 }

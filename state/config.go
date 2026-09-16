@@ -121,16 +121,16 @@ type LocalCfg struct {
 	DynamicPrefixesDir string                `yaml:"dynamic_prefixes_dir,omitempty"` // directory of dynamic prefix JSON files (design §4); empty = disabled
 }
 
-func (c *CentralCfg) Clone() (error, *CentralCfg) {
+func (c *CentralCfg) Clone() (*CentralCfg, error) {
 	data, err := yaml.Marshal(c)
 	if err != nil {
-		return err, nil
+		return nil, err
 	}
 	var dst CentralCfg
 	if err = yaml.Unmarshal(data, &dst); err != nil {
-		return err, nil
+		return nil, err
 	}
-	return nil, &dst
+	return &dst, nil
 }
 
 // GetPrefixes returns all unique prefixes from all nodes

@@ -163,7 +163,7 @@ func handleStatus(n *Nylon, req *protocol.StatusRequest) *protocol.IpcResponse {
 		rxBytes += stat.RxBytes
 	}
 
-	listenPort := uint32(n.LocalCfg.Port)
+	listenPort := uint32(n.Port)
 	if n.Device != nil {
 		listenPort = uint32(n.Device.ListenPort())
 	}
@@ -172,11 +172,11 @@ func handleStatus(n *Nylon, req *protocol.StatusRequest) *protocol.IpcResponse {
 		Ok: true,
 		Response: &protocol.IpcResponse_Status{Status: &protocol.StatusResponse{
 			Node: &protocol.NodeStatus{
-				NodeId:          string(n.LocalCfg.Id),
+				NodeId:          string(n.Id),
 				Interface:       n.Interface,
-				PublicKey:       keyString(n.LocalCfg.Key.Pubkey()),
+				PublicKey:       keyString(n.Key.Pubkey()),
 				ListenPort:      listenPort,
-				ConfigTimestamp: n.CentralCfg.Timestamp,
+				ConfigTimestamp: n.Timestamp,
 				TraceEnabled:    n.DBG_trace_tc,
 				Advertised:      buildAdvertisements(n),
 				Seqnos:          buildSeqnos(n),
@@ -226,7 +226,7 @@ func buildSeqnos(n *Nylon) []*protocol.SeqnoEntry {
 }
 
 func buildNeighbours(n *Nylon, wgStats map[state.NyPublicKey]device.PeerStatus) []*protocol.NeighbourInfo {
-	ids := slices.Clone(n.GetPeers(n.LocalCfg.Id))
+	ids := slices.Clone(n.GetPeers(n.Id))
 	slices.Sort(ids)
 	neighbours := make([]*protocol.NeighbourInfo, 0, len(ids))
 	for _, id := range ids {

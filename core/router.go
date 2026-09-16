@@ -45,7 +45,7 @@ func (n *Nylon) GetNeighIO(neigh state.NodeId) *IOPending {
 
 func (n *Nylon) SendRouteUpdate(neigh state.NodeId, advRoute state.PubRoute) {
 	nio := n.GetNeighIO(neigh)
-	prefix, _ := advRoute.Prefix.MarshalBinary()
+	prefix, _ := advRoute.MarshalBinary()
 	nio.Updates[advRoute.Prefix] = &protocol.Ny_Update{
 		RouterId: string(advRoute.NodeId),
 		Prefix:   prefix,
@@ -132,7 +132,7 @@ func (n *Nylon) TableInsertRoute(prefix netip.Prefix, route state.SelRoute) {
 		Nh:   nh,
 		Peer: peer,
 	})
-	if route.Nh == n.LocalCfg.Id {
+	if route.Nh == n.Id {
 		ne.Insert(prefix, RouteTableEntry{
 			Nh:   nh,
 			Peer: peer,
@@ -163,7 +163,7 @@ func (n *Nylon) rebindForwardingPeers() {
 	}
 
 	peers := make(map[state.NodeId]*device.Peer)
-	for _, node := range n.CentralCfg.GetNodes() {
+	for _, node := range n.GetNodes() {
 		peers[node.Id] = n.Device.LookupPeer(device.NoisePublicKey(node.PubKey))
 	}
 
@@ -211,7 +211,7 @@ func (n *Nylon) CleanupRouter() error {
 
 func (n *Nylon) GcRouter() error {
 	RunGC(n.RouterState, n)
-	for id, _ := range n.router.IO {
+	for id := range n.router.IO {
 		if n.RouterState.GetNeighbour(id) == nil {
 			delete(n.router.IO, id)
 			continue
@@ -233,7 +233,7 @@ func (n *Nylon) InitRouter() error {
 	})
 	n.RouterState = &state.RouterState{
 		RouterTunables: &n.RouterTunables,
-		Id:             n.LocalCfg.Id,
+		Id:             n.Id,
 		SelfSeqno:      make(map[netip.Prefix]uint16),
 		Routes:         make(map[netip.Prefix]state.SelRoute),
 		Sources:        make(map[state.Source]state.FD),
@@ -266,7 +266,7 @@ func (n *Nylon) InitRouter() error {
 func (n *Nylon) ComputeSysRouteTable() []netip.Prefix {
 	prefixes := make([]netip.Prefix, 0)
 	for entry, v := range n.RouterState.Routes {
-		if v.Nh == n.LocalCfg.Id {
+		if v.Nh == n.Id {
 			continue // never install a mesh route to our own prefix
 		}
 		prefixes = append(prefixes, entry)
@@ -274,7 +274,7 @@ func (n *Nylon) ComputeSysRouteTable() []netip.Prefix {
 
 	excludes := netipx.IPSetBuilder{}
 	excludes.AddSet(state.MakeSet(n.CentralCfg.ExcludeIPs))
-	excludes.RemoveSet(state.MakeSet(n.LocalCfg.UnexcludeIPs))
+	excludes.RemoveSet(state.MakeSet(n.UnexcludeIPs))
 	excludes.AddSet(state.MakeSet(n.LocalCfg.ExcludeIPs))
 
 	final := netipx.IPSetBuilder{}
@@ -352,7 +352,7 @@ func (n *Nylon) checkPrefix(prefix netip.Prefix) bool {
 	}
 	// dynamic prefixes (design §4.6) exist only in the announcing node's
 	// view; accept them when they fall inside a centrally-declared range
-	for _, r := range n.CentralCfg.DynamicPrefixRanges {
+	for _, r := range n.DynamicPrefixRanges {
 		if prefix.Bits() >= r.Bits() && r.Contains(prefix.Addr()) {
 			return true
 		}
@@ -456,8 +456,8 @@ func (n *Nylon) flushIO() error {
 				// we can coalesce messages, but we need to make sure we don't fragment our UDP packet
 				// if a single proto message is somehow larger than SafeMTU, we still send it, but it will get fragmented
 
-				for seqR, _ := range nio.SeqnoReq {
-					prefixBytes, _ := seqR.Prefix.MarshalBinary()
+				for seqR := range nio.SeqnoReq {
+					prefixBytes, _ := seqR.MarshalBinary()
 					req := &protocol.Ny{Type: &protocol.Ny_SeqnoRequestOp{
 						SeqnoRequestOp: &protocol.Ny_SeqnoRequest{
 							RouterId: string(seqR.NodeId),

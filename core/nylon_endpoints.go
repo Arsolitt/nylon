@@ -145,7 +145,7 @@ func handleProbe(n *Nylon, pkt *protocol.Ny_Probe, endpoint conn.Endpoint, peer 
 }
 
 func handleProbePing(n *Nylon, node state.NodeId, wgEndpoint conn.Endpoint) {
-	if node == n.LocalCfg.Id {
+	if node == n.Id {
 		return
 	}
 	// check if link exists
@@ -242,7 +242,7 @@ func (n *Nylon) probeLinks(active bool) error {
 
 func (n *Nylon) probeNew() error {
 	// probe for new dp links
-	for _, peer := range n.GetPeers(n.LocalCfg.Id) {
+	for _, peer := range n.GetPeers(n.Id) {
 		if !n.IsRouter(peer) {
 			continue
 		}

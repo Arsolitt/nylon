@@ -188,7 +188,7 @@ func TestApplyCentralConfigRotatesPeerKeyWithoutChangingNextHop(t *testing.T) {
 	b := vh.Nylons[vh.IndexOf("b")].Load()
 	assert.NoError(t, b.Device.SetPrivateKey(device.NoisePrivateKey(newPrivateKey)))
 
-	err, next := vh.Central.Clone()
+	next, err := vh.Central.Clone()
 	assert.NoError(t, err)
 	next.Timestamp++
 	next.Routers[vh.IndexOf("b")].PubKey = newPrivateKey.Pubkey()

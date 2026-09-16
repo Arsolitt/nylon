@@ -137,7 +137,7 @@ func (n *Nylon) InstallTC() {
 // letting a covering aggregate resurrect delivery.
 func (n *Nylon) tcLocalExit(dst netip.Addr) bool {
 	entry, ok := n.router.Tables.Load().Forward.Lookup(dst)
-	return ok && entry.Nh == n.LocalCfg.Id && !entry.Blackhole
+	return ok && entry.Nh == n.Id && !entry.Blackhole
 }
 
 func (n *Nylon) SendNylon(pkt *protocol.Ny, endpoint conn.Endpoint, peer *device.Peer) error {

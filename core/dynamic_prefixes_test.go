@@ -146,7 +146,7 @@ func TestInjectDynamicPrefixes(t *testing.T) {
 
 		n.injectDynamicPrefixes(&n.CentralCfg)
 
-		node := n.CentralCfg.GetNode(n.LocalCfg.Id)
+		node := n.GetNode(n.Id)
 		assert.Len(t, node.Prefixes, 2)
 		metric, ok := node.Prefixes[0].StaticMetric()
 		assert.True(t, ok)
@@ -169,7 +169,7 @@ func TestInjectDynamicPrefixes(t *testing.T) {
 func TestApplyCentralConfigDynamicPrefixRoundTrip(t *testing.T) {
 	vip := netip.MustParsePrefix("10.99.0.1/32")
 	n := testNylonWithPrefixes()
-	n.LocalCfg.DynamicPrefixesDir = t.TempDir() // enables injection
+	n.DynamicPrefixesDir = t.TempDir() // enables injection
 	n.dynamicPrefixes = []state.PrefixHealthWrapper{staticDynPrefix(vip, 0)}
 
 	result, err := n.ApplyCentralConfig(&n.CentralCfg)
@@ -177,7 +177,7 @@ func TestApplyCentralConfigDynamicPrefixRoundTrip(t *testing.T) {
 	assert.Equal(t, ApplyApplied, result)
 
 	// the committed config carries the dynamic prefix and advertises it
-	node := n.CentralCfg.GetNode(n.LocalCfg.Id)
+	node := n.GetNode(n.Id)
 	found := false
 	for _, p := range node.Prefixes {
 		if p.GetPrefix() == vip {
@@ -232,7 +232,7 @@ func TestCheckPrefixDynamicRanges(t *testing.T) {
 	// without ranges, unknown prefixes are rejected (fail-closed default)
 	assert.False(t, n.checkPrefix(netip.MustParsePrefix("10.99.0.1/32")))
 
-	n.CentralCfg.DynamicPrefixRanges = []netip.Prefix{netip.MustParsePrefix("10.99.0.0/24")}
+	n.DynamicPrefixRanges = []netip.Prefix{netip.MustParsePrefix("10.99.0.0/24")}
 
 	// subnets of a declared range are accepted
 	assert.True(t, n.checkPrefix(netip.MustParsePrefix("10.99.0.0/24")))

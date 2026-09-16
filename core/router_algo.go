@@ -188,15 +188,15 @@ func HandleSeqnoRequest(s *state.RouterState, r Router, fromNeigh state.NodeId, 
 		//   the requested sequence number, the node MUST send an update for the
 		//   given prefix.
 		if selRoute.Metric != state.INF &&
-			(selRoute.Source.NodeId != src.NodeId || selRoute.Source.NodeId == src.NodeId && SeqnoGe(selRoute.FD.Seqno, reqSeqno)) {
+			(selRoute.NodeId != src.NodeId || selRoute.NodeId == src.NodeId && SeqnoGe(selRoute.Seqno, reqSeqno)) {
 			updateFeasibility(s, selRoute.PubRoute)
 			r.SendRouteUpdate(fromNeigh, selRoute.PubRoute)
 		}
 		//   If the router-ids match, but the requested seqno is larger (modulo 2^(16)) than the
 		//   route entry's, the node compares the router-id against its own
 		//   router-id.
-		if selRoute.Source.NodeId == src.NodeId && SeqnoGt(reqSeqno, selRoute.FD.Seqno) {
-			if selRoute.Source.NodeId == s.Id {
+		if selRoute.NodeId == src.NodeId && SeqnoGt(reqSeqno, selRoute.Seqno) {
+			if selRoute.NodeId == s.Id {
 				//   If the router-id is its own, then it increases its
 				//   sequence number by 1 (modulo 2^(16)) and sends an update.  A node
 				//   MUST NOT increase its sequence number by more than 1 in reaction to a
@@ -290,7 +290,7 @@ func HandleNeighbourUpdate(s *state.RouterState, r Router, neighId state.NodeId,
 	_, ok := n.Routes[adv.Prefix]
 
 	if adv.Metric == state.INF {
-		r.SendAckRetract(neighId, adv.Source.Prefix)
+		r.SendAckRetract(neighId, adv.Prefix)
 	}
 
 	if !ok {
@@ -326,7 +326,7 @@ func HandleNeighbourUpdate(s *state.RouterState, r Router, neighId state.NodeId,
 		//      the router-id of the update is equal to the router-id of the
 		//      entry, then the update MAY be ignored;
 
-		selRoute, hasSelected := s.Routes[adv.Source.Prefix]
+		selRoute, hasSelected := s.Routes[adv.Prefix]
 		isSelected := hasSelected && selRoute.Nh == neighId && selRoute.Source == adv.Source
 		if !checkFeasibility(s, adv) {
 			dummy := state.SelRoute{
@@ -582,8 +582,8 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 			r.RouterEvent(log.EventRouteUpdated, "updated", "prefix", prefix, "old", oldRoute, "new", newRoute)
 		}
 		if !exists ||
-			oldRoute.Source.NodeId != newRoute.Source.NodeId ||
-			oldRoute.FD.Seqno != newRoute.FD.Seqno ||
+			oldRoute.NodeId != newRoute.NodeId ||
+			oldRoute.Seqno != newRoute.Seqno ||
 			abs(int(newRoute.Metric)-int(oldRoute.Metric)) > int(s.LargeChangeThreshold) && newRoute.Metric != state.INF {
 			// criteria met, send update
 			updateFeasibility(s, newRoute.PubRoute)
@@ -679,10 +679,7 @@ func ShouldSwitch(curRoute state.SelRoute, newRoute state.SelRoute, tunable *sta
 	// TODO: Investigate stable routing heuristics
 	curMetric := float64(curRoute.Metric)
 	newMetric := float64(newRoute.Metric)
-	if newMetric*tunable.LinkSwitchDeadband > curMetric {
-		return false
-	}
-	return true
+	return newMetric*tunable.LinkSwitchDeadband <= curMetric
 }
 
 func IsStrictlyBetter(curRoute state.SelRoute, newRoute state.SelRoute) bool {

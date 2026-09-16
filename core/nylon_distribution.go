@@ -25,13 +25,14 @@ func fetchConfig(repoStr string, key state.NyPublicKey, maxSize int64, resolver 
 	}
 	cfgBody := make([]byte, 0)
 
-	if repo.Scheme == "file" {
+	switch repo.Scheme {
+	case "file":
 		file, err := os.ReadFile(repo.Opaque)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read file %s: %w", repo.Opaque, err)
 		}
 		cfgBody = file
-	} else if repo.Scheme == "http" || repo.Scheme == "https" {
+	case "http", "https":
 		client := &http.Client{
 			Transport: &http.Transport{
 				DialContext: resolver.DialContext,
@@ -43,7 +44,7 @@ func fetchConfig(repoStr string, key state.NyPublicKey, maxSize int64, resolver 
 		}
 		cfgBody, err = io.ReadAll(io.LimitReader(res.Body, maxSize))
 		if err != nil {
-			res.Body.Close()
+			_ = res.Body.Close()
 			return nil, fmt.Errorf("failed to read response from %s: %w", repo.String(), err)
 		}
 		err = res.Body.Close()

@@ -13,7 +13,7 @@ func SendIPCRequest(itf string, req *protocol.IpcRequest) (*protocol.IpcResponse
 	if err != nil {
 		return nil, fmt.Errorf("connect to %s: %w", itf, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 
@@ -52,7 +52,7 @@ func SendIPCStream(itf string, req *protocol.IpcRequest, handler func(*protocol.
 	if err != nil {
 		return fmt.Errorf("connect to %s: %w", itf, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 

@@ -33,14 +33,14 @@ type discoveryGroup struct {
 }
 
 func (n *Nylon) startObservability() error {
-	if n.LocalCfg.ObservabilityAddr == "" {
+	if n.ObservabilityAddr == "" {
 		return nil
 	}
 	obsLog := n.Log.With("module", log.ScopeObservability)
 
-	listener, err := net.Listen("tcp", n.LocalCfg.ObservabilityAddr)
+	listener, err := net.Listen("tcp", n.ObservabilityAddr)
 	if err != nil {
-		return fmt.Errorf("listen on observability address %q: %w", n.LocalCfg.ObservabilityAddr, err)
+		return fmt.Errorf("listen on observability address %q: %w", n.ObservabilityAddr, err)
 	}
 
 	mux := http.NewServeMux()
@@ -158,20 +158,20 @@ func (n *Nylon) handleMetrics(logger *slog.Logger, w http.ResponseWriter, r *htt
 }
 
 func (n *Nylon) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
-	_, port, err := net.SplitHostPort(n.LocalCfg.ObservabilityAddr)
+	_, port, err := net.SplitHostPort(n.ObservabilityAddr)
 	if err != nil {
 		http.Error(w, "service discovery unavailable", http.StatusInternalServerError)
 		return
 	}
 	groups := make([]discoveryGroup, 0)
-	for _, node := range n.CentralCfg.GetNodes() {
+	for _, node := range n.GetNodes() {
 		targets := make([]string, 0, len(node.Addresses))
 		for _, addr := range node.Addresses {
 			targets = append(targets, net.JoinHostPort(addr.String(), port))
 		}
 		if len(targets) != 0 {
 			nodeType := "router"
-			if n.CentralCfg.IsClient(node.Id) {
+			if n.IsClient(node.Id) {
 				nodeType = "passive"
 			}
 			groups = append(groups, discoveryGroup{

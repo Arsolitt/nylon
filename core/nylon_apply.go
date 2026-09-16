@@ -23,11 +23,11 @@ func (n *Nylon) ApplyCentralConfig(cfg *state.CentralCfg) (ApplyResult, error) {
 	if err != nil {
 		return ApplyRejected, err
 	}
-	if !candidate.IsRouter(n.LocalCfg.Id) {
+	if !candidate.IsRouter(n.Id) {
 		return ApplyRestartRequired, errors.New("local node is not a router in the new central config")
 	}
-	if n.LocalCfg.DynamicPrefixesDir != "" {
-		if cerr, snap := candidate.Clone(); cerr != nil {
+	if n.DynamicPrefixesDir != "" {
+		if snap, cerr := candidate.Clone(); cerr != nil {
 			return ApplyRejected, cerr
 		} else {
 			n.centralCfgPristine = snap
@@ -65,7 +65,7 @@ func (n *Nylon) SyncApplicationState() error {
 }
 
 func normalizeCentralConfig(cfg *state.CentralCfg) (*state.CentralCfg, error) {
-	err, normalized := cfg.Clone()
+	normalized, err := cfg.Clone()
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func normalizeCentralConfig(cfg *state.CentralCfg) (*state.CentralCfg, error) {
 
 func (n *Nylon) reconcileRouterState(next *state.CentralCfg) error {
 	desired := make(map[state.NodeId]state.RouterCfg)
-	for _, peer := range next.GetPeers(n.LocalCfg.Id) {
+	for _, peer := range next.GetPeers(n.Id) {
 		if !next.IsRouter(peer) {
 			continue
 		}

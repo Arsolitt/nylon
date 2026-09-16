@@ -171,14 +171,14 @@ func scanDynamicPrefixDir(log *slog.Logger, dir string) []state.PrefixHealthWrap
 // loadDynamicPrefixesDir rescans the dynamic prefixes directory into
 // n.dynamicPrefixes.
 func (n *Nylon) loadDynamicPrefixesDir() {
-	n.dynamicPrefixes = scanDynamicPrefixDir(n.Log.With("module", log.ScopePrefixes), n.LocalCfg.DynamicPrefixesDir)
+	n.dynamicPrefixes = scanDynamicPrefixDir(n.Log.With("module", log.ScopePrefixes), n.DynamicPrefixesDir)
 }
 
 // injectDynamicPrefixes appends the local dynamic prefixes to the local
 // node's entry in cfg. Prefixes already present in the central config win
 // (design §4.4). A nil local node entry is a no-op.
 func (n *Nylon) injectDynamicPrefixes(cfg *state.CentralCfg) {
-	node := cfg.TryGetNode(n.LocalCfg.Id)
+	node := cfg.TryGetNode(n.Id)
 	if node == nil {
 		return
 	}
@@ -209,7 +209,7 @@ func (n *Nylon) watchDynamicPrefixes(dir string) {
 		dpLog.Error("cannot create dynamic prefixes watcher; feature disabled", "error", err)
 		return
 	}
-	defer watcher.Close()
+	defer func() { _ = watcher.Close() }()
 	if err := watcher.Add(dir); err != nil {
 		dpLog.Error("cannot watch dynamic prefixes dir; feature disabled", "dir", dir, "error", err)
 		return
