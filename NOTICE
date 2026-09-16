@@ -1,0 +1,128 @@
+nylon
+=====
+
+nylon is a self-healing WireGuard mesh. This file lists the third-party
+components included in the released binaries and reproduces the attribution
+notices they ship. The full license text of every component is in
+licenses/<module>/ next to this file.
+
+nylon itself is licensed under the Apache License 2.0 (LICENSE); polyamide/
+is distributed under the MIT license (polyamide/LICENSE).
+
+nylon-genesis binaries link github.com/Arsolitt/amnezigo, which is licensed
+under the GNU General Public License v3.0 (LICENSE.GPL-3.0). Distributing a
+nylon-genesis binary means passing on the GPL-3.0 terms together with the
+corresponding source (this repository and github.com/Arsolitt/amnezigo).
+
+Bundled components
+==================
+
+filippo.io/edwards25519 v1.1.1 — LICENSE
+github.com/Arsolitt/amnezigo v0.3.0 — LICENSE
+github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc — LICENSE
+github.com/digineo/go-logwrap v0.0.0-20181106161722-a178c58ea3f0 — LICENSE
+github.com/digineo/go-ping v1.2.0 — LICENSE
+github.com/dustin/go-broadcast v0.0.0-20211018055107-71439988bd91 — LICENSE
+github.com/emicklei/go-restful/v3 v3.11.0 — LICENSE
+github.com/encodeous/metric v0.0.0-20251111175231-f339c2f7c4bd — LICENSE
+github.com/encodeous/tint v1.2.0 — LICENSE
+github.com/fsnotify/fsnotify v1.9.0 — LICENSE
+github.com/fxamacker/cbor/v2 v2.7.0 — LICENSE
+github.com/gaissmai/bart v0.25.0 — LICENSE
+github.com/go-logr/logr v1.4.3 — LICENSE
+github.com/go-openapi/jsonpointer v0.21.0 — LICENSE
+github.com/go-openapi/jsonreference v0.20.2 — LICENSE
+github.com/go-openapi/swag v0.23.0 — LICENSE
+github.com/goccy/go-yaml v1.19.1 — LICENSE
+github.com/gogo/protobuf v1.3.2 — AUTHORS, LICENSE
+github.com/google/gnostic-models v0.6.9 — LICENSE
+github.com/google/go-cmp v0.7.0 — LICENSE
+github.com/google/go-jsonnet v0.22.0 — LICENSE
+github.com/google/uuid v1.6.0 — LICENSE
+github.com/jellydator/ttlcache/v3 v3.4.0 — LICENSE
+github.com/josharian/intern v1.0.0 — license.md
+github.com/json-iterator/go v1.1.12 — LICENSE
+github.com/mailru/easyjson v0.7.7 — LICENSE
+github.com/moby/term v0.5.2 — LICENSE
+github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd — LICENSE
+github.com/modern-go/reflect2 v1.0.2 — LICENSE
+github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 — LICENSE
+github.com/pkg/errors v0.9.1 — LICENSE
+github.com/samber/lo v1.51.0 — LICENSE
+github.com/samber/slog-common v0.19.0 — LICENSE
+github.com/samber/slog-multi v1.5.0 — LICENSE
+github.com/spf13/cobra v1.10.1 — LICENSE.txt
+github.com/spf13/pflag v1.0.10 — LICENSE
+github.com/vishvananda/netlink v1.3.1 — LICENSE
+github.com/vishvananda/netns v0.0.5 — LICENSE
+github.com/x448/float16 v0.8.4 — LICENSE
+go.step.sm/crypto v0.70.0 — LICENSE
+go4.org/netipx v0.0.0-20231129151722-fdeea329fbba — AUTHORS, LICENSE
+golang.org/x/crypto v0.52.0 — LICENSE, PATENTS
+golang.org/x/net v0.55.0 — LICENSE, PATENTS
+golang.org/x/oauth2 v0.30.0 — LICENSE
+golang.org/x/sync v0.20.0 — LICENSE, PATENTS
+golang.org/x/sys v0.45.0 — LICENSE, PATENTS
+golang.org/x/term v0.43.0 — LICENSE, PATENTS
+golang.org/x/text v0.37.0 — LICENSE, PATENTS
+golang.org/x/time v0.12.0 — LICENSE, PATENTS
+google.golang.org/protobuf v1.36.10 — LICENSE, PATENTS
+gopkg.in/evanphx/json-patch.v4 v4.12.0 — LICENSE
+gopkg.in/inf.v0 v0.9.1 — LICENSE
+gopkg.in/yaml.v3 v3.0.1 — LICENSE, NOTICE
+k8s.io/api v0.33.13 — LICENSE
+k8s.io/apimachinery v0.33.13 — LICENSE
+k8s.io/client-go v0.33.13 — LICENSE
+k8s.io/klog/v2 v2.130.1 — LICENSE
+k8s.io/kube-openapi v0.0.0-20250318190949-c8a335a9a2ff — LICENSE
+k8s.io/utils v0.0.0-20241104100929-3ea5e8cea738 — LICENSE
+sigs.k8s.io/json v0.0.0-20241010143419-9aa6b5e7a4b3 — LICENSE
+sigs.k8s.io/randfill v1.0.0 — LICENSE, NOTICE
+sigs.k8s.io/structured-merge-diff/v4 v4.6.0 — LICENSE
+sigs.k8s.io/yaml v1.4.0 — LICENSE
+
+Third-party attribution notices
+===============================
+
+## gopkg.in/yaml.v3 v3.0.1
+
+Copyright 2011-2016 Canonical Ltd.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+## sigs.k8s.io/randfill v1.0.0
+
+When donating the randfill project to the CNCF, we could not reach all the
+gofuzz contributors to sign the CNCF CLA. As such, according to the CNCF rules
+to donate a repository, we must add a NOTICE referencing section 7 of the CLA
+with a list of developers who could not be reached.
+
+`7. Should You wish to submit work that is not Your original creation, You may
+submit it to the Foundation separately from any Contribution, identifying the
+complete details of its source and of any license or other restriction
+(including, but not limited to, related patents, trademarks, and license
+agreements) of which you are personally aware, and conspicuously marking the
+work as "Submitted on behalf of a third-party: [named here]".`
+
+Submitted on behalf of a third-party: @dnephin (Daniel Nephin)
+Submitted on behalf of a third-party: @AlekSi (Alexey Palazhchenko)
+Submitted on behalf of a third-party: @bbigras (Bruno Bigras)
+Submitted on behalf of a third-party: @samirkut (Samir)
+Submitted on behalf of a third-party: @posener (Eyal Posener)
+Submitted on behalf of a third-party: @Ashikpaul (Ashik Paul)
+Submitted on behalf of a third-party: @kwongtailau (Kwongtai)
+Submitted on behalf of a third-party: @ericcornelissen (Eric Cornelissen)
+Submitted on behalf of a third-party: @eclipseo (Robert-André Mauchin)
+Submitted on behalf of a third-party: @yanzhoupan (Andrew Pan)
+Submitted on behalf of a third-party: @STRRL (Zhiqiang ZHOU)
+Submitted on behalf of a third-party: @disconnect3d (Disconnect3d)
