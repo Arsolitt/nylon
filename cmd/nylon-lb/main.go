@@ -5,7 +5,7 @@
 // kube-proxy-replacement serves the data plane from there), and announces the
 // /32 into the mesh by writing a dynamic-prefix file into the node's
 // prefixes.d dir and binding the address on the bind interface — the same
-// stand-proven VIP pattern as nylon-vip.service plus 00-vip.json.
+// reference VIP pattern as nylon-vip.service plus 00-vip.json.
 package main
 
 import (
@@ -111,7 +111,7 @@ LoadBalancer Service.`,
 	cmd.Version = buildinfo.Version
 
 	cmd.Flags().StringArrayVar(&opts.pools, "pool", nil, "named IPv4 pool to allocate LoadBalancer ingress IPs from (repeatable; name=cidr, e.g. shared=10.110.0.0/24)")
-	cmd.Flags().StringArrayVar(&opts.excludes, "exclude", nil, "pool IP to never allocate (repeatable; e.g. a stand's probe IP)")
+	cmd.Flags().StringArrayVar(&opts.excludes, "exclude", nil, "pool IP to never allocate (repeatable; e.g. a probe address that must stay free)")
 	cmd.Flags().StringVar(&opts.lbClass, "lb-class", "", "loadBalancerClass to claim; empty claims all type=LoadBalancer Services")
 	cmd.Flags().StringVar(&opts.prefixesDir, "prefixes-dir", "/etc/nylon/prefixes.d", "nylon dynamic_prefixes_dir to write announce files into")
 	cmd.Flags().StringVar(&opts.bindInterface, "bind-interface", "lo", "interface to bind allocated IPs on (empty string disables binding)")

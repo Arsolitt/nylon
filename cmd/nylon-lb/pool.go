@@ -20,7 +20,7 @@ type Pool struct {
 
 // ParsePool parses an IPv4 CIDR into a Pool. The prefix is masked, the network
 // and broadcast addresses are implicitly unallocatable, and excludes are
-// addresses that must never be handed out (e.g. a stand's probe IP).
+// addresses that must never be handed out (e.g. a probe address that must stay free).
 func ParsePool(cidr string, excludes []string) (*Pool, error) {
 	prefix, err := netip.ParsePrefix(cidr)
 	if err != nil {

@@ -7,7 +7,7 @@ nylon-lb allocates an IPv4 address from a configured pool for every Service of
 announces the allocated /32 into the nylon mesh: it binds the address on the
 loopback interface and writes a dynamic-prefix file (`lb-<namespace>-<name>.json`)
 into the node's `prefixes.d` directory, which the nylon daemon watches and
-propagates — the same stand-proven pattern as `nylon-vip.service` +
+propagates — the same reference pattern as `nylon-vip.service` +
 `prefixes.d/00-vip.json`. Cilium in kube-proxy-replacement mode consumes
 `status.loadBalancer.ingress` for the data plane; nylon-lb owns no datapath.
 
@@ -16,7 +16,7 @@ propagates — the same stand-proven pattern as `nylon-vip.service` +
 | Flag | Default | Description |
 |---|---|---|
 | `--pool` | (required) | Named IPv4 pool to allocate LoadBalancer addresses from, as `name=cidr` (e.g. `--pool=shared=10.110.0.0/24`); repeatable. |
-| `--exclude` | — | Repeatable IPv4 address never to allocate, e.g. the stand probe IP. |
+| `--exclude` | — | Repeatable IPv4 address never to allocate, e.g. a probe address that must stay free. |
 | `--lb-class` | — | `loadBalancerClass` to claim. Empty claims all `type=LoadBalancer` Services; set it to coexist with other class-scoped LB controllers. |
 | `--prefixes-dir` | `/etc/nylon/prefixes.d` | Directory nylon-lb writes `lb-*.json` dynamic-prefix files to. |
 | `--bind-interface` | `lo` | Interface to bind allocated addresses on; empty string disables binding. |
@@ -150,6 +150,6 @@ Restart=always
 
 ```bash
 go build ./cmd/nylon-lb
-# cross-compile for stand hosts:
+# cross-compile for Linux hosts:
 GOOS=linux GOARCH=amd64 go build ./cmd/nylon-lb
 ```

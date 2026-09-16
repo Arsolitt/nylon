@@ -30,7 +30,7 @@ dynamic_prefixes_dir: /etc/nylon/prefixes.d
 # Allow dynamic announcements for pod CIDRs and the anycast VIP slice.
 dynamic_prefix_ranges:
   - 10.42.0.0/16
-  - 10.87.0.0/24
+  - 10.60.0.0/24
 ```
 
 Cross-node routing needs both halves: the announcer needs `dynamic_prefixes_dir` to announce, and every receiver needs a `dynamic_prefix_ranges` entry that covers the announced prefix. A receiver accepts an announced prefix when the prefix is **equal to one of its central prefixes** or **a subnet of one of the declared ranges**. Supernets of a declared range are rejected. The gate applies to route updates, ack-retracts, and seqno-requests alike.
@@ -136,14 +136,14 @@ Files follow a one-writer-per-file convention. Give each writer its own file nam
 The `nylon-lb` LoadBalancer agent is the reference writer. For each `type=LoadBalancer` Service it writes `lb-<namespace>-<name>.json` with a static `/32` entry:
 
 ```json title="prefixes.d/lb-default-my-service.json"
-{"version":1,"prefixes":[{"type":"static","prefix":"10.87.0.100/32","metric":0}]}
+{"version":1,"prefixes":[{"type":"static","prefix":"10.60.0.100/32","metric":0}]}
 ```
 
 It writes atomically (temp file, `0644`, rename), skips rewrites when the content is unchanged, and garbage-collects only files matching `lb-*.json` — it never touches files owned by other writers, such as `00-vip.json` or `10-podcidr.json`. Note that its pool must sit inside every receiver's `dynamic_prefix_ranges`, or the announcements are dropped. See the [nylon-lb guide](/guides/nylon-lb) for deployment.
 
 ### Manual VIP announcement
 
-For a single anycast VIP without Kubernetes, use the stand-proven systemd pattern: a `nylon-vip.service` unit that owns one file, for example `prefixes.d/00-vip.json`, and binds the address to a local interface. Because the unit is the only writer of that file, updates and withdrawals stay race-free.
+For a single anycast VIP without Kubernetes, use the reference systemd pattern: a `nylon-vip.service` unit that owns one file, for example `prefixes.d/00-vip.json`, and binds the address to a local interface. Because the unit is the only writer of that file, updates and withdrawals stay race-free.
 
 ## Troubleshooting
 
