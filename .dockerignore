@@ -39,4 +39,5 @@ vendor
 
 workdir
 bin
+/dist/
 Dockerfile

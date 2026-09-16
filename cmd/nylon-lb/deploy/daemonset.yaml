@@ -26,8 +26,10 @@ spec:
           operator: Exists
       containers:
         - name: nylon-lb
-          # Built with: make push-nylon-lb REGISTRY=<registry> IMAGE_NAME=<path>/nylon-lb IMAGE_TAG=<tag>
-          image: ghcr.io/encodeous/nylon/nylon-lb:latest
+          # Published by .github/workflows/release.yml (GoReleaser): release tags
+          # carry the :<version> tag, only stable releases move :latest. For a
+          # local image use: make image-nylon-lb
+          image: ghcr.io/arsolitt/nylon/nylon-lb:latest
           imagePullPolicy: IfNotPresent
           # NET_ADMIN for the lo address binding; root because netlink needs it.
           securityContext:

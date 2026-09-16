@@ -7,7 +7,7 @@ GOTESTSUM ?= go run gotest.tools/gotestsum@latest --
 export CGO_ENABLED ?= 0
 
 .DEFAULT_GOAL := build
-.PHONY: build nylon nylon-genesis nylon-lb test test-integration test-e2e test-all image-nylon-lb image-nylon-lb-debug push-nylon-lb proto clean
+.PHONY: build nylon nylon-genesis nylon-lb test test-integration test-e2e test-all image-nylon-lb image-nylon-lb-debug push-nylon-lb notice proto clean
 
 build: nylon nylon-genesis nylon-lb
 
@@ -41,7 +41,7 @@ IMAGE_TAG ?= $(VERSION)
 PLATFORMS ?= linux/amd64,linux/arm64
 IMAGE_EXTRA_ARGS ?=                           # extra buildx flags, e.g. additional -t tags
 IMAGE_REF := $(if $(REGISTRY),$(REGISTRY)/$(IMAGE_NAME),$(IMAGE_NAME)):$(IMAGE_TAG)
-LB_DOCKERFILE := cmd/nylon-lb/Dockerfile
+LB_DOCKERFILE := cmd/nylon-lb/Dockerfile.dev
 
 image-nylon-lb:
 	$(DOCKER) build $(IMAGE_EXTRA_ARGS) -f $(LB_DOCKERFILE) --target runtime \
@@ -55,6 +55,9 @@ push-nylon-lb:
 	$(DOCKER) buildx build $(IMAGE_EXTRA_ARGS) -f $(LB_DOCKERFILE) --target runtime \
 		--platform $(PLATFORMS) \
 		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t $(IMAGE_REF) --push .
+
+notice:
+	go run ./hack/noticegen
 
 proto:
 	go generate ./cmd/nylon

@@ -1,0 +1,116 @@
+# GoReleaser configuration.
+#
+# Release:      git tag -s vX.Y.Z[-rc.N] -m "..." && git push origin vX.Y.Z[-rc.N]
+# Local check:  goreleaser check
+# Local dry run (builds everything, publishes nothing):
+#               goreleaser release --snapshot --clean
+version: 2
+
+project_name: nylon
+
+builds:
+  - id: nylon
+    main: ./cmd/nylon
+    binary: nylon
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/encodeous/nylon/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/encodeous/nylon/internal/buildinfo.Commit={{ .ShortCommit }}
+    goos: [linux, darwin]
+    goarch: [386, amd64, arm64]
+    ignore:
+      - goos: darwin
+        goarch: 386
+
+  - id: nylon-genesis
+    main: ./cmd/nylon-genesis
+    binary: nylon-genesis
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/encodeous/nylon/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/encodeous/nylon/internal/buildinfo.Commit={{ .ShortCommit }}
+    goos: [linux, darwin]
+    goarch: [386, amd64, arm64]
+    ignore:
+      - goos: darwin
+        goarch: 386
+
+  # Only used by the container image (dockers_v2 below); never archived.
+  - id: nylon-lb
+    main: ./cmd/nylon-lb
+    binary: nylon-lb
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/encodeous/nylon/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/encodeous/nylon/internal/buildinfo.Commit={{ .ShortCommit }}
+    goos: [linux]
+    goarch: [amd64, arm64]
+
+archives:
+  # Raw binaries, upstream-compatible asset names: nylon-linux-amd64, ...
+  - id: binaries
+    ids: [nylon, nylon-genesis]
+    formats: [binary]
+    name_template: "{{ .Binary }}-{{ .Os }}-{{ .Arch }}"
+
+  # Single license bundle attached to every release (binaries cannot carry files).
+  - id: licenses
+    meta: true
+    formats: [tar.gz]
+    name_template: "nylon-licenses_{{ .Version }}"
+    files:
+      - LICENSE
+      - LICENSE.GPL-3.0
+      - NOTICE
+      - polyamide/LICENSE
+      - licenses/**/*
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot.{{ .ShortCommit }}"
+
+dockers_v2:
+  - id: nylon-lb
+    ids: [nylon-lb]
+    dockerfile: cmd/nylon-lb/Dockerfile
+    images:
+      - ghcr.io/arsolitt/nylon/nylon-lb
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    extra_files:
+      - NOTICE
+      - LICENSE
+      - LICENSE.GPL-3.0
+      - licenses
+    labels:
+      org.opencontainers.image.title: nylon-lb
+      org.opencontainers.image.description: LoadBalancer address allocator and mesh announcer for nylon
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.licenses: Apache-2.0
+    sbom: false
+
+release:
+  prerelease: auto
+  make_latest: "{{ not .Prerelease }}"
+  footer: |
+    `nylon-genesis` links the GPL-3.0 [amnezigo](https://github.com/Arsolitt/amnezigo) parameter oracle:
+    if you redistribute that binary, pass on the GPL-3.0 terms (LICENSE.GPL-3.0) together with the
+    corresponding source (this repository and amnezigo). The `nylon` daemon and the `nylon-lb` image
+    carry no copyleft obligations. Third-party licenses: `nylon-licenses_{{ .Version }}.tar.gz`.

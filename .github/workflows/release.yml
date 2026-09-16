@@ -1,54 +1,44 @@
-# .github/workflows/release.yaml
+name: Release
 
+# Tag driven:
+#   vX.Y.Z       -> GitHub release (Latest) + image tags :X.Y.Z and :latest
+#   vX.Y.Z-rc.N  -> GitHub pre-release      + image tag  :X.Y.Z-rc.N only
 on:
-  release:
-    types: [created]
+  push:
+    tags:
+      - "v*"
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
-  release-unix:
-    name: Release Go Binary (Unix)
+  goreleaser:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux, darwin]
-        goarch: ["386", amd64, arm64]
-        exclude:
-          - goarch: "386"
-            goos: darwin
+    permissions:
+      contents: write # create the GitHub release and upload assets
+      packages: write # push ghcr.io/arsolitt/nylon/nylon-lb
     steps:
-      - uses: actions/checkout@v4
-      - uses: wangyoucao577/go-release-action@v1
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          goos: ${{ matrix.goos }}
-          project_path: cmd/nylon
-          goarch: ${{ matrix.goarch }}
-          asset_name: nylon-${{ matrix.goos }}-${{ matrix.goarch }}
-  release-windows:
-    name: Release Go Binary (Windows) # Windows requires the wintun driver, so we use a separate action
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [ windows ]
-        goarch: [ amd64, arm64 ]
-        wintun_version: [ 0.14.1 ]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install unzip
-        run: sudo apt install -y unzip
-      - name: Fetch wintun
-        run: |
-          wget https://www.wintun.net/builds/wintun-${{ matrix.wintun_version }}.zip
-          unzip wintun-${{ matrix.wintun_version }}.zip
-      - uses: wangyoucao577/go-release-action@v1
+          fetch-depth: 0 # full history and tags for the changelog
+      - name: Set up Go
+        uses: actions/setup-go@v7
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          goos: ${{ matrix.goos }}
-          project_path: cmd/nylon
-          goarch: ${{ matrix.goarch }}
-          extra_files: 'wintun/bin/${{ matrix.goarch }}/wintun.dll'
-          asset_name: nylon-${{ matrix.goos }}-${{ matrix.goarch }}
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Docker buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.18.1
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

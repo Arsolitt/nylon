@@ -24,6 +24,7 @@ go.work.sum
 
 .DS_Store
 /bin/
+/dist/
 
 central.key
 central.yaml

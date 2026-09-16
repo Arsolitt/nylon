@@ -1,40 +1,21 @@
-# nylon-lb — LoadBalancer controller image for the nylon mesh.
-# Build locally:  make image-nylon-lb
-# Build & push:   make push-nylon-lb REGISTRY=ghcr.io/example IMAGE_NAME=nylon-lb IMAGE_TAG=v1.2.3
-# The runtime image intentionally has no USER directive: the speaker binds
-# allocated /32s on lo (requires NET_ADMIN) and writes announce files into a
-# root-owned hostPath; deploy/daemonset.yaml sets runAsUser: 0 explicitly.
+# Release image for nylon-lb, built by GoReleaser (dockers_v2).
+# The binary is already compiled per platform, so the build context contains
+# <os>/<arch>/nylon-lb plus the license files listed in extra_files — the source
+# tree is NOT part of the context.
+# The image intentionally has no USER directive: the speaker binds allocated
+# /32s on lo (requires NET_ADMIN) and writes announce files into a root-owned
+# hostPath; deploy/daemonset.yaml sets runAsUser: 0 explicitly.
+# Local dev image (compiles from source, with a debug stage): Dockerfile.dev
+FROM scratch
 
-ARG VERSION=dev
-ARG COMMIT=none
+# TARGETPLATFORM is a buildx predefined ARG. It must be re-declared inside the
+# stage: a global ARG (before FROM) is not in scope for instructions after FROM,
+# and without this the COPY below expands to an empty platform path.
+ARG TARGETPLATFORM
 
-FROM golang:1.26.3@sha256:2d6c80227255c3112a4d08e67ba98e58efd3846daf15d9d7d4c389565d881b1a AS builder
-ARG VERSION
-ARG COMMIT
-WORKDIR /src
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w \
-    -X github.com/encodeous/nylon/internal/buildinfo.Version=${VERSION} \
-    -X github.com/encodeous/nylon/internal/buildinfo.Commit=${COMMIT}" \
-    -o /nylon-lb ./cmd/nylon-lb
+COPY $TARGETPLATFORM/nylon-lb /usr/local/bin/nylon-lb
+COPY NOTICE LICENSE LICENSE.GPL-3.0 /usr/share/doc/nylon/
+COPY licenses /usr/share/doc/nylon/licenses/
 
-FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS debug
-ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl iproute2 tcpdump && \
-    rm -rf /var/lib/apt/lists/*
-COPY --from=builder /nylon-lb /usr/local/bin/nylon-lb
-ENTRYPOINT ["/usr/local/bin/nylon-lb"]
-
-FROM scratch AS runtime
-ARG VERSION
-ARG COMMIT
-LABEL org.opencontainers.image.title="nylon-lb" \
-      org.opencontainers.image.description="LoadBalancer address allocator and mesh announcer for nylon" \
-      org.opencontainers.image.source="https://github.com/encodeous/nylon" \
-      org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.revision="${COMMIT}"
-COPY --from=builder /nylon-lb /usr/local/bin/nylon-lb
 EXPOSE 9633
 ENTRYPOINT ["/usr/local/bin/nylon-lb"]
