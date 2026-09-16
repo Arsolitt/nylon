@@ -55,18 +55,13 @@ For the meaning of each field, see [Obfuscation](/guides/obfuscation).
 
 ## Build the tool first
 
-`nylon-genesis` is built from the same repository as the daemon, but it links the GPL-3.0 `amnezigo` oracle through a local `replace` directive in `go.mod`. You need a sibling checkout before anything compiles:
+`nylon-genesis` is built from the same repository as the daemon; it links the GPL-3.0 [`amnezigo`](https://github.com/Arsolitt/amnezigo) oracle, which `go.mod` pins as an ordinary module dependency — the Go toolchain downloads it during the build, nothing extra to check out.
 
 ```bash
-git clone https://github.com/Arsolitt/amnezigo ../amnezigo
 make build
 ```
 
 `make build` produces `bin/nylon-genesis` alongside `bin/nylon` and `bin/nylon-lb`. Running `go run ./cmd/nylon-genesis` from the repository works identically.
-
-::::caution
-Cloning the nylon repository alone is not enough to build `nylon-genesis` — the `replace github.com/Arsolitt/amnezigo => ../amnezigo` directive requires a checkout of `amnezigo` as a sibling directory of the nylon repository. See [Building and testing](/guides/development) for the full build setup.
-::::
 
 ## Generate a profile
 
@@ -194,4 +189,4 @@ An unknown `--protocol` or `--preset` name fails before any output is produced, 
 
 `nylon-genesis` links the GPL-3.0 amnezigo parameter oracle, which makes the tool internal-only: build it from source for your own organization and do not redistribute the binary. This is a deliberate split — the nylon daemon itself links only MIT-licensed device code and Apache-2.0 nylon code, and the public release artifacts ship the daemon only, never `nylon-genesis`.
 
-For build requirements (including the sibling `../amnezigo` checkout the `replace` directive demands), see [Building and testing](/guides/development).
+For build requirements, see [Building and testing](/guides/development).

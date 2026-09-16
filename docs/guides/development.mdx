@@ -11,12 +11,6 @@ Everything in nylon's development workflow routes through one file: the `Makefil
 
 - **Go 1.26.3** — the toolchain is pinned to this exact version in `mise.toml`, `go.mod`, the CI `GO_VERSION`, and both Dockerfiles, so every environment builds with the same compiler.
 - **Docker** — required for the e2e suite, which runs real containers through [testcontainers](https://go.testcontainers.org/). The unit and integration suites do not need it.
-- **A sibling `../amnezigo` checkout** — `go.mod` carries `replace github.com/Arsolitt/amnezigo => ../amnezigo`. The `nylon-genesis` tool imports `amnezigo` as its genesis oracle, so builds that compile it — plain `go build ./...` and `make build`, which builds `nylon-genesis` — need that sibling checkout to exist. The e2e suite does not: its image-build step compiles only `./cmd/nylon` (the root `Dockerfile`), so Docker alone is enough for it.
-
-::::caution
-Cloning only the nylon repo is not enough. Check out [amnezigo](https://github.com/Arsolitt/amnezigo) next to it (as `../amnezigo`) or `go build ./...` fails to resolve the replacement module.
-::::
-
 The Makefile exports `CGO_ENABLED=0` for all builds, so you get fully static binaries without touching your shell environment.
 
 For the configs that `nylon-genesis` generates, see the [genesis guide](/guides/genesis).
