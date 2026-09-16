@@ -3,6 +3,15 @@
 [![Join our Discord](https://img.shields.io/discord/1499576745916104795?logo=discord&style=for-the-badge)](https://discord.gg/987gqqPGqr)
 [![Docs](https://img.shields.io/badge/docs-nylon.jq.ax-blue?style=for-the-badge)](https://nylon.jq.ax)
 
+> [!NOTE]
+> **This is a personal fork of [encodeous/nylon](https://github.com/encodeous/nylon).** On top of
+> upstream it adds AmneziaWG 2.0 traffic obfuscation (the `polyamide/` subtree), runtime dynamic
+> prefixes (`prefixes.d`), a mesh LoadBalancer controller (`cmd/nylon-lb`) and an
+> obfuscation-parameter generator (`cmd/nylon-genesis`). Upstream documentation lives at
+> [nylon.jq.ax](https://nylon.jq.ax); the fork's own guides and design notes are under
+> [`docs/`](docs/). Upstream releases and support channels do not cover this fork — build it from
+> source with `make build`.
+
 Nylon is a self-healing WireGuard mesh that routes around failures. If a link goes down, nylon reroutes traffic through the next-best path in seconds. No manual intervention, no central coordination servers, just like how a real network should be :)
 
 Under the hood, nylon implements the [Babel routing protocol (RFC 8966)](https://datatracker.ietf.org/doc/html/rfc8966) on top of a [modified wireguard-go](https://github.com/encodeous/nylon/tree/main/polyamide), using measured latency as the routing metric. 
