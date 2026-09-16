@@ -1,0 +1,28 @@
+# golangci-lint v2 configuration.
+#
+# polyamide/ is a port of amneziawg-go kept byte-comparable with upstream (see
+# the port-audit process in the design notes), so it is excluded from the gate:
+# findings there must be fixed upstream first.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    paths:
+      - "^polyamide/"
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    paths:
+      - "^polyamide/"

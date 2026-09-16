@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "README.md"]
+  pull_request:
+    branches: [main]
+    paths-ignore: ["docs/**", "README.md"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTESTSUM_VERSION: v1.13.0
+  GOLANGCI_LINT_VERSION: v2.13.2
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: --timeout=5m
+
+  unit_test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go run gotest.tools/gotestsum@${{ env.GOTESTSUM_VERSION }} -- --race -tags=router_test ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go run gotest.tools/gotestsum@${{ env.GOTESTSUM_VERSION }} -- --race -tags=integration ./integration/...
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go run gotest.tools/gotestsum@${{ env.GOTESTSUM_VERSION }} -- -tags=e2e ./e2e/... -parallel $(nproc)
+
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - run: go run ./hack/noticegen
+      - name: NOTICE and licenses/ must be up to date
+        run: git diff --exit-code -- NOTICE licenses
+
+  release_config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.18.1
+          args: check
+
+  # Release targets are cross-compiled once per push to main; PRs skip this to
+  # stay fast. Windows is compiled but never published (see .goreleaser.yaml).
+  cross_build:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cross-compile the release matrix
+        run: |
+          set -eu
+          for target in linux/386 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            goos=${target%/*}
+            goarch=${target#*/}
+            echo "== $goos/$goarch: nylon, nylon-genesis =="
+            GOOS=$goos GOARCH=$goarch go build ./cmd/nylon ./cmd/nylon-genesis
+          done
+          for arch in amd64 arm64; do
+            echo "== linux/$arch: nylon-lb =="
+            GOOS=linux GOARCH=$arch go build ./cmd/nylon-lb
+          done
+          rm -f nylon nylon.exe nylon-genesis nylon-genesis.exe nylon-lb
