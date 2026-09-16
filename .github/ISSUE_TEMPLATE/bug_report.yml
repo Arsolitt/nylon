@@ -1,0 +1,50 @@
+name: Bug report
+description: Something in nylon does not work as documented
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: A clear and concise description of the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The exact command line and the smallest configuration that triggers the problem.
+      placeholder: |
+        1. run `nylon ...`
+        2. observe ...
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: techinfo
+    attributes:
+      label: Diagnostics
+      description: "Output of `nylon techinfo` (`status` + neighbour probes as JSON)."
+      render: json
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Output of `nylon version`."
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: "OS, arch and, for the load balancer, Kubernetes version."
+    validations:
+      required: true
