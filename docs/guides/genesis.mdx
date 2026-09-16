@@ -187,6 +187,6 @@ An unknown `--protocol` or `--preset` name fails before any output is produced, 
 
 ## Provenance and licensing
 
-`nylon-genesis` links the GPL-3.0 amnezigo parameter oracle, which makes the tool internal-only: build it from source for your own organization and do not redistribute the binary. This is a deliberate split — the nylon daemon itself links only MIT-licensed device code and Apache-2.0 nylon code, and the public release artifacts ship the daemon only, never `nylon-genesis`.
+`nylon-genesis` links the GPL-3.0 [`amnezigo`](https://github.com/Arsolitt/amnezigo) parameter oracle, so a `nylon-genesis` binary is a GPL-3.0 combined work: if you distribute it, you must pass on the GPL-3.0 terms and the corresponding source — this repository plus amnezigo, both of which are public. The repository's own source files keep their source licenses (Apache-2.0 at the root, MIT for `polyamide/`), and the nylon daemon links only MIT-licensed device code and Apache-2.0 nylon code — it carries no copyleft obligations.
 
 For build requirements, see [Building and testing](/guides/development).

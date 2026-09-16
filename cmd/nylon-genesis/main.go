@@ -1,8 +1,10 @@
 // nylon-genesis generates AWG 2.0 obfuscation profiles for nylon meshes.
 //
-// This binary links the GPL-3.0 amnezigo parameter oracle and is therefore
-// INTERNAL-ONLY distribution (design §2.7); the nylon daemon itself links
-// only MIT device code and Apache-2.0 nylon code.
+// This binary links the GPL-3.0 amnezigo parameter oracle, so distributed
+// builds of it are conveyed under the GPL-3.0 (see LICENSE.GPL-3.0): anyone
+// redistributing the binary must pass on the license and the corresponding
+// source. The nylon daemon links only MIT device code and Apache-2.0 nylon
+// code and carries no copyleft obligations.
 package main
 
 import (
