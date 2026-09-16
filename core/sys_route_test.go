@@ -92,7 +92,7 @@ func TestComputeSysRouteTableCoalescesAdjacentResults(t *testing.T) {
 }
 
 func TestComputeSysRouteTableKeepsLearnedMoreSpecificsInsideSelfPrefixes(t *testing.T) {
-	// gateway scenario from the nylon_demo stand: this node originates a zone
+	// gateway scenario in a two-zone test mesh: this node originates a zone
 	// aggregate and a VIP /32, learns own-zone peer /32s and a foreign aggregate
 	n := sysRouteTestNylon(
 		"a",

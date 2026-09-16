@@ -31,26 +31,26 @@ func tcTestNylon(id state.NodeId, routes map[netip.Prefix]RouteTableEntry) *Nylo
 }
 
 func TestTCLocalExitForwardsLearnedSpecificsInsideSelfAggregates(t *testing.T) {
-	// gateway scenario from the nylon_demo stand (live uk-2 tables): the node
-	// originates a zone aggregate, a shared slice, a VIP and its own address,
-	// and learns own-zone peer /32s plus foreign aggregates
-	n := tcTestNylon("uk-2", map[netip.Prefix]RouteTableEntry{
-		pfx("10.100.0.0/24"):   {Nh: "uk-2"}, // self zone aggregate
-		pfx("10.100.0.100/32"): {Nh: "uk-2"}, // self VIP
-		pfx("10.100.0.2/32"):   {Nh: "uk-2"}, // own address
-		pfx("10.110.0.0/24"):   {Nh: "uk-2"}, // self shared slice
-		pfx("10.100.0.1/32"):   {Nh: "uk-1"}, // learned own-zone peer
-		pfx("10.100.0.3/32"):   {Nh: "uk-3"}, // learned own-zone peer
-		pfx("10.100.1.0/24"):   {Nh: "nl-2"}, // foreign aggregate
-		pfx("10.100.1.2/32"):   {Nh: "nl-2"}, // foreign gateway address
+	// gateway scenario in a two-zone test mesh: the node originates a zone
+	// aggregate, a shared slice, a VIP and its own address, and learns
+	// own-zone peer /32s plus foreign aggregates
+	n := tcTestNylon("node-b", map[netip.Prefix]RouteTableEntry{
+		pfx("10.100.0.0/24"):   {Nh: "node-b"}, // self zone aggregate
+		pfx("10.100.0.100/32"): {Nh: "node-b"}, // self VIP
+		pfx("10.100.0.2/32"):   {Nh: "node-b"}, // own address
+		pfx("10.110.0.0/24"):   {Nh: "node-b"}, // self shared slice
+		pfx("10.100.0.1/32"):   {Nh: "node-a"}, // learned own-zone peer
+		pfx("10.100.0.3/32"):   {Nh: "node-c"}, // learned own-zone peer
+		pfx("10.100.1.0/24"):   {Nh: "node-d"}, // foreign aggregate
+		pfx("10.100.1.2/32"):   {Nh: "node-d"}, // foreign gateway address
 	})
 
 	// learned more-specifics inside the self aggregate must forward to their
 	// nexthops, not bounce as locally destined
 	for dst, wantNh := range map[string]state.NodeId{
-		"10.100.0.1": "uk-1",
-		"10.100.0.3": "uk-3",
-		"10.100.1.2": "nl-2",
+		"10.100.0.1": "node-a",
+		"10.100.0.3": "node-c",
+		"10.100.1.2": "node-d",
 	} {
 		addr := netip.MustParseAddr(dst)
 		assert.False(t, n.tcLocalExit(addr), "dst %s must not be a local exit", dst)
@@ -68,9 +68,9 @@ func TestTCLocalExitForwardsLearnedSpecificsInsideSelfAggregates(t *testing.T) {
 func TestTCLocalExitDoesNotBounceHeldBlackholedSpecifics(t *testing.T) {
 	// a retracted /32 is held as an exact-prefix blackhole (Babel hold time);
 	// the covering self aggregate must not resurrect delivery for it
-	n := tcTestNylon("uk-2", map[netip.Prefix]RouteTableEntry{
-		pfx("10.100.0.0/24"): {Nh: "uk-2"},
-		pfx("10.100.0.1/32"): {Nh: "uk-1", Blackhole: true},
+	n := tcTestNylon("node-b", map[netip.Prefix]RouteTableEntry{
+		pfx("10.100.0.0/24"): {Nh: "node-b"},
+		pfx("10.100.0.1/32"): {Nh: "node-a", Blackhole: true},
 	})
 
 	addr := netip.MustParseAddr("10.100.0.1")
@@ -87,15 +87,15 @@ func TestTCLocalExitUncoveredSelfAggregateDstIsTerminal(t *testing.T) {
 	// address configured (only /32s are on lo/nylon0) and answers
 	// unreachable; it must never be forwarded into the mesh. Aggregate
 	// bounces are load-bearing for pod CIDRs (bounce -> kernel -> cni0).
-	n := tcTestNylon("uk-2", map[netip.Prefix]RouteTableEntry{
-		pfx("10.100.0.0/24"): {Nh: "uk-2"},
-		pfx("10.100.0.1/32"): {Nh: "uk-1"},
+	n := tcTestNylon("node-b", map[netip.Prefix]RouteTableEntry{
+		pfx("10.100.0.0/24"): {Nh: "node-b"},
+		pfx("10.100.0.1/32"): {Nh: "node-a"},
 	})
 
 	addr := netip.MustParseAddr("10.100.0.77")
 	assert.True(t, n.tcLocalExit(addr), "uncovered dst inside a self aggregate is terminal here")
 	entry, ok := n.router.Tables.Load().Forward.Lookup(addr)
 	if assert.True(t, ok) {
-		assert.Equal(t, state.NodeId("uk-2"), entry.Nh, "no mesh nexthop for an uncovered dst")
+		assert.Equal(t, state.NodeId("node-b"), entry.Nh, "no mesh nexthop for an uncovered dst")
 	}
 }
