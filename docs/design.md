@@ -3,7 +3,7 @@
 Status: **design document** — the fork features have shipped: polyamide-awg obfuscation (§2), dynamic prefixes / `prefixes.d` (§4), nylon-lb (§6 — the shipped implementation differs; see its Implementation status note), and nylon-genesis; gossip membership (§3) and zones (§7) remain design-only.
 Date: 2026-08-22, round 2 2026-08-24 · Base: `c3f872d98aad9d474927c108c74a94de571f4bfc` (`v0.4.5-4-gc3f872d`) · Branch: `fork/design`
 
-Continuation of the "Nylon + AmneziaWG self-healing underlay for k3s" design (Obsidian note 2026-08-16).
+Continuation of the earlier "Nylon + AmneziaWG self-healing underlay for k3s" design note (2026-08-16).
 Changes vs that note: dynamic prefix contract is `prefixes.d/*.json` (not `*.conf`); nylon-lb is fully
 designed (§6); the AWG wire-format target is locked to **2.0**; the polyamide↔amneziawg-go diff-audit
 has been executed and its outcome is recorded here (§2, Appendix A).
@@ -56,7 +56,7 @@ pinned upstream tags** — never a merge-forever branch. Concretely:
 
 ## 2. polyamide-awg — AmneziaWG 2.0 port
 
-### 2.1 Target: AWG 2.0 wire format only (user decision)
+### 2.1 Target: AWG 2.0 wire format only
 
 - **In:** the full 2.0 parameter surface — `Jc/Jmin/Jmax` (junk packets), `S1–S4` (message paddings),
   `H1–H4` (message-header ranges), `I1–I5` (custom signature packets, CPS tag grammar
@@ -70,7 +70,7 @@ pinned upstream tags** — never a merge-forever branch. Concretely:
   rejected UAPI knobs, then swap the genesis profile via the §2.4 version-skew mechanism —
   a maintenance action (compat profile → 3.0 profile) converging within one rekey window. No 3.0
   design is committed in this document.
-- amnezigo (`~/projects/amnezigo`, GPL-3.0) remains the **parameter oracle**, unchanged: nylon asks
+- amnezigo (`github.com/Arsolitt/amnezigo`, GPL-3.0) remains the **parameter oracle**, unchanged: nylon asks
   it for valid parameter sets; it never interprets AWG internals itself.
 
 ### 2.2 Source revision and HPK-unset ≡ 2.0 evidence
@@ -198,11 +198,12 @@ amnezigo is consumed **as a library** by the genesis tooling:
 ### 2.7 License posture
 
 Verified: amneziawg-go `device/` is MIT (inherited wireguard-go LICENSE, WireGuard LLC); amnezigo is
-GPL-3.0; nylon is Apache-2.0. The fork keeps each file under its source license. Because the
-GPL-3.0 oracle is linked into the same genesis tooling distribution as fork code, **combined
-binaries are internal-only**; the nylon daemon itself links only MIT device code plus Apache-2.0
-nylon code, but the conservative posture is applied fleet-wide: no public distribution of fork
-binaries without a license review.
+GPL-3.0; nylon is Apache-2.0. The fork keeps each file under its source license. The GPL-3.0 oracle
+is linked only into the genesis tooling, so **distributed `nylon-genesis` binaries are GPL-3.0
+combined works** (Apache-2.0 is one-way compatible with GPLv3): they may be published, provided the
+GPL-3.0 text and the corresponding source travel with them — see `LICENSE.GPL-3.0` and the
+provenance section of the genesis guide. The nylon daemon and `nylon-lb` link only MIT device code
+plus Apache-2.0 nylon code and carry no copyleft obligations.
 
 ---
 
@@ -279,7 +280,7 @@ AWG handshakes with all members (full mesh default).
 
 ### 3.5 Config distribution
 
-**`.nybundle` distribution is CANCELLED** (decision from the prior session). The distribution
+**`.nybundle` distribution is CANCELLED** (an earlier design decision). The distribution
 poller machinery (`core/nylon_distribution.go`, whose apply entry is
 `ApplyCentralConfig` at `:88`) is kept only as a genesis/debug fallback. In steady state, membership
 feeds `ApplyCentralConfig` by synthesizing a `state.CentralCfg` from the `RecordStore` snapshot —
@@ -397,8 +398,8 @@ is impossible without a receiver-side allowance.
   zone aggregate + the shared slice, so foreign podCIDRs stay unroutable while shared VIPs
   (§7.4 slices) propagate.
 - Supernets of a declared range are rejected; ranges must be masked and valid (validator).
-- Deployment: the k8s stand declares `10.42.0.0/16` (pod CIDR aggregate — the same design-time
-  constant as Cilium's `ipv4-native-routing-cidr`) plus the mesh VIP slice `10.87.0.0/24`.
+- Deployment: a cluster declares `10.42.0.0/16` (pod CIDR aggregate — the same design-time
+  constant as Cilium's `ipv4-native-routing-cidr`) plus the mesh VIP slice `10.60.0.0/24`.
 
 ---
 
@@ -486,7 +487,7 @@ are the design, not a failure. TTL/refresh values are defaults, tunable at imple
 
 ### 6.8 Control-plane VIP (anycast) — apiserver endpoint
 
-User decision: the floating apiserver VIP uses **anycast** mode (§6.4).
+Design decision: the floating apiserver VIP uses **anycast** mode (§6.4).
 
 - **Address** — allocated from the zone's shared slice (§7.4) or a dedicated infra slice.
 - **Announcement** — every k3s **server** node's nylon-lb agent announces the /32 and binds it on
@@ -586,9 +587,9 @@ allocation happens at fleet design time):
 
 | Block | Example | Purpose |
 |---|---|---|
-| Org supernet | `10.64.0.0/10` | whole mesh |
-| Zone block | `10.64.0.0/14` … `10.80.0.0/14` | node /32s + per-node podCIDR /24s |
-| Zone shared slice | `10.64.16.0/20` (carved from the zone block) | exposed services + nylon-lb VIP pool |
+| Org supernet | `10.0.0.0/8` | whole mesh |
+| Zone block | `10.0.0.0/14` … `10.48.0.0/14` | node /32s + per-node podCIDR /24s |
+| Zone shared slice | `10.0.16.0/20` (carved from the zone block) | exposed services + nylon-lb VIP pool |
 
 Zone gateways announce the zone's shared aggregate (static health, anycast across the zone's
 gateways) via their synthesized own-entry `Prefixes`; foreign views home the aggregate on those
@@ -597,7 +598,7 @@ gateways (§7.3b). nylon-lb controllers allocate Service VIPs from the owning zo
 hierarchy: foreign node → foreign gateway (aggregate) → inside the owning zone the VIP /32 (more
 specific, announced by lb agents via the §7.3 bridge) wins longest-prefix match.
 
-### 7.5 Accepted trade-off — cross-zone transit of shared traffic (user decision)
+### 7.5 Accepted trade-off — cross-zone transit of shared traffic
 
 Zone-Z nodes hold routes to foreign shared aggregates, so when all intra-zone paths to a service's
 announcers are degraded, Babel may route shared traffic through a foreign gateway. Bounded to
@@ -607,7 +608,7 @@ self-healing by design. Documented as accepted; PoC stage 5 asserts the bound (�
 ### 7.6 Gateway deployment model
 
 Gateway = a role tag on the member record, not a node kind. Initial deployment: one repurposed
-k3s **worker** per zone (user decision — no spare machines); the worker keeps scheduling pods.
+k3s **worker** per zone; the worker keeps scheduling pods.
 Production requirement: **≥ 2 gateways per zone** (R7) before carrying production cross-zone
 traffic. Migration to dedicated VMs later = flip `Gateway` on the records and let synthesis +
 Babel reconverge; no cluster re-deploy. Draining a gateway follows the R4 runbook (§5) plus a
@@ -628,7 +629,7 @@ their only control. Stated explicitly: L4/L7 policy exists only where Cilium run
 2. **polyamide-awg** — pcap: handshake indistinguishable from the mimicked protocol (target from
    `Obf.Protocol` template); interop matrix of §2.4 (compat profile vs vanilla; obf profile
    node-to-node; reference AWG 2.0 peer); re-benchmark throughput (R1 perf gate).
-   **Stage-2 outcome (2026-08-24, fork/awg @ 63c4349, hkdemo stand legs 1–3 + iperf3):** leg1
+   **Stage-2 outcome (2026-08-24, fork/awg @ 63c4349, test stand legs 1–3 + iperf3):** leg1
    vanilla(c3f872d)↔compat — plain WG types 1/2/4 on the wire (pcap: 2×init, 1×resp, 68×transport
    at offset 0), 5/5 ping; leg2 obf↔obf (quic profile) — 0 vanilla type words in 45 payloads,
    5/5 ping; leg3 obf↔amneziawg-go handshake+data OK against `1b86b2a` (keepalives both ways,
@@ -640,23 +641,23 @@ their only control. Stated explicitly: L4/L7 policy exists only where Cilium run
 3. **k3s + Cilium native + `prefixes.d` JSON** — break the direct link between two nodes: verify
    pod-to-pod, apiserver, etcd, and in-cluster DB reachability across the healed path.
    **3b.** two-node same-/32 announce → anycast check for §6 (§6.5 prerequisites).
-   **Stage-3 outcome (2026-08-26, fork/awg @ fcc32ed, hkdemo stand, items 3 + 3b):** feature legs —
+   **Stage-3 outcome (2026-08-26, fork/awg @ fcc32ed, test stand, items 3 + 3b):** feature legs —
    daemon `prefixes.d` contract deployed on all 4 nodes (watcher active, mesh 4/4); Cilium 1.19.5
    switched tunnel/geneve → `routingMode: native` + `ipv4NativeRoutingCIDR: 10.42.0.0/16` +
    `MTU: 1380` over `nylon0`. Baseline before announces: cross-node pod ping 100% loss (the
    announce step is load-bearing). B3: per-node podCIDR `10-podcidr.json` (metric 0) — peers select
    all four `10.42.X.0/24` with correct source routers; kernel routes via nylon0 (contiguous /24s
-   coalesce, e.g. `10.42.0.0/23`); cross-node pod ping 3/3 @ 5.5 ms. B4 (partition hkdemo-1↔hkdemo-2,
+   coalesce, e.g. `10.42.0.0/23`); cross-node pod ping 3/3 @ 5.5 ms. B4 (partition node-1↔node-2,
    nft pairwise public-IP drop): mesh /32 heal **3 s**; dynamic podCIDR route heal ≈ **20–25 s**
    (seqno-request cycle — the route lags the mesh ping heal); healed-path matrix all green — pod-pod
    ping both directions 3/3 (4.7/6.7 ms), apiserver TCP reachable from pod and from the partitioned
    agent host (401 in 19–40 ms, `k3s-agent` 0 reconnect errors), etcd `[+]ok`, ClusterIP DNS
-   `kubernetes.default` → 10.43.0.1; underlay relay proof on transit (ens1 capture: in .62→.65 then
-   out .65→.63, matching payload lengths). Unpartition: direct next-hop restored in **102 s**
-   (Babel route aging), ping 3/3 @ 2.5 ms. B5 (anycast VIP `10.87.0.100/32` from hkdemo-2+hkdemo-3):
-   selection hkdemo-3 (metric 2025 < 3646); withdraw on the serving node → next-hop flip to
-   hkdemo-2 in **1 s**, continuous ping 396/400 (**loss window ≤ 0.8 s**, zero unreachables), nylon
-   forward table — the WG AllowedIPs source — reprogrammed `10.87.0.100/32 → hkdemo-2`; cleanup
+   `kubernetes.default` → 10.43.0.1; underlay relay proof on a transit hop (capture: identical
+   payload lengths in and out of the forwarding node). Unpartition: direct next-hop restored in **102 s**
+   (Babel route aging), ping 3/3 @ 2.5 ms. B5 (anycast VIP `10.60.0.100/32` from node-2+node-3):
+   selection node-3 (metric 2025 < 3646); withdraw on the serving node → next-hop flip to
+   node-2 in **1 s**, continuous ping 396/400 (**loss window ≤ 0.8 s**, zero unreachables), nylon
+   forward table — the WG AllowedIPs source — reprogrammed `10.60.0.100/32 → node-2`; cleanup
    withdraw verified (0 routes). Deviations from the plan: (1) §4.6 `dynamic_prefix_ranges` had to
    be added — receivers otherwise drop dynamic announcements in `checkPrefix` (cross-node routing
    was impossible without it); (2) Cilium chart value keys are case-sensitive camelCase —
@@ -665,7 +666,7 @@ their only control. Stated explicitly: L4/L7 policy exists only where Cilium run
    kubeconfig — apiserver leg measured with host curl instead of `kubectl`.
 4. **Soak** — random degradation schedule (link loss, latency injection, node restarts); also
    exercises Babel RTT de-preference.
-5. **Two-zone lab (§7)** — reuse the 4-VM demo stand as 2 zones × 2 nodes; in each zone the
+5. **Two-zone lab (§7)** — reuse a 4-node test stand as 2 zones × 2 nodes; in each zone the
    "extra" node carries the gateway role; vanilla nylon (zones are synthesis policy, §7.3 —
    per-node graph/prefix views assembled by hand):
    - (a) zone-B node has NO route to the zone-A podCIDR (routes section of `nylon status` empty
@@ -674,7 +675,7 @@ their only control. Stated explicitly: L4/L7 policy exists only where Cilium run
      bridge) — reachable cross-zone through the zone gateways;
    - (c) A-internal partition (existing nft partition tooling): tcpdump on zone-B `nylon0` shows
      zero packets with zone-A podCIDR src/dst — transit-block proof (§7.3);
-   - (d) apiserver VIP anycast on the k3s part of the stand (§6.8): stop nylon on one server node
+   - (d) apiserver VIP anycast on the test stand's k3s servers (§6.8): stop nylon on one server node
      ⇒ the kubelet on a worker reconnects to the remaining server within its retry window;
      `tls-san` configured per §6.8.
 
@@ -704,7 +705,7 @@ their only control. Stated explicitly: L4/L7 policy exists only where Cilium run
 | polyamide base (wireguard-go) | `ecfc5a8d54462e18e13c72173e2623d16d8e25a0` | vendored via merges `9a360bb`/`2a93dbf`; module `github.com/encodeous/nylon/polyamide` |
 | amneziawg-go (port source) | `1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1` | tag `v3.1.20260814`, 2026-08-13; module `github.com/amnezia-vpn/amneziawg-go/v3`; device/ MIT |
 | amneziawg-go fallback | `1cc94272ca8e9e223a5fe76382f5880f09d3c12d` | tag `v0.2.19` — newest tag with zero HPK references in `device/` (last with `magic-header.go`) |
-| amnezigo | `~/projects/amnezigo` (GPL-3.0) | oracle; `cps.go`, `presets.go`, `protocols.go`, `validation.go` |
+| amnezigo | `github.com/Arsolitt/amnezigo` @ `v0.3.0` (GPL-3.0) | oracle; `cps.go`, `presets.go`, `protocols.go`, `validation.go` |
 
 ### A.2 HPK gating (amneziawg-go `1b86b2a`, quotes verbatim)
 
