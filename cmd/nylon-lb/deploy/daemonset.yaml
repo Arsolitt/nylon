@@ -18,6 +18,11 @@ spec:
         app: nylon-lb
     spec:
       serviceAccountName: nylon-lb
+      # The speaker must own the node's network namespace: the /32 bind has to
+      # land on the node's lo, otherwise the node does not hold the addresses it
+      # announces. ClusterFirstWithHostNet keeps cluster DNS resolvable here.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       # Run on every node, including control-plane.
       tolerations:
         - key: node-role.kubernetes.io/control-plane

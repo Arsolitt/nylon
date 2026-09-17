@@ -112,7 +112,7 @@ kubectl apply -f cmd/nylon-lb/deploy/daemonset.yaml
 
 `rbac.yaml` creates a ServiceAccount and a ClusterRole with get/list/watch on Services and EndpointSlices, update on `services/status`, get/create/update on Leases, and create/patch on Events.
 
-`daemonset.yaml` runs one pod per node in `kube-system`, tolerates control-plane nodes, mounts the prefixes directory from a hostPath, and runs as root (`runAsUser: 0`) with `NET_ADMIN` — both are required for the netlink bind. The manifest sets no `hostNetwork`, so the speaker binds announced addresses to `lo` inside the pod's own network namespace, not the host's. That is harmless for the data plane, which does not depend on the bind — Cilium in kube-proxy-replacement mode steers traffic using `status.loadBalancer.ingress`; the bind exists only so the local network stack holds the announced address on an interface. Liveness and readiness probes target port 9633.
+`daemonset.yaml` runs one pod per node in `kube-system`, tolerates control-plane nodes, mounts the prefixes directory from a hostPath, and runs as root (`runAsUser: 0`) with `NET_ADMIN` — both are required for the netlink bind. The manifest sets `hostNetwork: true` with `dnsPolicy: ClusterFirstWithHostNet` (the latter keeps cluster DNS resolvable), so the speaker runs in the node's network namespace and the announced `/32`s are bound on the node's `lo` rather than the pod's — which is what makes the node answer for the addresses it announces. Cilium in kube-proxy-replacement mode steers traffic using `status.loadBalancer.ingress`. Liveness and readiness probes target port 9633.
 
 Before you enable `externalTrafficPolicy: Local`, add `--node-name=$(NODE_NAME)` to `args` in the DaemonSet as explained in the caution above.
 

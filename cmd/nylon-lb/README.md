@@ -111,6 +111,10 @@ kubectl apply -f cmd/nylon-lb/deploy/rbac.yaml
 kubectl apply -f cmd/nylon-lb/deploy/daemonset.yaml
 ```
 
+The speaker must run in the node's network namespace: the DaemonSet sets
+`hostNetwork: true` so the netlink bind puts each announced `/32` on the node's
+`lo`, and `dnsPolicy: ClusterFirstWithHostNet` keeps cluster DNS working for it.
+
 Bare binary / systemd (run as root on each node — the loopback binding needs
 `NET_ADMIN`; pass `--bind-interface=` and a non-root user if you only need the
 allocator):
