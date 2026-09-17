@@ -115,7 +115,7 @@ Details worth knowing:
 - A failed probe round logs a warning and retracts the prefix through the normal Babel retraction path; a later successful round re-announces it.
 
 ::::caution
-When you set `metric` on a `ping` or `http` entry, nylon advertises that fixed value and ignores the live health-derived metric — including failure retraction. The prefix then stays announced even when the probe target is down. Leave `metric` unset if you want health-driven withdrawal.
+The `metric` override behaves differently per check type. On a `ping` entry, nylon advertises the fixed value unconditionally and ignores the live RTT-derived metric — including failure retraction, so the prefix stays announced even when the probe target is down. On an `http` entry, the override replaces only the healthy request-duration metric; a failed probe still retracts the prefix even with `metric` set. Leave `metric` unset on `ping` entries if you want health-driven withdrawal; an `http` entry retracts on failure either way.
 ::::
 
 ## Security model
