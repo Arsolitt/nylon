@@ -9,17 +9,17 @@ hero:
       link: /guides/getting-started/
       icon: right-arrow
     - text: GitHub
-      link: https://github.com/encodeous/nylon
+      link: https://github.com/Arsolitt/nylon
       icon: github
-      variant: minimal
-    - text: Discord
-      link: https://discord.gg/987gqqPGqr
-      icon: discord
       variant: minimal
 ---
 
 import AsciinemaPlayer from '../../components/AsciinemaPlayer.astro';
 import demoCast from './assets/demo.cast?url';
+
+::::note[Hard fork]
+This site documents a **hard fork** of [encodeous/nylon](https://github.com/encodeous/nylon) with fork-only additions: [AmneziaWG 2.0 traffic obfuscation](/guides/obfuscation/), [runtime dynamic prefixes](/reference/dynamic-prefixes/), the [`nylon-lb` LoadBalancer controller](/guides/nylon-lb/), and the [`nylon-genesis` obfuscation-parameter generator](/guides/genesis/). The upstream project and its original documentation remain at [github.com/encodeous/nylon](https://github.com/encodeous/nylon) and [nylon.jq.ax](https://nylon.jq.ax).
+::::
 
 Nylon is a self-healing WireGuard mesh that routes around failures. If a link goes down, nylon reroutes traffic through the next-best path in seconds. No manual intervention, no central coordination servers.
 
