@@ -49,6 +49,7 @@ Logs are structured and carry the component name `nylon-lb`, `node=<name>`, and 
 - An `--exclude` address applies to every pool that contains it.
 - The pool prefix must be at least a `/30`: the network and broadcast addresses are never allocated, so smaller pools have nothing to hand out.
 - Allocation is **derived, not stored**. nylon-lb recomputes the mapping from live Services on every resync and keeps no state anywhere, so deleting a Service frees its IP unconditionally. The only residual window is announce-file withdrawal lag on a down speaker node: the stale announce file persists until that node's next resync, when the stale-announce garbage collection withdraws it. There is no collision risk, because announce files are garbage-collected together with the Service.
+- Kubernetes events are emitted on the Service with a pinned, machine-readable reason vocabulary: `Allocated`, `Released`, `AllocationFailed` (the selected pool is exhausted — the Service stays pending and allocation retries with backoff until an address frees up), `BadLoadBalancerIP` (a `spec.loadBalancerIP` request rejected as outside the selected pool or already taken — a pool address is allocated instead), `MissingPoolAnnotation`, and `UnknownPool`. The reasons are stable so external tooling can rely on them.
 - IPv4 only.
 
 ## Announcement semantics
@@ -89,6 +90,10 @@ The speaker's ordering is load-bearing. It binds the address to the loopback int
 
 ## Deployment
 
+### Use the released image
+
+Releases publish the controller image as `ghcr.io/arsolitt/nylon/nylon-lb`: GoReleaser tags each release with `:<version>`, and stable releases also move `:latest`. The shipped DaemonSet manifest consumes this image, so the install below needs no image build of your own; use the make targets in the next section only if you want to ship a custom image.
+
 ### Build and push the image
 
 ```bash
@@ -107,7 +112,7 @@ kubectl apply -f cmd/nylon-lb/deploy/daemonset.yaml
 
 `rbac.yaml` creates a ServiceAccount and a ClusterRole with get/list/watch on Services and EndpointSlices, update on `services/status`, get/create/update on Leases, and create/patch on Events.
 
-`daemonset.yaml` runs one pod per node in `kube-system`, tolerates control-plane nodes, mounts the prefixes directory from a hostPath, and runs as root (`runAsUser: 0`) with `NET_ADMIN` — both are required to bind addresses to `lo`. Liveness and readiness probes target port 9633.
+`daemonset.yaml` runs one pod per node in `kube-system`, tolerates control-plane nodes, mounts the prefixes directory from a hostPath, and runs as root (`runAsUser: 0`) with `NET_ADMIN` — both are required for the netlink bind. The manifest sets no `hostNetwork`, so the speaker binds announced addresses to `lo` inside the pod's own network namespace, not the host's. That is harmless for the data plane, which does not depend on the bind — Cilium in kube-proxy-replacement mode steers traffic using `status.loadBalancer.ingress`; the bind exists only so the local network stack holds the announced address on an interface. Liveness and readiness probes target port 9633.
 
 Before you enable `externalTrafficPolicy: Local`, add `--node-name=$(NODE_NAME)` to `args` in the DaemonSet as explained in the caution above.
 
@@ -131,7 +136,7 @@ nylon-lb \
   --kubeconfig=/etc/nylon/kubeconfig
 ```
 
-Point `--prefixes-dir` at the directory your nylon daemon watches and set `--node-name` explicitly. A speaker still needs root or `CAP_NET_ADMIN` for the loopback bind; the bind is implemented with netlink and exists on Linux only — builds for other platforms carry a stub.
+Point `--prefixes-dir` at the directory your nylon daemon watches and set `--node-name` explicitly. A speaker still needs root or `CAP_NET_ADMIN` for the loopback bind. The bind is implemented with netlink and exists on Linux only: on other platforms nylon-lb refuses to start when `--bind-interface` is set (`netlink binder requires Linux`), so pass `--bind-interface=` to run a speaker without binding.
 
 ## Observability
 
@@ -149,9 +154,11 @@ All metrics are exposed at `/metrics` on `--health-addr` with the `nylon_lb_` pr
 | `nylon_lb_services` | gauge | — | LoadBalancer Services tracked. |
 | `nylon_lb_announces` | gauge | — | Active announcements. |
 | `nylon_lb_allocations_total` | counter | — | Address allocations. |
-| `nylon_lb_releases_total` | counter | — | Address releases. |
+| `nylon_lb_releases_total` | counter | — | Ingress clearances on type change or pool-annotation failure. |
 | `nylon_lb_announce_writes_total` | counter | — | Announce-file writes. |
 | `nylon_lb_errors_total` | counter | `kind` | Errors by kind: `bind`, `write`, `reconcile`, `list`, `glob`. |
+
+Note that `nylon_lb_releases_total` does not move when a Service is deleted: once the Service is gone from the lister there is no ingress left to clear, and the stale announce file is withdrawn by the speaker's garbage collection instead.
 
 ### Health endpoints
 
