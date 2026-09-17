@@ -103,9 +103,9 @@ DaemonSet (recommended):
 
 ```bash
 # local image (native platform, loaded into the daemon):
-make image-nylon-lb REGISTRY=ghcr.io/encodeous/nylon IMAGE_TAG=latest
+make image-nylon-lb REGISTRY=ghcr.io/arsolitt/nylon IMAGE_TAG=latest
 # multi-arch build & push to any registry:
-make push-nylon-lb REGISTRY=ghcr.io/encodeous/nylon IMAGE_TAG=v0.4.0
+make push-nylon-lb REGISTRY=ghcr.io/arsolitt/nylon IMAGE_TAG=v0.4.0
 # edit --pool/--exclude/--lb-class in deploy/daemonset.yaml (identical --pool set on every node)
 kubectl apply -f cmd/nylon-lb/deploy/rbac.yaml
 kubectl apply -f cmd/nylon-lb/deploy/daemonset.yaml

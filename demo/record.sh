@@ -249,7 +249,7 @@ topo_restored
 echo ""
 
 echo -e "${BCYAN}  Zero config changes. Routes healed automatically.${R}"
-echo -e "${BCYAN}  https://github.com/encodeous/nylon${R}"
+echo -e "${BCYAN}  https://github.com/Arsolitt/nylon${R}"
 echo ""
 
 for i in $(seq 10 -1 1); do

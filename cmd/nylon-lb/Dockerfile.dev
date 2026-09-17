@@ -31,7 +31,7 @@ ARG VERSION
 ARG COMMIT
 LABEL org.opencontainers.image.title="nylon-lb" \
       org.opencontainers.image.description="LoadBalancer address allocator and mesh announcer for nylon" \
-      org.opencontainers.image.source="https://github.com/encodeous/nylon" \
+      org.opencontainers.image.source="https://github.com/Arsolitt/nylon" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"

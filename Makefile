@@ -35,7 +35,7 @@ test-all: test test-integration test-e2e
 ##   make push-nylon-lb REGISTRY=registry.example.com/infra IMAGE_NAME=nylon/nylon-lb \
 ##        IMAGE_TAG=0.4.0 PLATFORMS=linux/amd64
 DOCKER ?= docker
-REGISTRY ?=                                   # e.g. ghcr.io/encodeous; empty = local-only image name
+REGISTRY ?=                                   # e.g. ghcr.io/arsolitt/nylon; empty = local-only image name
 IMAGE_NAME ?= nylon-lb
 IMAGE_TAG ?= $(VERSION)
 PLATFORMS ?= linux/amd64,linux/arm64
