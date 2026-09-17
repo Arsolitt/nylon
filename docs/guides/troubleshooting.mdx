@@ -56,13 +56,21 @@ A one-line human summary goes to stderr. Attach the JSON output and a short log 
 
 ## Inspect a running node
 
+Every command in this table except `nylon verify` talks to the daemon over its IPC socket, so it works only while the daemon is up. When the daemon is not running — or `-i` names the wrong interface — the command exits 1 with:
+
+```text
+Error: connect to nylon: dial unix /var/run/wireguard/nylon.sock: connect: no such file or directory
+```
+
 | Command | Purpose |
 | --- | --- |
 | `nylon status` | Neighbours and selected routes (`--routes` for route tables, `--full` for routing internals). |
-| `nylon probe <peer>` | Probe connectivity to one peer (`--timeout`, default `2s`). |
-| `nylon trace` | Live stream of routing decisions. |
+| `nylon probe <peer>` | Probe connectivity to one peer (`--timeout`, default `2s`; values above `10s` are silently capped). |
+| `nylon trace` | Live stream of the daemon's packet-routing decisions. Requires the daemon to have been started with `--dbg-trace-tc`; otherwise it fails with `Error: tracing not enabled; restart with --dbg-trace-tc`. |
+| `nylon reload` | Re-read the central config from disk without a restart; prints `Result: NOOP|APPLIED|REJECTED|RESTART_REQUIRED`, and exits non-zero on `REJECTED`. |
+| `nylon verify <central-config>` | Validate configs without starting the daemon (`--node <node-config>` also checks a node config); prints `Config is valid` or `Error: <reason>`. |
 
-All three accept `-i/--interface` (default `nylon`) and `--json` for machine-readable output.
+`status`, `probe`, and `trace` accept `-i/--interface` (default `nylon`); `status` and `probe` also accept `--json` for machine-readable output. `trace` accepts no other flags.
 
 ## Debug flags
 
@@ -70,6 +78,7 @@ Flags for `nylon run`:
 
 - `--dbg-perf` starts a debug server on port `6060` with the performance web UI and `pprof` endpoints.
 - `--dbg-trace` writes a Go runtime trace to `trace.out`; inspect it later with `go tool trace`.
+- `--dbg-trace-tc` traces the daemon's packet-routing decisions; `nylon trace` streams them live. `nylon status` reports `trace enabled` based on this flag only — setting `--dbg-trace` does not affect it.
 - `--dbg-wg` enables WireGuard (polyamide) logs. They are emitted at info level, so they appear at the default log level.
 
 ## Metrics quick pointers
