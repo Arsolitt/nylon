@@ -69,8 +69,16 @@ If you've ever used BitTorrent, this is the same as being **"connectable."** Jus
          - 10.0.0.1
    ```
 
+   Alternatively, publish the node as a DNS SRV record. When nylon resolves an endpoint hostname, it first looks up a `_nylon._udp.<hostname>` SRV record; if one exists, the record's target and port are used, taking precedence over the hostname's A/AAAA records. The forwarded port then lives in DNS instead of `central.yaml`, so it can be changed by updating the record alone:
+
+   ```text title="DNS zone"
+   _nylon._udp.home.example.com. 0 IN SRV 10 10 57175 home.example.com.
+   ```
+
+   The SRV target must itself have an A/AAAA record, and the record is looked up again on every endpoint re-resolution, so DDNS-style updates to it are picked up automatically.
+
    :::tip
-   Nylon periodically re-resolves DNS endpoints. If DDNS updates your record, nylon nodes will quickly pick up the new IP and reconnect automatically.
+   Nylon re-resolves DNS endpoints automatically: a background sweep runs every 15 seconds and a resolved address is cached for 1 minute, so a DDNS record change is picked up within about 15 seconds once the cached value is older than a minute. While a refresh is in flight (DNS queries time out after 5 seconds) and after a dropped link, nodes keep using the last known good address until a refresh succeeds.
    :::
 
 4. #### Apply Configuration
@@ -104,3 +112,7 @@ If you use a custom port, you should configure it in your `node.yaml` (for local
     ```
   </TabItem>
 </Tabs>
+
+::::note
+An endpoint written without a port — a bare hostname or a bare IP address — silently falls back to the default port `57175`. If the external port you forwarded differs from the default, always write the endpoint with an explicit port, as shown in the `central.yaml` tab above.
+::::
