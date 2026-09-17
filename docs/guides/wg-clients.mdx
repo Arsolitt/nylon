@@ -85,7 +85,7 @@ graph LR
 
 ## Limitations
 
-- Passive nodes can only connect to one node at any given time.
+- A single WireGuard peer entry in a client app has one active `Endpoint` at a time — this is standard client-side WireGuard behaviour, not a mesh constraint. The mesh itself accepts a passive client adjacent to multiple gateways; to reach several of them, configure multiple profiles sharing the same private key (see [Dynamic Routing](#dynamic-routing)).
 - They cannot forward traffic for other nodes.
 - They rely on the gateway node for connectivity to the rest of the network.
 
@@ -107,7 +107,7 @@ You do not need to enable Persistent Keepalive, or any heartbeat mechanism for t
 
 ::::
 
-Nylon retains the route for passive nodes indefinitely, ensuring they remain reachable even if they go idle for an extended period. You should only enable Keepalive if:
+When a gateway is the **sole advertiser** of a passive client's prefix, nylon retains the route for that client indefinitely, ensuring it remains reachable even if it goes idle for an extended period. This permanent hold does not apply when the client is adjacent to multiple gateways: the route is refreshed only while the client keeps talking (packets within a 6-second window); once refreshes stop, it expires after a 3-second keepalive interval (defaults, derived from nylon's internal `ProbeDelay` tunable). With multiple gateways, enable Persistent Keepalive to keep the route alive during idle periods. With a sole-advertising gateway, you should only enable Keepalive if:
 
 1. You need other nodes to be able to initiate connections to the client after long periods of silence.
 2. You really wish to drain the battery of the client device for some reason...
