@@ -12,8 +12,8 @@ var rootCmd = &cobra.Command{
 	Short: "Nylon CLI",
 	Long: `Nylon is a mesh networking system, designed to provide secure, reliable, and high-performance connectivity for distributed systems.
 
-Documentation: https://nylon.jq.ax
-GitHub: https://github.com/encodeous/nylon`,
+Documentation: https://arsolitt.github.io/nylon-docs/
+GitHub: https://github.com/Arsolitt/nylon`,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
