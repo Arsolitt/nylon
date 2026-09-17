@@ -6,7 +6,7 @@ tableOfContents: false
 
 Nylon is a self-healing WireGuard mesh that routes around failures. If a link goes down, nylon reroutes traffic through the next-best path in seconds. No manual intervention, no central coordination servers.
 
-Under the hood, nylon implements the [Babel routing protocol (RFC 8966)](https://datatracker.ietf.org/doc/html/rfc8966) on top of a [modified wireguard-go](https://github.com/encodeous/nylon/tree/main/polyamide), using measured latency as the routing metric.
+Under the hood, nylon implements the [Babel routing protocol (RFC 8966)](https://datatracker.ietf.org/doc/html/rfc8966) on top of a [modified wireguard-go](https://github.com/Arsolitt/nylon/tree/main/polyamide), using measured latency as the routing metric.
 
 ### Main Features
 
@@ -29,7 +29,7 @@ Under the hood, nylon implements the [Babel routing protocol (RFC 8966)](https:/
 | **Configuration**     | Central YAML file                              | Web Dashboard / SSO                      | Certificates & CA       | Multiple configs + network namespaces |
 | **License**           | Apache 2.0                                     | Proprietary SaaS / BSD-3 client          | MIT                     | Various                               |
 
-Healing times depend on what failed. Measured in nylon's proof-of-concept testing: a broken mesh link heals in about **3 seconds**. Routes announced through dynamic prefix announcements (for example, Kubernetes pod CIDRs) converge in **20–25 seconds** — the route lags the mesh heal while Babel resolves the sequence-number request cycle. And when the original link comes back, restoring the direct path can take a couple of minutes (**102 s** observed) while Babel ages the stale route.
+Healing times depend on what failed. Measured by the fork maintainer in proof-of-concept testing: a broken mesh link heals in about **3 seconds**. Routes announced through dynamic prefix announcements (for example, Kubernetes pod CIDRs) converge in **20–25 seconds** — the route lags the mesh heal while Babel resolves the sequence-number request cycle. And when the original link comes back, restoring the direct path can take a couple of minutes (**102 s** observed) while Babel ages the stale route.
 
 :::caution[Encryption Model]
 Nylon uses WireGuard's encryption **hop-by-hop**, not end-to-end. Each link between adjacent nodes is encrypted, but intermediate nodes decrypt and re-encrypt forwarded traffic. This is the same model as DIY WireGuard+Babel setups. If you need end-to-end encryption between every pair of nodes, Tailscale or Nebula may be a better fit.
