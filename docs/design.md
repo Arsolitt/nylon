@@ -1,4 +1,7 @@
-# Nylon Fork Design — polyamide-awg, Gossip Membership, Dynamic Prefixes, nylon-lb
+---
+title: "Nylon Fork Design — polyamide-awg, Gossip Membership, Dynamic Prefixes, nylon-lb"
+description: Design record for the nylon hard fork's features — polyamide-awg obfuscation, dynamic prefixes, k8s integration, and nylon-lb — with per-section implementation status.
+---
 
 Status: **design document** — the fork features have shipped: polyamide-awg obfuscation (§2), dynamic prefixes / `prefixes.d` (§4), nylon-lb (§6 — the shipped implementation differs; see its Implementation status note), and nylon-genesis; gossip membership (§3) and zones (§7) remain design-only.
 Date: 2026-08-22, round 2 2026-08-24 · Base: `c3f872d98aad9d474927c108c74a94de571f4bfc` (`v0.4.5-4-gc3f872d`) · Branch: `fork/design`
@@ -305,8 +308,9 @@ pre-k8s with any writer (sidecar, nylon-lb agent, scripts).
 
 - New `LocalCfg` field `dynamic_prefixes_dir string` (empty = disabled; recommended
   `/etc/nylon/prefixes.d`).
-- Files: `*.json`, **one writer per file** — k8s sidecar writes `10-podcidr.json`, nylon-lb agent
-  writes `20-nylon-lb.json`. Writers must write tmp + rename (atomic).
+- Files: `*.json`, **one writer per file** — the k8s pod-CIDR sidecar (`10-podcidr.json`) is design
+  intent (§5); nylon-lb writes one announce file per Service (`lb-<namespace>-<service>.json`,
+  cmd/nylon-lb/prefixfile.go:28-34). Writers must write tmp + rename (atomic).
 - Directory hardening (R5): root-owned `0755` directory, root-owned `0644` files; only root/hostPath
   writers.
 
@@ -374,8 +378,9 @@ All three callers inherit the injection: the distribution poller
 
 ### 4.5 Watcher
 
-fsnotify (`github.com/fsnotify/fsnotify` — a new dependency; nylon has none today; lands with the
-watcher implementation, not this round) on `dynamic_prefixes_dir`:
+fsnotify (`github.com/fsnotify/fsnotify` v1.9.0, go.mod:11) — shipped: `watchDynamicPrefixes`
+(core/dynamic_prefixes.go:205-263, 250 ms debounce :21, initial scan at startup core/nylon.go:131)
+on `dynamic_prefixes_dir`:
 
 - Initial scan at startup (before first `ApplyCentralConfig`).
 - Any event → 250 ms debounce → **full rescan** → rebuild set → `ApplyCentralConfig`.
@@ -405,7 +410,7 @@ is impossible without a receiver-side allowance.
 
 ## 5. k8s integration
 
-> **Implementation status:** The pod-CIDR sidecar is design intent. It was validated manually during PoC stage 3 (§8), and no sidecar has shipped — any `prefixes.d` writer following §4 fills this role.
+> **Implementation status:** This section is design intent: no pod-CIDR sidecar has shipped (validated manually during PoC stage 3 (§8); any `prefixes.d` writer following §4 fills this role), and the checked-in `example/nylon.service` is still the minimal upstream unit — the `Restart=always`/`StartLimitIntervalSec=0`, `Type=notify`+`WatchdogSec`, and `Before=kubelet` hardening below is not shipped. The prerequisites it builds on have shipped: the `prefixes.d` contract (§4), the TUN MTU knob (§2.5), and `dynamic_prefix_ranges` receiver validation (§4.6).
 
 Carried over from the 2026-08-16 note, updated to the JSON contract:
 
@@ -428,7 +433,7 @@ Carried over from the 2026-08-16 note, updated to the JSON contract:
 
 ## 6. nylon-lb — LoadBalancer over the mesh (design only, this round)
 
-> **Implementation status:** nylon-lb has shipped (`cmd/nylon-lb`) with a simpler architecture than this section: a single per-node DaemonSet runs one binary containing a **leader-elected allocator** and a **per-node speaker**. Allocation is stateless — derived from live Services against the named `--pool name=cidr` set (each Service selects its pool via the `nylon.io/lb-pool` annotation; lowest free address within the selected pool), not persisted in a ConfigMap (§6.3) — and there is no finalizer and no `spec.externalIPs` write (§6.2): the allocator sets `status.loadBalancer.ingress` and honors `spec.loadBalancerIP` when it is free and inside the selected pool. The `anycast`/`single` modes (§6.4) have no flags; they are expressed per Service via `spec.externalTrafficPolicy` (`Cluster` — every node announces the /32; `Local` — only nodes with a ready endpoint). The §6.7 TTL…
+> **Implementation status:** nylon-lb has shipped (`cmd/nylon-lb`) with a simpler architecture than this section: a single per-node DaemonSet runs one binary containing a **leader-elected allocator** and a **per-node speaker** (`--allocator`/`--speaker`, both default true; the allocator is leader-elected via a Lease, `--leader-elect`, default true). Allocation is stateless — derived from live Services against the named `--pool name=cidr` set (each Service selects its pool via the `nylon.io/lb-pool` annotation; lowest free address within the selected pool, `--exclude` protects reserved IPs), not persisted in a ConfigMap (§6.3) — and there is no finalizer and no `spec.externalIPs` write (§6.2): the allocator sets `status.loadBalancer.ingress` and honors `spec.loadBalancerIP` when it is free and inside the selected pool. The `anycast`/`single` modes (§6.4) have no flags; they are expressed per Service via `spec.externalTrafficPolicy` (`Cluster` — every node announces the /32; `Local` — only nodes with a ready endpoint). Announce files are one `lb-<namespace>-<service>.json` per Service in `--prefixes-dir` (default `/etc/nylon/prefixes.d`), and the speaker binds each announced /32 on `--bind-interface` (default `lo`) via netlink. §6.7's anti-split-brain TTL guard and §6.8 (control-plane VIP) are design-only: there is no `single`-mode announcer, no persisted lease/ConfigMap state to go stale, and no readyz-gated apiserver VIP in the shipped binary.
 
 ### 6.1 Concept
 
