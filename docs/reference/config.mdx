@@ -67,7 +67,7 @@ dist:
 # Active nylon nodes that participate in routing and can forward traffic.
 routers:
   - id: alice
-    pubkey: xmfAovAKN4AY5ocK5s+/VsG9I27KrQ13Vzb0HOsLKAs==
+    pubkey: xmfAovAKN4AY5ocK5s+/VsG9I27KrQ13Vzb0HOsLKAs=
     addresses: [10.0.0.1] # nylon interface addresses (auto-advertised as /32 or /128)
     endpoints:
       - "alice.example.com:57175" # domain name (re-resolved periodically)
@@ -261,7 +261,9 @@ See [Dynamic Prefixes](/reference/dynamic-prefixes) for the full contract and ex
 
 ## Naming Rules
 
-Node and group IDs must:
+Node IDs (`routers[].id`, `clients[].id`) must:
 - Match `^[0-9a-z._/-]+$`
 - Be at most 100 characters
 - Be unique across all routers and clients
+
+Group names used in `graph` are folded to lowercase, must not equal a node name, and must be unique. The strict node-ID pattern above is not applied to them.
