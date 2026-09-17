@@ -9,7 +9,7 @@ Vanilla WireGuard is easy to recognize on the wire. Every handshake packet start
 
 Obfuscation changes the shape of handshake packets:
 
-- **Junk packets** — meaningless packets sent before a handshake; receivers discard them without validating them.
+- **Junk packets** — meaningless packets sent before a handshake; receivers discard them without validating them. Each junk datagram's length is drawn uniformly from the half-open range `[jmin, jmax)` — `jmax` itself is never emitted, and equal bounds give fixed-length junk.
 - **Custom type words** — each handshake message carries a type word drawn from a range you choose instead of the fixed 1–4.
 - **Custom padding** — each handshake message type is padded to a size you choose.
 - **Protocol templates** — initiation packets can be laid out to imitate another protocol such as QUIC, so a packet capture reads like ordinary application traffic.
@@ -65,7 +65,7 @@ The `s1`–`s4` and `h1`–`h4` values are a wire contract between every pair of
 - A **sender** picks each outgoing message's type word from its own `h` ranges and pads the message by its own `s` values.
 - A **receiver** classifies incoming packets using **its own** `s`/`h` values.
 
-If two nodes carry different `s`/`h` values, the receiver fails to classify the sender's packets and drops them silently. The central profile — including the junk-packet knobs `jc`, `jmin`, `jmax` — must therefore be identical on every node. [nylon-genesis](/guides/genesis) enforces this by construction.
+If two nodes carry different `s`/`h` values, the receiver fails to classify the sender's packets and drops them silently. The junk-packet knobs `jc`, `jmin`, `jmax` are not part of that wire contract — junk datagrams are sender-local camouflage that receivers discard unclassified — but they cannot diverge either: they exist only in the single central `obf` profile, which is distributed identically to every node. [nylon-genesis](/guides/genesis) enforces this by construction.
 
 ### I-Patterns Are Sender-Local
 
@@ -99,7 +99,9 @@ Each `i1`–`i5` value is a pattern built from tags. Each tag describes one stag
 | `<ds>` | The packet's own data, base64-encoded |
 | `<dz n>` | An `n`-byte field encoding the data size |
 
-A pattern expresses the shape of one initiation packet type: `i1` shapes the first message a node sends, `i2` the second, and so on. Reading the `i1` example above: it opens with fixed bytes that imitate the target protocol's header, injects random bytes, carries a timestamp, and ends with trailing random bytes — so each message has the length and layout of the chosen template rather than of WireGuard.
+In nylon, chains are rendered only for I-packet camouflage, and there the data source is empty: `<d>` and `<ds>` therefore contribute zero bytes, and `<dz n>` contributes `n` zero bytes. The QUIC-template `i2` in the example above renders 36 bytes on the wire — 8 bytes shorter than the upstream template's intent, because upstream assumes `<d>` re-uses the 8-byte connection ID that `i1` carries.
+
+Each pattern renders one pre-handshake camouflage datagram: `i1`–`i5` are sent in order ahead of every handshake initiation, followed by the `jc` junk datagrams and only then the real initiation message — none of them replaces or shapes an actual handshake message. Reading the `i1` example above: it opens with fixed bytes that imitate the target protocol's header, injects random bytes, carries a timestamp, and ends with trailing random bytes — so each camouflage datagram has the length and layout of the chosen template rather than of WireGuard.
 
 ::::note
 No I-pattern content is verified when a packet is received: the live receive path classifies packets purely by size and by the `h` ranges of the mesh-uniform central profile, matching upstream AmneziaWG 2.0 behavior. The patterns shape what a node sends; the cryptography — not the pattern — provides authenticity.
