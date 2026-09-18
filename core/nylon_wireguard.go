@@ -13,6 +13,7 @@ import (
 
 	"github.com/encodeous/nylon/polyamide/conn"
 	"github.com/encodeous/nylon/polyamide/device"
+	"github.com/encodeous/nylon/polyamide/tun"
 	"github.com/encodeous/nylon/state"
 )
 
@@ -22,6 +23,21 @@ func resolveMTU(cfg *state.LocalCfg) int {
 		return int(*cfg.MTU)
 	}
 	return device.DefaultMTU
+}
+
+// resolveTunOptions returns the configured TUN link options or the defaults.
+func resolveTunOptions(cfg *state.LocalCfg) tun.CreateOptions {
+	opts := tun.DefaultCreateOptions()
+	if cfg.TunQueues != nil {
+		opts.Queues = *cfg.TunQueues
+	}
+	if cfg.TunTxQueueLen != nil {
+		opts.TxQueueLen = *cfg.TunTxQueueLen
+	}
+	if cfg.TunBackpressure != nil {
+		opts.Backpressure = *cfg.TunBackpressure
+	}
+	return opts
 }
 
 // obfDeviceIPC renders the device-level AWG 2.0 UAPI knobs for the active
@@ -140,6 +156,8 @@ listen_port=%d
 		}
 		return nil
 	}, n.ProbeDelay)
+
+	n.startTunStatsPolling()
 
 	return nil
 }

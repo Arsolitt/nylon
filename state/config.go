@@ -118,6 +118,9 @@ type LocalCfg struct {
 	PostUp             []string              `yaml:"post_up,omitempty"`              // a list of commands executed in order after the nylon interface is brought up
 	PostDown           []string              `yaml:"post_down,omitempty"`            // a list of commands executed in order after the nylon interface is brought down
 	MTU                *uint16               `yaml:"mtu,omitempty"`                  // TUN MTU; nil = device default (1420)
+	TunQueues          *int                  `yaml:"tun_queues,omitempty"`           // TUN queue count; nil = min(NumCPU, 4); Linux only
+	TunTxQueueLen      *int                  `yaml:"tun_txqueuelen,omitempty"`       // TUN tx queue length; nil = 10000; 0 = keep the kernel default
+	TunBackpressure    *bool                 `yaml:"tun_backpressure,omitempty"`     // request IFF_BACKPRESSURE; nil = false (kernel support required)
 	DynamicPrefixesDir string                `yaml:"dynamic_prefixes_dir,omitempty"` // directory of dynamic prefix JSON files (design §4); empty = disabled
 }
 

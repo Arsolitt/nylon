@@ -41,6 +41,12 @@ func NodeConfigValidator(central *CentralCfg, node *LocalCfg) error {
 			return fmt.Errorf("interface name is invalid: %v", err)
 		}
 	}
+	if node.TunQueues != nil && (*node.TunQueues < 1 || *node.TunQueues > 32) {
+		return fmt.Errorf("tun_queues must be between 1 and 32, got %d", *node.TunQueues)
+	}
+	if node.TunTxQueueLen != nil && (*node.TunTxQueueLen < 0 || *node.TunTxQueueLen > 1<<20) {
+		return fmt.Errorf("tun_txqueuelen must be between 0 and %d, got %d", 1<<20, *node.TunTxQueueLen)
+	}
 	if node.ObservabilityAddr != "" {
 		if _, _, err := net.SplitHostPort(node.ObservabilityAddr); err != nil {
 			return fmt.Errorf("observability address must be a valid host:port: %v", err)

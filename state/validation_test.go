@@ -218,6 +218,44 @@ func TestCentralConfigValidator_DuplicatePrefix(t *testing.T) {
 	assert.Error(t, CentralConfigValidator(cfg))
 }
 
+func TestNodeConfigValidator_TunKnobs(t *testing.T) {
+	intPtr := func(v int) *int { return &v }
+	tests := []struct {
+		name      string
+		tunQueues *int
+		txQueueLn *int
+		wantErr   string
+	}{
+		{name: "unset"},
+		{name: "tun_queues lower bound", tunQueues: intPtr(1)},
+		{name: "tun_queues upper bound", tunQueues: intPtr(32)},
+		{name: "tun_queues zero", tunQueues: intPtr(0), wantErr: "tun_queues must be between 1 and 32, got 0"},
+		{name: "tun_queues above upper bound", tunQueues: intPtr(33), wantErr: "tun_queues must be between 1 and 32, got 33"},
+		{name: "tun_queues negative", tunQueues: intPtr(-1), wantErr: "tun_queues must be between 1 and 32, got -1"},
+		{name: "tun_txqueuelen kernel default", txQueueLn: intPtr(0)},
+		{name: "tun_txqueuelen upper bound", txQueueLn: intPtr(1 << 20)},
+		{name: "tun_txqueuelen negative", txQueueLn: intPtr(-1), wantErr: "tun_txqueuelen must be between 0 and 1048576, got -1"},
+		{name: "tun_txqueuelen above upper bound", txQueueLn: intPtr(1<<20 + 1), wantErr: "tun_txqueuelen must be between 0 and 1048576, got 1048577"},
+		{name: "both at bounds", tunQueues: intPtr(32), txQueueLn: intPtr(1 << 20)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := NodeConfigValidator(nil, &LocalCfg{
+				Id:            "valid-node",
+				Port:          5,
+				Key:           [32]byte{1},
+				TunQueues:     tt.tunQueues,
+				TunTxQueueLen: tt.txQueueLn,
+			})
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
 func TestCentralConfigValidator_AnycastPrefix(t *testing.T) {
 	// Anycast routing allows the same prefix to be advertised by multiple nodes
 	cfg := &CentralCfg{
