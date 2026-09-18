@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/encodeous/nylon/perf"
 	"github.com/encodeous/nylon/polyamide/conn"
 	"github.com/encodeous/nylon/polyamide/tun"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -101,7 +102,7 @@ func (peer *Peer) SendKeepalive() {
 			peer.device.PutOutboundElementsContainer(elemsContainer)
 		}
 	}
-	peer.SendStagedPackets()
+	peer.notifyStaged()
 }
 
 func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
@@ -314,14 +315,17 @@ func (peer *Peer) keepKeyFreshSending() {
 	}
 }
 
-func (device *Device) RoutineReadFromTUN() {
+// RoutineReadFromTUN drains one TUN queue. Devices that expose several queues
+// run one reader each, which is what keeps a single stalled downstream peer from
+// parking every queue.
+func (device *Device) RoutineReadFromTUN(q int) {
 	defer func() {
-		device.Log.Verbosef("Routine: TUN reader - stopped")
+		device.Log.Verbosef("Routine: TUN reader %d - stopped", q)
 		device.state.stopping.Done()
 		device.queue.encryption.wg.Done()
 	}()
 
-	device.Log.Verbosef("Routine: TUN reader - started")
+	device.Log.Verbosef("Routine: TUN reader %d - started", q)
 
 	var (
 		batchSize = device.BatchSize()
@@ -344,7 +348,16 @@ func (device *Device) RoutineReadFromTUN() {
 		offset := MessageTransportHeaderSize + int(padding)
 
 		// read packets
-		count, readErr = device.tun.device.Read(rBufs, sizes, offset)
+		if device.tun.multi != nil {
+			count, readErr = device.tun.multi.ReadQueue(q, rBufs, sizes, offset)
+		} else {
+			count, readErr = device.tun.device.Read(rBufs, sizes, offset)
+		}
+		// A zero-count read is the idle poll of a non-blocking TUN
+		// implementation; sampling it would skew the histogram.
+		if count > 0 {
+			perf.TunReadBatchSize.Add(float64(count))
+		}
 
 		for i := 0; i < count; i++ {
 			if sizes[i] < 1 {
@@ -388,11 +401,13 @@ func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
 	for {
 		select {
 		case peer.queue.staged <- elems:
+			peer.notifyStaged()
 			return
 		default:
 		}
 		select {
 		case tooOld := <-peer.queue.staged:
+			perf.TunStagedDropsTotal.Add(uint64(len(tooOld.elems)))
 			for _, elem := range tooOld.elems {
 				peer.device.PutMessageBuffer(elem.buffer)
 				peer.device.PutOutboundElement(elem)
@@ -403,7 +418,51 @@ func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
 	}
 }
 
+// SendStagedPackets drains the peer's staged packets, blocking until they are
+// handed off. Callers on the datapath notify RoutineStagedPump instead.
 func (peer *Peer) SendStagedPackets() {
+	peer.sendStagedPackets(nil)
+}
+
+// handoff pushes c onto ch, reporting false when the pump is stopping first.
+func handoff(ch chan *QueueOutboundElementsContainer, c *QueueOutboundElementsContainer, stop <-chan struct{}) bool {
+	select {
+	case ch <- c:
+		return true
+	case <-stop: // nil channel for callers that must block (SendStagedPackets)
+		return false
+	}
+}
+
+// notifyStaged wakes RoutineStagedPump without blocking. A dropped
+// notification is safe: the pump drains the staged queue until it is empty.
+func (peer *Peer) notifyStaged() {
+	select {
+	case peer.queue.stagedNotify <- struct{}{}:
+	default:
+	}
+}
+
+// RoutineStagedPump drains the peer's staged packets into the encryption and
+// outbound queues. It is the only consumer of peer.queue.staged, so the nonce
+// order is assigned by exactly one goroutine per peer.
+func (peer *Peer) RoutineStagedPump() {
+	defer peer.stopping.Done()
+	for {
+		if !peer.isRunning.Load() {
+			return
+		}
+		select {
+		case <-peer.queue.stagedNotify:
+		case <-peer.queue.stagedStop:
+			// A stop token from a previous Stop() must not end this cycle.
+			continue
+		}
+		peer.sendStagedPackets(peer.queue.stagedStop)
+	}
+}
+
+func (peer *Peer) sendStagedPackets(stop <-chan struct{}) {
 top:
 	if len(peer.queue.staged) == 0 || !peer.device.isUp() {
 		return
@@ -451,8 +510,23 @@ top:
 
 			// add to parallel and sequential queue
 			if peer.isRunning.Load() {
-				peer.queue.outbound.c <- elemsContainer
-				peer.device.queue.encryption.c <- elemsContainer
+				// The encryption handoff must come first: a container that is
+				// queued for transmission is then always unlocked when the
+				// encryption worker is done with it, so a stopping peer can
+				// never strand RoutineSequentialSender on Lock().
+				if !handoff(peer.device.queue.encryption.c, elemsContainer, stop) {
+					for _, elem := range elemsContainer.elems {
+						peer.device.PutMessageBuffer(elem.buffer)
+						peer.device.PutOutboundElement(elem)
+					}
+					peer.device.PutOutboundElementsContainer(elemsContainer)
+					return
+				}
+				if !handoff(peer.queue.outbound.c, elemsContainer, stop) {
+					// The peer is stopping: the encryption worker owns the
+					// unlock and nothing will consume the container.
+					return
+				}
 			} else {
 				for _, elem := range elemsContainer.elems {
 					peer.device.PutMessageBuffer(elem.buffer)

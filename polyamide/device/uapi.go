@@ -462,7 +462,7 @@ func (peer *ipcSetPeer) handlePostConfig() {
 		if peer.pkaOn {
 			peer.SendKeepalive()
 		}
-		peer.SendStagedPackets()
+		peer.notifyStaged()
 	}
 }
 

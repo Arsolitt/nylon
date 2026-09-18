@@ -53,10 +53,15 @@ type Peer struct {
 	}
 
 	queue struct {
-		staged   chan *QueueOutboundElementsContainer // staged packets before a handshake is available
-		outbound *autodrainingOutboundQueue           // sequential ordering of udp transmission
-		inbound  *autodrainingInboundQueue            // sequential ordering of tun writing
+		staged       chan *QueueOutboundElementsContainer // staged packets before a handshake is available
+		stagedNotify chan struct{}                        // cap 1; wakes RoutineStagedPump
+		stagedStop   chan struct{}                        // cap 1; never closed, reused across Start/Stop cycles
+		outbound     *autodrainingOutboundQueue           // sequential ordering of udp transmission
+		inbound      *autodrainingInboundQueue            // sequential ordering of tun writing
 	}
+
+	// writeIndex is the TUN writer queue bounce packets are handed to.
+	writeIndex int
 
 	cookieGenerator             CookieGenerator
 	trieEntries                 list.List
@@ -91,6 +96,9 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 	peer.queue.outbound = newAutodrainingOutboundQueue(device)
 	peer.queue.inbound = newAutodrainingInboundQueue(device)
 	peer.queue.staged = make(chan *QueueOutboundElementsContainer, QueueStagedSize)
+	peer.queue.stagedNotify = make(chan struct{}, 1)
+	peer.queue.stagedStop = make(chan struct{}, 1)
+	peer.writeIndex = int(device.nextWriteIndex.Add(1)-1) % device.tun.queues
 
 	// map public key
 	_, ok := device.peers.keyMap[pk]
@@ -229,7 +237,7 @@ func (peer *Peer) Start() {
 
 	// reset routine state
 	peer.stopping.Wait()
-	peer.stopping.Add(2)
+	peer.stopping.Add(3)
 
 	peer.handshake.mutex.Lock()
 	peer.handshake.lastSentHandshake = time.Now().Add(-(RekeyTimeout + time.Second))
@@ -248,7 +256,10 @@ func (peer *Peer) Start() {
 	go peer.RoutineSequentialSender(batchSize)
 	go peer.RoutineSequentialReceiver(batchSize)
 
+	// The pump exits as soon as it observes a stopped peer, so it must only be
+	// launched once the peer is marked running.
 	peer.isRunning.Store(true)
+	go peer.RoutineStagedPump()
 }
 
 func (peer *Peer) ZeroAndFlushAll() {
@@ -307,6 +318,12 @@ func (peer *Peer) Stop() {
 	peer.device.Log.Verbosef("%v - Stopping", peer)
 
 	peer.timersStop()
+	// Wake RoutineStagedPump so it observes the stopped peer even when it is
+	// parked waiting for a notification.
+	select {
+	case peer.queue.stagedStop <- struct{}{}:
+	default:
+	}
 	// Signal that RoutineSequentialSender and RoutineSequentialReceiver should exit.
 	peer.queue.inbound.c <- nil
 	peer.queue.outbound.c <- nil
@@ -393,6 +410,6 @@ func (peer *Peer) SetPersistentKeepaliveInterval(interval time.Duration) {
 	// Send immediate keepalive if we're turning it on and before it wasn't on.
 	if old.IsZero() && sec != 0 {
 		peer.SendKeepalive()
-		peer.SendStagedPackets()
+		peer.notifyStaged()
 	}
 }
