@@ -7,6 +7,7 @@ package tun
 
 import (
 	"os"
+	"runtime"
 )
 
 type Event int
@@ -16,6 +17,38 @@ const (
 	EventDown
 	EventMTUUpdate
 )
+
+// CreateOptions controls the Linux TUN link parameters at creation time.
+type CreateOptions struct {
+	Queues       int  // 1 = single queue; >1 attaches IFF_MULTI_QUEUE queues (Linux only)
+	TxQueueLen   int  // 0 = keep the kernel default (500)
+	Backpressure bool // request IFF_BACKPRESSURE; silently inactive on kernels that lack it
+}
+
+// DefaultCreateOptions returns the TUN link options used by CreateTUN.
+func DefaultCreateOptions() CreateOptions {
+	queues := runtime.NumCPU()
+	if queues > 4 {
+		queues = 4
+	}
+	if queues < 1 {
+		queues = 1
+	}
+	return CreateOptions{
+		Queues:     queues,
+		TxQueueLen: 10000,
+	}
+}
+
+// MultiQueueDevice is implemented by TUN devices that can be driven from more
+// than one queue. Devices without it use Read/Write on queue 0 only.
+type MultiQueueDevice interface {
+	QueueCount() int
+	ReadQueue(q int, bufs [][]byte, sizes []int, offset int) (int, error)
+	WriteQueue(q int, bufs [][]byte, offset int) (int, error)
+	TxQueueLen() int    // effective tx_queue_len read back from the kernel
+	Backpressure() bool // true when IFF_BACKPRESSURE was accepted by the kernel
+}
 
 type Device interface {
 	// File returns the file descriptor of the device.

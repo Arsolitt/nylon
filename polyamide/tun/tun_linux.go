@@ -25,10 +25,31 @@ import (
 const (
 	cloneDevicePath = "/dev/net/tun"
 	ifReqSize       = unix.IFNAMSIZ + 64
+	// iffBackpressure is IFF_BACKPRESSURE from uapi/linux/if_tun.h. The kernel
+	// then stops the queue instead of dropping when the internal ring is full,
+	// so an attached qdisc applies backpressure. Kernels that do not know the
+	// flag ignore the bit and do not report it back on TUNGETIFF. It is not
+	// defined by golang.org/x/sys/unix yet.
+	iffBackpressure = 0x0080
 )
 
+// tunQueue is the state of a single TUN queue. A device has at least one.
+type tunQueue struct {
+	file           *os.File
+	readOpMu       sync.Mutex                    // readOpMu guards readBuff and pendingReadLen
+	readBuff       [virtioNetHdrLen + 65535]byte // if vnetHdr every read() is prefixed by virtioNetHdr
+	pendingReadLen int                           // length of a virtio frame deferred to the next Read
+
+	writeOpMu   sync.Mutex // writeOpMu guards toWrite, tcpGROTable
+	toWrite     []int
+	tcpGROTable *tcpGROTable
+	udpGROTable *udpGROTable
+}
+
 type NativeTun struct {
-	tunFile                 *os.File
+	queues []*tunQueue
+
+	tunFile                 *os.File   // == queues[0].file, the primary queue
 	index                   int32      // if index
 	errors                  chan error // async error handling
 	events                  chan Event // device related events
@@ -39,21 +60,14 @@ type NativeTun struct {
 	batchSize               int
 	vnetHdr                 bool
 	udpGSO                  bool
+	txQueueLen              int  // effective tx_queue_len read back from the kernel
+	backpressure            bool // IFF_BACKPRESSURE accepted by the kernel
 
 	closeOnce sync.Once
 
 	nameOnce  sync.Once // guards calling initNameCache, which sets following fields
 	nameCache string    // name of interface
 	nameErr   error
-
-	readOpMu       sync.Mutex                    // readOpMu guards readBuff and pendingReadLen
-	readBuff       [virtioNetHdrLen + 65535]byte // if vnetHdr every read() is prefixed by virtioNetHdr
-	pendingReadLen int                           // length of a virtio frame deferred to the next Read
-
-	writeOpMu   sync.Mutex // writeOpMu guards toWrite, tcpGROTable
-	toWrite     []int
-	tcpGROTable *tcpGROTable
-	udpGROTable *udpGROTable
 }
 
 func (tun *NativeTun) File() *os.File {
@@ -300,6 +314,70 @@ func (tun *NativeTun) MTU() (int, error) {
 	return int(*(*int32)(unsafe.Pointer(&ifr[unix.IFNAMSIZ]))), nil
 }
 
+// setTxQueueLen sets the tx_queue_len of the interface. The kernel sizes the
+// internal ring of each TUN queue from this value when the queue is attached.
+func setTxQueueLen(name string, n int) error {
+	// open datagram socket
+	fd, err := unix.Socket(
+		unix.AF_INET,
+		unix.SOCK_DGRAM|unix.SOCK_CLOEXEC,
+		0,
+	)
+	if err != nil {
+		return err
+	}
+
+	defer unix.Close(fd)
+
+	// do ioctl call
+	// ifr_qlen is ifru_ivalue, the first int of the ifreq union.
+	var ifr [ifReqSize]byte
+	copy(ifr[:], name)
+	*(*uint32)(unsafe.Pointer(&ifr[unix.IFNAMSIZ])) = uint32(n)
+	_, _, errno := unix.Syscall(
+		unix.SYS_IOCTL,
+		uintptr(fd),
+		uintptr(unix.SIOCSIFTXQLEN),
+		uintptr(unsafe.Pointer(&ifr[0])),
+	)
+
+	if errno != 0 {
+		return fmt.Errorf("failed to set tx queue length of TUN device: %w", errno)
+	}
+
+	return nil
+}
+
+func getTxQueueLen(name string) (int, error) {
+	// open datagram socket
+	fd, err := unix.Socket(
+		unix.AF_INET,
+		unix.SOCK_DGRAM|unix.SOCK_CLOEXEC,
+		0,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	defer unix.Close(fd)
+
+	// do ioctl call
+
+	var ifr [ifReqSize]byte
+	copy(ifr[:], name)
+	_, _, errno := unix.Syscall(
+		unix.SYS_IOCTL,
+		uintptr(fd),
+		uintptr(unix.SIOCGIFTXQLEN),
+		uintptr(unsafe.Pointer(&ifr[0])),
+	)
+	if errno != 0 {
+		return 0, fmt.Errorf("failed to get tx queue length of TUN device: %w", errno)
+	}
+
+	return int(*(*int32)(unsafe.Pointer(&ifr[unix.IFNAMSIZ]))), nil
+}
+
 func (tun *NativeTun) Name() (string, error) {
 	tun.nameOnce.Do(tun.initNameCache)
 	return tun.nameCache, tun.nameErr
@@ -334,30 +412,37 @@ func (tun *NativeTun) nameSlow() (string, error) {
 }
 
 func (tun *NativeTun) Write(bufs [][]byte, offset int) (int, error) {
-	tun.writeOpMu.Lock()
+	return tun.WriteQueue(0, bufs, offset)
+}
+
+// WriteQueue writes bufs to the given TUN queue. Each queue keeps its own
+// coalescing state, so queues never share GRO tables.
+func (tun *NativeTun) WriteQueue(q int, bufs [][]byte, offset int) (int, error) {
+	queue := tun.queues[q]
+	queue.writeOpMu.Lock()
 	defer func() {
-		tun.tcpGROTable.reset()
-		tun.udpGROTable.reset()
-		tun.writeOpMu.Unlock()
+		queue.tcpGROTable.reset()
+		queue.udpGROTable.reset()
+		queue.writeOpMu.Unlock()
 	}()
 	var (
 		errs  error
 		total int
 	)
-	tun.toWrite = tun.toWrite[:0]
+	queue.toWrite = queue.toWrite[:0]
 	if tun.vnetHdr {
-		err := handleGRO(bufs, offset, tun.tcpGROTable, tun.udpGROTable, tun.udpGSO, &tun.toWrite)
+		err := handleGRO(bufs, offset, queue.tcpGROTable, queue.udpGROTable, tun.udpGSO, &queue.toWrite)
 		if err != nil {
 			return 0, err
 		}
 		offset -= virtioNetHdrLen
 	} else {
 		for i := range bufs {
-			tun.toWrite = append(tun.toWrite, i)
+			queue.toWrite = append(queue.toWrite, i)
 		}
 	}
-	for _, bufsI := range tun.toWrite {
-		n, err := tun.tunFile.Write(bufs[bufsI][offset:])
+	for _, bufsI := range queue.toWrite {
+		n, err := queue.file.Write(bufs[bufsI][offset:])
 		if errors.Is(err, syscall.EBADFD) {
 			return total, os.ErrClosed
 		}
@@ -450,6 +535,7 @@ func handleVirtioRead(in []byte, bufs [][]byte, sizes []int, offset int) (int, e
 }
 
 func (tun *NativeTun) readPacket(
+	readBuff []byte,
 	bufs [][]byte,
 	sizes []int,
 	offset int,
@@ -457,7 +543,7 @@ func (tun *NativeTun) readPacket(
 ) (int, int, error) {
 	readInto := bufs[0][offset:]
 	if tun.vnetHdr {
-		readInto = tun.readBuff[:]
+		readInto = readBuff
 	}
 	n, err := read(readInto)
 	if errors.Is(err, syscall.EBADFD) {
@@ -475,8 +561,15 @@ func (tun *NativeTun) readPacket(
 }
 
 func (tun *NativeTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
-	tun.readOpMu.Lock()
-	defer tun.readOpMu.Unlock()
+	return tun.ReadQueue(0, bufs, sizes, offset)
+}
+
+// ReadQueue reads from the given TUN queue. Each queue is independently
+// readable; concurrent reads are only safe on distinct queues.
+func (tun *NativeTun) ReadQueue(q int, bufs [][]byte, sizes []int, offset int) (int, error) {
+	queue := tun.queues[q]
+	queue.readOpMu.Lock()
+	defer queue.readOpMu.Unlock()
 	select {
 	case err := <-tun.errors:
 		return 0, err
@@ -485,18 +578,18 @@ func (tun *NativeTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) 
 
 	var count int
 	var err error
-	if tun.pendingReadLen > 0 {
-		pendingReadLen := tun.pendingReadLen
-		tun.pendingReadLen = 0
-		count, err = handleVirtioRead(tun.readBuff[:pendingReadLen], bufs, sizes, offset)
+	if queue.pendingReadLen > 0 {
+		pendingReadLen := queue.pendingReadLen
+		queue.pendingReadLen = 0
+		count, err = handleVirtioRead(queue.readBuff[:pendingReadLen], bufs, sizes, offset)
 	} else {
-		count, _, err = tun.readPacket(bufs, sizes, offset, tun.tunFile.Read)
+		count, _, err = tun.readPacket(queue.readBuff[:], bufs, sizes, offset, queue.file.Read)
 	}
 	if err != nil {
 		return count, err
 	}
 
-	rawConn, err := tun.tunFile.SyscallConn()
+	rawConn, err := queue.file.SyscallConn()
 	if err != nil {
 		return count, err
 	}
@@ -504,6 +597,7 @@ func (tun *NativeTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) 
 	err = rawConn.Control(func(fd uintptr) {
 		for count < len(bufs) {
 			n, readLen, readErr := tun.readPacket(
+				queue.readBuff[:],
 				bufs[count:],
 				sizes[count:],
 				offset,
@@ -517,7 +611,7 @@ func (tun *NativeTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) 
 			if tun.vnetHdr && errors.Is(readErr, ErrTooManySegments) {
 				// The frame is already consumed from the TUN device. Keep it
 				// in readBuff and split it into a fresh batch on the next Read.
-				tun.pendingReadLen = readLen
+				queue.pendingReadLen = readLen
 				return
 			}
 			count += n
@@ -551,7 +645,7 @@ func (tun *NativeTun) Close() error {
 		} else if tun.events != nil {
 			close(tun.events)
 		}
-		err2 = tun.tunFile.Close()
+		err2 = tun.closeQueues()
 	})
 	if err1 != nil {
 		return err1
@@ -559,8 +653,34 @@ func (tun *NativeTun) Close() error {
 	return err2
 }
 
+// closeQueues closes every queue file of the interface, which detaches the
+// queues from the kernel device.
+func (tun *NativeTun) closeQueues() error {
+	var errs error
+	for _, queue := range tun.queues {
+		errs = errors.Join(errs, queue.file.Close())
+	}
+	return errs
+}
+
 func (tun *NativeTun) BatchSize() int {
 	return tun.batchSize
+}
+
+// QueueCount returns the number of TUN queues the device was created with.
+func (tun *NativeTun) QueueCount() int {
+	return len(tun.queues)
+}
+
+// TxQueueLen returns the effective tx_queue_len of the interface, or 0 when it
+// could not be read back from the kernel.
+func (tun *NativeTun) TxQueueLen() int {
+	return tun.txQueueLen
+}
+
+// Backpressure reports whether the kernel accepted IFF_BACKPRESSURE.
+func (tun *NativeTun) Backpressure() bool {
+	return tun.backpressure
 }
 
 const (
@@ -587,6 +707,9 @@ func (tun *NativeTun) initFromFlags(name string) error {
 			return
 		}
 		got := ifr.Uint16()
+		// IFF_BACKPRESSURE is only in the flags when the running kernel knows
+		// it; older kernels ignore the bit on TUNSETIFF.
+		tun.backpressure = got&iffBackpressure != 0
 		if got&unix.IFF_VNET_HDR != 0 {
 			// tunTCPOffloads were added in Linux v2.6. We require their support
 			// if IFF_VNET_HDR is set.
@@ -605,53 +728,147 @@ func (tun *NativeTun) initFromFlags(name string) error {
 	}); e != nil {
 		return e
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// Best effort: the effective value is reported through TxQueueLen.
+	tun.txQueueLen, _ = getTxQueueLen(name)
+	return nil
 }
 
-// CreateTUN creates a Device with the provided name and MTU.
-func CreateTUN(name string, mtu int) (Device, error) {
+// openQueue attaches one queue to the TUN interface using the given TUNSETIFF
+// flags and returns the queue file together with the interface name the kernel
+// resolved it to (the kernel picks the name when the request comes without
+// one, and further queues have to be attached by name).
+func openQueue(name string, flags uint16) (*os.File, string, error) {
 	nfd, err := unix.Open(cloneDevicePath, unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("CreateTUN(%q) failed; %s does not exist", name, cloneDevicePath)
+			return nil, "", fmt.Errorf("CreateTUN(%q) failed; %s does not exist", name, cloneDevicePath)
 		}
-		return nil, err
+		return nil, "", err
 	}
 
 	ifr, err := unix.NewIfreq(name)
 	if err != nil {
-		return nil, err
+		unix.Close(nfd)
+		return nil, "", err
 	}
-	// IFF_VNET_HDR enables the "tun status hack" via routineHackListener()
-	// where a null write will return EINVAL indicating the TUN is up.
-	ifr.SetUint16(unix.IFF_TUN | unix.IFF_NO_PI | unix.IFF_VNET_HDR)
+	ifr.SetUint16(flags)
 	err = unix.IoctlIfreq(nfd, unix.TUNSETIFF, ifr)
 	if err != nil {
-		return nil, err
+		unix.Close(nfd)
+		return nil, "", err
 	}
 
 	err = unix.SetNonblock(nfd, true)
 	if err != nil {
 		unix.Close(nfd)
-		return nil, err
+		return nil, "", err
 	}
 
 	// Note that the above -- open,ioctl,nonblock -- must happen prior to handing it to netpoll as below this line.
 
-	fd := os.NewFile(uintptr(nfd), cloneDevicePath)
-	return CreateTUNFromFile(fd, mtu)
+	return os.NewFile(uintptr(nfd), cloneDevicePath), ifr.Name(), nil
+}
+
+// CreateTUN creates a Device with the provided name and MTU.
+func CreateTUN(name string, mtu int) (Device, error) {
+	return CreateTUNWithOptions(name, mtu, DefaultCreateOptions())
+}
+
+// CreateTUNWithOptions creates a Device with the provided name, MTU and link
+// options. More than one queue requires kernel support for IFF_MULTI_QUEUE;
+// when that is unavailable the device falls back to a single queue.
+func CreateTUNWithOptions(name string, mtu int, opts CreateOptions) (Device, error) {
+	queues := opts.Queues
+	if queues < 1 {
+		queues = 1
+	}
+	if queues > 32 {
+		queues = 32
+	}
+
+	// IFF_VNET_HDR enables the "tun status hack" via routineHackListener()
+	// where a null write will return EINVAL indicating the TUN is up.
+	flags := uint16(unix.IFF_TUN | unix.IFF_NO_PI | unix.IFF_VNET_HDR)
+	if opts.Backpressure {
+		flags |= iffBackpressure
+	}
+
+	var fds []*os.File
+	if queues > 1 {
+		fd, resolved, multiErr := openQueue(name, flags|unix.IFF_MULTI_QUEUE)
+		if multiErr != nil {
+			// The interface exists without IFF_MULTI_QUEUE, or the kernel does
+			// not support it; keep working with a single queue.
+			var err error
+			fd, _, err = openQueue(name, flags)
+			if err != nil {
+				// Report both: the fallback alone hides why multi-queue failed.
+				return nil, errors.Join(multiErr, err)
+			}
+			queues = 1
+		} else {
+			name = resolved
+		}
+		fds = append(fds, fd)
+	} else {
+		fd, _, err := openQueue(name, flags)
+		if err != nil {
+			return nil, err
+		}
+		fds = append(fds, fd)
+	}
+
+	if queues > 1 {
+		// The kernel sizes each queue's internal ring from dev->tx_queue_len
+		// when the queue is attached, so the length has to be set before the
+		// extra queues are attached. The first queue, whose ring was sized at
+		// the kernel default, is dropped below.
+		if opts.TxQueueLen > 0 {
+			// Best effort: without it the kernel default stays in effect.
+			_ = setTxQueueLen(name, opts.TxQueueLen)
+		}
+		for i := 0; i < queues; i++ {
+			fd, _, err := openQueue(name, flags|unix.IFF_MULTI_QUEUE)
+			if err != nil {
+				break
+			}
+			fds = append(fds, fd)
+		}
+		if len(fds) > queues {
+			// tun_detach() moves the last queue into the freed slot, so every
+			// surviving queue keeps the ring depth it was attached with.
+			_ = fds[0].Close()
+			fds = fds[1:]
+		}
+	}
+
+	return createTUNFromFiles(fds, mtu)
 }
 
 // CreateTUNFromFile creates a Device from an os.File with the provided MTU.
 func CreateTUNFromFile(file *os.File, mtu int) (Device, error) {
+	return createTUNFromFiles([]*os.File{file}, mtu)
+}
+
+// createTUNFromFiles creates a Device from one or more queue files of the same
+// TUN interface. The first file is the primary queue.
+func createTUNFromFiles(files []*os.File, mtu int) (Device, error) {
 	tun := &NativeTun{
-		tunFile:                 file,
+		tunFile:                 files[0],
 		events:                  make(chan Event, 5),
 		errors:                  make(chan error, 5),
 		statusListenersShutdown: make(chan struct{}),
-		tcpGROTable:             newTCPGROTable(),
-		udpGROTable:             newUDPGROTable(),
-		toWrite:                 make([]int, 0, conn.IdealBatchSize),
+	}
+	for _, file := range files {
+		tun.queues = append(tun.queues, &tunQueue{
+			file:        file,
+			tcpGROTable: newTCPGROTable(),
+			udpGROTable: newUDPGROTable(),
+			toWrite:     make([]int, 0, conn.IdealBatchSize),
+		})
 	}
 
 	name, err := tun.Name()
@@ -702,12 +919,15 @@ func CreateUnmonitoredTUNFromFD(fd int) (Device, string, error) {
 	}
 	file := os.NewFile(uintptr(fd), "/dev/tun")
 	tun := &NativeTun{
-		tunFile:     file,
-		events:      make(chan Event, 5),
-		errors:      make(chan error, 5),
-		tcpGROTable: newTCPGROTable(),
-		udpGROTable: newUDPGROTable(),
-		toWrite:     make([]int, 0, conn.IdealBatchSize),
+		tunFile: file,
+		events:  make(chan Event, 5),
+		errors:  make(chan error, 5),
+		queues: []*tunQueue{{
+			file:        file,
+			tcpGROTable: newTCPGROTable(),
+			udpGROTable: newUDPGROTable(),
+			toWrite:     make([]int, 0, conn.IdealBatchSize),
+		}},
 	}
 	name, err := tun.Name()
 	if err != nil {
