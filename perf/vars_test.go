@@ -11,14 +11,22 @@ func TestSnapshotNamesAndLabels(t *testing.T) {
 	SendsPerSecond.Add(42)
 
 	samples := Snapshot()
-	if len(samples) != len(perfHistograms)*3+len(perfCounters) {
-		t.Fatalf("Snapshot returned %d samples, want %d", len(samples), len(perfHistograms)*3+len(perfCounters))
+	if len(samples) != len(perfHistograms)*3+len(perfCounters)+len(perfTotals) {
+		t.Fatalf("Snapshot returned %d samples, want %d", len(samples), len(perfHistograms)*3+len(perfCounters)+len(perfTotals))
+	}
+
+	totalNames := map[string]bool{}
+	for _, total := range perfTotals {
+		totalNames[total.name] = true
 	}
 
 	byLabel := map[string][]Sample{}
 	for _, s := range samples {
-		if s.Type != "gauge" {
-			t.Fatalf("sample %s has type %q, want gauge", s.Name, s.Type)
+		switch {
+		case s.Type == "gauge":
+		case s.Type == "counter" && totalNames[s.Name]:
+		default:
+			t.Fatalf("sample %s has type %q, want gauge or counter", s.Name, s.Type)
 		}
 		if s.Name == "" || s.Help == "" {
 			t.Fatalf("sample missing name or help: %+v", s)
@@ -58,6 +66,16 @@ func TestSnapshotNamesAndLabels(t *testing.T) {
 			t.Fatalf("counter %s has labels %+v, want none", c.name, got[0].Labels)
 		}
 	}
+	// every monotonic total must appear once, as an unlabeled counter
+	for _, total := range perfTotals {
+		got := byLabel[total.name]
+		if len(got) != 1 {
+			t.Fatalf("total %s produced %d samples, want 1", total.name, len(got))
+		}
+		if got[0].Type != "counter" || len(got[0].Labels) != 0 {
+			t.Fatalf("total %s has type %q and labels %+v, want an unlabeled counter", total.name, got[0].Type, got[0].Labels)
+		}
+	}
 	if v := byLabel["nylon_perf_sends_per_second"][0].Value; v <= 0 {
 		t.Fatalf("seeded nylon_perf_sends_per_second = %v, want > 0", v)
 	}
@@ -71,12 +89,17 @@ func TestSnapshotMatchesPrometheusNames(t *testing.T) {
 		"nylon_perf_dispatch_latency_us",
 		"nylon_perf_send_batch_size",
 		"nylon_perf_recv_batch_size",
+		"nylon_perf_tun_read_batch_size",
+		"nylon_perf_tun_write_batch_size",
 		"nylon_perf_sends_per_second",
 		"nylon_perf_recvs_per_second",
 		"nylon_perf_sent_packets_per_second",
 		"nylon_perf_recv_packets_per_second",
 		"nylon_perf_sent_bytes_per_second",
 		"nylon_perf_recv_bytes_per_second",
+		"nylon_tun_staged_drops_total",
+		"nylon_tun_write_queue_drops_total",
+		"nylon_tun_kernel_tx_dropped_total",
 	}
 	for _, name := range want {
 		found := false
