@@ -181,6 +181,26 @@ Mechanics (from the ported code, not documentation claims):
   `maxISize = MTU − reserve(49) − handshakeSize(149) − S1` (`amnezigo/cps.go:14–15,50–52`) and
   enforces `Jmax < MTU`. Rationale: I1–I5 and junk packets exceeding the underlay MTU fragment —
   fragmentation is DPI-visible and explicitly warned about in the amneziawg-go README.
+- **TUN datapath drain** — multi-queue, non-blocking staging, batched writes, txqueuelen. Root
+  cause: one TUN queue with one reader that blocks on the per-peer handoffs
+  (`peer.queue.outbound.c`, `device.queue.encryption.c`), so a single stalled peer parks the reader
+  and the per-queue kernel ring (`tx_queue_len`, default 500) overflows — 222k `tx_dropped` in
+  ~1 day under a 65 MB/s replication burst, invisible to the daemon. Fix: `tun_queues` (kernel
+  `ndo_select_queue` flow steering → per-flow affinity, so no reordering), a non-blocking reader
+  with counted bounded per-peer queues, TUN writes batched off the receive goroutines,
+  `tun_txqueuelen` (ring depth, ~1.4 KB/packet per queue at MTU 1420; programmed before the extra
+  queues attach, because the ring is sized at attach time), and opt-in `tun_backpressure`
+  (kernel >= 6.15) trading kernel-ring drops for qdisc queueing. Measured (Apple M5,
+  `-benchtime 3s -count 1`, worktree-at-HEAD vs working tree): reader queues=1 571.5 → 562.6 ns/op
+  (1.75M → 1.78M pkt/s), queues=4 577.5 → 393.5 ns/op (1.73M → 2.54M pkt/s, 1.45×); 2-node e2e at
+  4 CPUs `tx_dropped` 279 → 0, iperf3 3.57 → 5.81 Gbit/s, retransmits 22555 → 15419; at 1 CPU
+  `tx_dropped` 0 → 0, 2.99 → 3.31 Gbit/s, 6218 → 3864 retransmits (post-fix runs vary by up to
+  ~20% run to run on the test host); control-plane `dispatch took a long time!` (a 5.28 ms
+  `initWireGuard` closure) gone; `TCBatch` + callees 1.99% of a 92.79 s profile (10% gate, so no
+  further optimization).
+  Costs: ping-pong latency 37.0 → 40.7 µs, and under an unbounded-sender flood the counted
+  userspace evictions replace kernel-ring drops (`BenchmarkThroughput` loss 0.21% → 80.6% — the
+  loss was always there, now it is bounded and visible).
 - **sd_notify watchdog hooks** (`Type=notify` + `WatchdogSec`) — required by R4, **out of scope this
   round**.
 
@@ -816,57 +836,106 @@ Base `ecfc5a8d` (polyamide's exact base) vs port source `1b86b2a`; 29 files, +17
 
 ### A.5 `git diff --no-index --stat` — polyamide ↔ amneziawg-go (`device/`)
 
-Fork collision surface; 37 files, +1976/−1174 (`→ /dev/null` = nylon-only file absent upstream;
-`+N`-only = AWG-only file):
+Fork collision surface; 30 files, +795/−2446 against amneziawg-go
+`1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1` (tag `v3.1.20260814`, the §2.2 port source). The first
+path is `polyamide/device`, so `−` = lines only polyamide has and `+` = lines only upstream has;
+`→ /dev/null` = file present in polyamide but absent upstream — all nylon-only now that the tree
+carries the port:
 
 ```text
  device/bind_test.go              |   2 +-
- device/constants.go              |   1 +
- device/cookie.go                 |   3 +-
- device/cookie_test.go            |   2 +-
- device/device.go                 | 113 ++--
- device/device_test.go            | 151 +++++-
+ device/datapath_perf_test.go     | 748 --------------------- (nylon-only)
+ device/device.go                 | 119 +---
+ device/device_test.go            | 151 ++++-
  device/endpoint_test.go          |   4 -
  device/keypair.go                |   2 +-
  device/logger.go                 |   4 +-
  device/mobilequirks.go           |   6 +-
- device/noise-protocol.go         | 142 ++----
- device/noise-types.go            | 108 +++++
+ device/noise-protocol.go         |   6 +-
  device/noise_test.go             |   4 +-
- device/obf.go                    | 143 ++++
- device/obf_bytes.go              |  47 ++
- device/obf_data.go               |  25 ++
- device/obf_datasize.go           |  38 ++
- device/obf_datastring.go         |  29 ++
- device/obf_rand.go               |  39 ++
- device/obf_randchars.go          |  48 ++
- device/obf_randdigits.go         |  48 ++
- device/obf_timestamp.go          |  31 ++
- device/peer.go                   | 179 ++------
+ device/obf_golden_test.go        | 137 ----                  (nylon-only)
+ device/obf_test.go               | 158 -----                 (nylon-only)
+ device/peer.go                   | 206 ++----
  device/pools.go                  |  16 -
- device/queueconstants_android.go |   2 +-
- device/queueconstants_default.go |   2 +-
- device/receive.go                | 278 +++++++++---
- device/send.go                   | 450 +++++++++++------
- device/status.go                 |  47 --   (nylon-only)
+ device/queueconstants_android.go |   3 +-
+ device/queueconstants_default.go |   3 +-
+ device/queueconstants_ios.go     |   1 -
+ device/queueconstants_windows.go |   1 -
+ device/receive.go                | 158 +++--
+ device/send.go                   | 337 ++++------
+ device/status.go                 |  47 --                    (nylon-only)
  device/sticky_default.go         |   4 +-
  device/sticky_linux.go           |  34 +-
- device/timers.go                 | 156 +++++--
- device/traffic_control.go        | 217 -----  (nylon-only)
- device/traffic_manip.go          | 214 -----  (nylon-only)
- device/traffic_manip_test.go     |  41 --   (nylon-only)
+ device/timers.go                 | 150 ++++-
+ device/traffic_control.go        | 210 ------                (nylon-only)
+ device/traffic_manip.go          | 219 ------                (nylon-only)
+ device/traffic_manip_test.go     |  41 --                    (nylon-only)
  device/tun.go                    |  16 +-
- device/uapi.go                   | 504 ++++++++++++++++++---
- 37 files changed, 1976 insertions(+), 1174 deletions(-)
+ device/tunwrite.go               | 175 -----                 (nylon-only)
+ device/uapi.go                   | 279 ++++++--
 ```
 
-### A.6 nylon-local modifications (polyamide vs its base `ecfc5a8d`)
+The ported `obf*` family no longer shows up here (polyamide and amneziawg-go agree on it byte for
+byte); the surviving rows are the nylon traffic-control/datapath modification set (`send.go`,
+`uapi.go`, `peer.go`, `receive.go`, `device.go`) plus small per-file drift (module-path renames and
+the like). Recompute: `git diff --no-index --stat polyamide/device <amneziawg-go v3.1.20260814>/device`.
 
-24 files, +981/−318. New: `status.go` (47), `traffic_control.go` (217), `traffic_manip.go` (214),
-`traffic_manip_test.go` (41). Edited (line counts): `send.go` 241, `peer.go` 168, `receive.go` 126,
-`device.go` 55, `uapi.go` 67, `sticky_linux.go` 34, `tun.go` 16, `pools.go` 16, `timers.go` 13,
-`mobilequirks.go` 6, `noise-protocol.go` 6, `logger.go` 4, tests. No new UAPI case-keys were added
-by nylon (knob set identical to upstream).
+### A.6 polyamide vs its base `ecfc5a8d` — full fork delta
+
+43 files, +466/−3582 against wireguard-go `ecfc5a8d54462e18e13c72173e2623d16d8e25a0`. The first
+path is `polyamide/device`, so `−` = lines only polyamide has (nylon-local/ported code) and `+` =
+lines only upstream has; `→ /dev/null` = file present in polyamide but absent at the base rev — the
+ported `obf*` family plus the nylon-only files:
+
+```text
+ device/bind_test.go              |   2 +-
+ device/constants.go              |   1 -
+ device/cookie.go                 |   3 +-
+ device/cookie_test.go            |   2 +-
+ device/datapath_perf_test.go     | 748 --------------------- (fork-only)
+ device/device.go                 | 147 +---
+ device/device_test.go            |   8 +-
+ device/endpoint_test.go          |   4 -
+ device/keypair.go                |   2 +-
+ device/logger.go                 |   4 +-
+ device/mobilequirks.go           |   6 +-
+ device/noise-protocol.go         | 142 ++--
+ device/noise-types.go            | 108 ---
+ device/noise_test.go             |   4 +-
+ device/obf.go                    | 143 ----                  (fork-only)
+ device/obf_bytes.go              |  47 --                    (fork-only)
+ device/obf_data.go               |  25 -                     (fork-only)
+ device/obf_datasize.go           |  38 --                    (fork-only)
+ device/obf_datastring.go         |  29 -                     (fork-only)
+ device/obf_golden_test.go        | 137 ----                  (fork-only)
+ device/obf_rand.go               |  39 --                    (fork-only)
+ device/obf_randchars.go          |  48 --                    (fork-only)
+ device/obf_randdigits.go         |  48 --                    (fork-only)
+ device/obf_test.go               | 158 -----                 (fork-only)
+ device/obf_timestamp.go          |  31 -                     (fork-only)
+ device/peer.go                   | 205 ++----
+ device/pools.go                  |  16 -
+ device/queueconstants_android.go |   3 +-
+ device/queueconstants_default.go |   3 +-
+ device/queueconstants_ios.go     |   1 -
+ device/queueconstants_windows.go |   1 -
+ device/receive.go                | 254 +++----
+ device/send.go                   | 536 ++++-----------
+ device/status.go                 |  47 --                    (fork-only)
+ device/sticky_default.go         |   4 +-
+ device/sticky_linux.go           |  34 +-
+ device/timers.go                 |  19 +-
+ device/traffic_control.go        | 210 ------                (fork-only)
+ device/traffic_manip.go          | 219 ------                (fork-only)
+ device/traffic_manip_test.go     |  41 --                    (fork-only)
+ device/tun.go                    |  16 +-
+ device/tunwrite.go               | 175 -----                 (fork-only)
+ device/uapi.go                   | 340 +---------
+```
+
+No new UAPI case-keys were added by nylon itself: the fork's knob set matches the A.4 port source
+exactly (the 3.x-only keys are rejected in `handleDeviceLine`). Recompute:
+`git diff --no-index --stat polyamide/device <wireguard-go-at-ecfc5a8d>/device`.
 
 ---
 
