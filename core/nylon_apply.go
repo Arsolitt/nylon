@@ -61,7 +61,10 @@ func (n *Nylon) SyncApplicationState() error {
 		return err
 	}
 	ComputeRoutes(n.RouterState, n)
-	return n.SyncSystemState()
+	// OS-level work is handed to the applier goroutine: this function runs on
+	// the dispatch loop, which must never fork/exec `ip`.
+	n.requestSystemApply()
+	return nil
 }
 
 func normalizeCentralConfig(cfg *state.CentralCfg) (*state.CentralCfg, error) {
