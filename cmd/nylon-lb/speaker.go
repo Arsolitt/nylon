@@ -235,7 +235,7 @@ func (s *Speaker) desiredAnnounces() []announce {
 
 // serviceIngressIP extracts the single IPv4 address from a Service's
 // status.loadBalancer.ingress when it falls inside any configured pool, or
-// reports that there is nothing to announce: not a LoadBalancer Service, not
+// reports that the Service holds no allocated pool address: not a LoadBalancer Service, not
 // owned by this controller (a loadBalancerClass mismatch while --lb-class
 // scopes it — a foreign-class Service holding an in-pool address is another
 // controller's to announce), zero or ambiguous ingress entries, a non-IPv4

@@ -150,13 +150,15 @@ All metrics are exposed at `/metrics` on `--health-addr` with the `nylon_lb_` pr
 | --- | --- | --- | --- |
 | `nylon_lb_build_info` | gauge | `version`, `commit` | Build identification. |
 | `nylon_lb_leader` | gauge | `node` | 1 while this replica holds the allocator Lease. |
-| `nylon_lb_allocated_ips` | gauge | — | Addresses currently allocated. |
-| `nylon_lb_services` | gauge | — | LoadBalancer Services tracked. |
+| `nylon_lb_allocated_ips` | gauge | — | Pool addresses currently allocated to owned LoadBalancer Services (`status.loadBalancer.ingress`) — the VIPs this controller has handed out. |
+| `nylon_lb_services` | gauge | — | LoadBalancer Services owned by this controller. |
 | `nylon_lb_announces` | gauge | — | Active announcements. |
 | `nylon_lb_allocations_total` | counter | — | Address allocations. |
 | `nylon_lb_releases_total` | counter | — | Ingress clearances on type change or pool-annotation failure. |
 | `nylon_lb_announce_writes_total` | counter | — | Announce-file writes. |
 | `nylon_lb_errors_total` | counter | `kind` | Errors by kind: `bind`, `write`, `reconcile`, `list`, `glob`. |
+
+`nylon_lb_services` and `nylon_lb_allocated_ips` are cluster-wide: every replica derives them from the same Service informer cache and reports identical values, so aggregate them with `max`, never `sum`. Their difference is the number of managed Services still waiting for an address — a Service with a missing or unknown pool annotation, an exhausted pool, or a status write not yet observed.
 
 Note that `nylon_lb_releases_total` does not move when a Service is deleted: once the Service is gone from the lister there is no ingress left to clear, and the stale announce file is withdrawn by the speaker's garbage collection instead.
 
