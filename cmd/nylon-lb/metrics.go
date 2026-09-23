@@ -71,7 +71,7 @@ func (m *Metrics) Handler() http.Handler {
 			nil, float64(m.Announces.Load()))
 		p.Metric("nylon_lb_allocations_total", "Fresh load balancer ingress assignments since start.", "counter",
 			nil, float64(m.Allocations.Load()))
-		p.Metric("nylon_lb_releases_total", "Ingress clearances (Service deleted or no longer LoadBalancer) since start.", "counter",
+		p.Metric("nylon_lb_releases_total", "Ingress clearances since start: a Service stopped being a LoadBalancer or lost its pool selection (deletion is not one of them).", "counter",
 			nil, float64(m.Releases.Load()))
 		p.Metric("nylon_lb_announce_writes_total", "Successful announce-file writes since start.", "counter",
 			nil, float64(m.AnnounceWrites.Load()))
