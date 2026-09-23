@@ -119,6 +119,7 @@ type NodeSpec struct {
 	CentralConfigPath string
 	NodeConfigPath    string
 	ExtraArgs         []string
+	CPUs              float64 // container CPU limit in CPUs; 0 = unlimited
 }
 
 func (h *Harness) StartNodes(specs ...NodeSpec) {
@@ -127,12 +128,23 @@ func (h *Harness) StartNodes(specs ...NodeSpec) {
 	for _, spec := range specs {
 		go func(s NodeSpec) {
 			defer wg.Done()
-			h.StartNode(s.Name, s.IP, s.CentralConfigPath, s.NodeConfigPath, s.ExtraArgs...)
+			h.StartNodeSpec(s)
 		}(spec)
 	}
 	wg.Wait()
 }
+
+// StartNodeSpec starts a node from a full NodeSpec, including resource limits
+// that the positional StartNode entry point cannot carry.
+func (h *Harness) StartNodeSpec(spec NodeSpec) testcontainers.Container {
+	return h.startNode(spec.Name, spec.IP, spec.CentralConfigPath, spec.NodeConfigPath, spec.CPUs, spec.ExtraArgs...)
+}
+
 func (h *Harness) StartNode(name string, ip string, centralConfigPath, nodeConfigPath string, extraArgs ...string) testcontainers.Container {
+	return h.startNode(name, ip, centralConfigPath, nodeConfigPath, 0, extraArgs...)
+}
+
+func (h *Harness) startNode(name string, ip string, centralConfigPath, nodeConfigPath string, cpus float64, extraArgs ...string) testcontainers.Container {
 	h.t.Logf("Starting node %s at %s", name, ip)
 	req := testcontainers.ContainerRequest{
 		Image:    ImageName,
@@ -160,6 +172,9 @@ func (h *Harness) StartNode(name string, ip string, centralConfigPath, nodeConfi
 		HostConfigModifier: func(hostConfig *container.HostConfig) {
 			hostConfig.Privileged = true
 			hostConfig.CapAdd = []string{"NET_ADMIN"}
+			if cpus > 0 {
+				hostConfig.NanoCPUs = int64(cpus * 1e9)
+			}
 		},
 		EndpointSettingsModifier: func(m map[string]*network.EndpointSettings) {
 			if ip != "" {

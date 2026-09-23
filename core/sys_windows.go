@@ -77,3 +77,12 @@ func RemoveRoute(logger *slog.Logger, dev tun.Device, itfName string, route neti
 		return Exec(logger, "route", "delete", addr.String(), "mask", maskStr, "0.0.0.0", "IF", ifIndex)
 	}
 }
+
+func defaultSysApplyOps() SysApplyOps {
+	return SysApplyOps{
+		ConfigureAlias: ConfigureAlias,
+		RemoveAlias:    RemoveAlias,
+		ConfigureRoute: ConfigureRoute,
+		RemoveRoute:    RemoveRoute,
+	}
+}

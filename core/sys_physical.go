@@ -26,7 +26,7 @@ func NewWireGuardDevice(n *Nylon) (dev *device.Device, tunDevice tun.Device, rea
 	if n.NoTun {
 		tdev = tun.NewDummyDevice(itfName, mtu)
 	} else {
-		tdev, err = tun.CreateTUN(itfName, mtu)
+		tdev, err = tun.CreateTUNWithOptions(itfName, mtu, resolveTunOptions(&n.LocalCfg))
 		if err != nil {
 			return nil, nil, "", fmt.Errorf("failed to create TUN: %v. Check if an interface with the name nylon exists already", err)
 		}
@@ -34,6 +34,9 @@ func NewWireGuardDevice(n *Nylon) (dev *device.Device, tunDevice tun.Device, rea
 	realInterfaceName, err := tdev.Name()
 	if err == nil {
 		itfName = realInterfaceName
+	}
+	if mq, ok := tdev.(tun.MultiQueueDevice); ok {
+		n.Log.Info("TUN queues", "name", itfName, "queues", mq.QueueCount(), "txqueuelen", mq.TxQueueLen(), "backpressure", mq.Backpressure())
 	}
 
 	wgLog := n.Log.With("module", log.ScopePolyamide)

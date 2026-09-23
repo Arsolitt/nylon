@@ -97,7 +97,7 @@ func (device *Device) InstallFilter(filter TCFilter) {
 type TCState struct {
 	priority     [][]*TCElement
 	bouncePkts   []*TCElement
-	bounceBufs   [][]byte
+	bounceGroups [][]*TCElement // per-writer scratch, grown to the TUN queue count
 	elemsForPeer map[*Peer][]*TCElement
 }
 
@@ -105,7 +105,6 @@ func NewTCState() *TCState {
 	return &TCState{
 		priority:     make([][]*TCElement, TcMaxPriority+1),
 		bouncePkts:   make([]*TCElement, 0, conn.IdealBatchSize),
-		bounceBufs:   make([][]byte, 0, conn.IdealBatchSize),
 		elemsForPeer: make(map[*Peer][]*TCElement),
 	}
 }
@@ -161,21 +160,10 @@ func (device *Device) TCBatch(batch []*TCElement, tcs *TCState) {
 
 	// bounce packets back to the system
 	if len(tcs.bouncePkts) > 0 {
-		for _, elem := range tcs.bouncePkts {
-			tcs.bounceBufs = append(tcs.bounceBufs, elem.Buffer[:int(elem.Padding)+MessageTransportHeaderSize+len(elem.Packet)])
-		}
-		// here, we need to use elem.Buffer instead of elem.Packet since we will get io.ErrShortBuffer if offset < 4
-		_, err := device.tun.device.Write(tcs.bounceBufs, int(tcs.bouncePkts[0].Padding)+MessageTransportHeaderSize)
-		if err != nil && !device.isClosed() {
-			device.Log.Errorf("Failed to loop back packets to TUN device: %v", err)
-		}
-		for i, elem := range tcs.bouncePkts {
-			device.PutMessageBuffer(elem.Buffer)
-			device.PutTCElement(elem)
+		device.enqueueBounceWrite(tcs, tcs.bouncePkts)
+		for i := range tcs.bouncePkts {
 			tcs.bouncePkts[i] = nil
-			tcs.bounceBufs[i] = nil
 		}
-		tcs.bounceBufs = tcs.bounceBufs[:0]
 		tcs.bouncePkts = tcs.bouncePkts[:0]
 	}
 
@@ -210,7 +198,6 @@ func (device *Device) TCBatch(batch []*TCElement, tcs *TCState) {
 				elems[i] = nil
 			}
 			peer.StagePackets(obec)
-			peer.SendStagedPackets()
 		} else {
 			for i, elem := range elems {
 				device.PutMessageBuffer(elem.Buffer)

@@ -67,6 +67,17 @@ type Nylon struct {
 	Device        *device.Device
 	observability *observabilityServer
 
+	// system reconciliation (aliases and routes) runs off the dispatch loop
+	sysApply struct {
+		ops      SysApplyOps
+		requests chan sysApplyRequest // cap 1
+		outcomes chan sysApplyOutcome // cap 1
+		stop     chan struct{}
+		stopped  sync.WaitGroup
+		inFlight bool // touched only by the dispatch loop
+		pending  bool // touched only by the dispatch loop
+	}
+
 	// only used for debugging & tests
 	AuxConfig map[string]any
 
@@ -125,6 +136,16 @@ func NewNylon(ccfg state.CentralCfg, ncfg state.LocalCfg, logger *slog.Logger, c
 		EndpointResolver: state.NewEndpointResolver(dnsResolver),
 	}
 
+	// OS-level reconciliation runs on its own goroutine; dispatch only hands it
+	// the desired state, so a slow `ip` invocation never stalls the main loop.
+	n.sysApply.ops = defaultSysApplyOps()
+	if ops, ok := aux["sys_apply_ops"].(SysApplyOps); ok {
+		n.sysApply.ops = ops
+	}
+	n.sysApply.requests = make(chan sysApplyRequest, 1)
+	n.sysApply.outcomes = make(chan sysApplyOutcome, 1)
+	n.sysApply.stop = make(chan struct{})
+
 	if ncfg.DynamicPrefixesDir != "" {
 		// Load and inject dynamic prefixes before Init so the first
 		// reconcile sees the merged view (design §4.3). Never fails startup.
@@ -146,6 +167,9 @@ func NewNylon(ccfg state.CentralCfg, ncfg state.LocalCfg, logger *slog.Logger, c
 
 func (n *Nylon) Init() error {
 	n.Log.Debug("init nylon")
+
+	n.sysApply.stopped.Add(1)
+	go n.RoutineSystemApply()
 
 	err := n.Trace.Init(n)
 	if err != nil {
@@ -291,6 +315,18 @@ func (n *Nylon) mainLoop() error {
 				n.Log.Warn("dispatch took a long time!", "fun", runtime.FuncForPC(reflect.ValueOf(fun).Pointer()).Name(), "elapsed", elapsed, "len", len(n.DispatchChannel))
 			}
 			//n.Log.Debug("done", "elapsed", elapsed)
+		case out := <-n.sysApply.outcomes:
+			n.sysApply.inFlight = false
+			n.AppliedSystem.Aliases = out.appliedAliases
+			n.AppliedSystem.Routes = out.appliedRoutes
+			if out.err != nil {
+				n.Log.Warn("runtime reconciliation incomplete; will retry", "err", out.err)
+				n.sysApply.pending = true
+			}
+			if n.sysApply.pending {
+				n.sysApply.pending = false
+				n.requestSystemApply()
+			}
 		case <-n.Context.Done():
 			goto endLoop
 		}
@@ -322,6 +358,12 @@ func (n *Nylon) Cleanup() error {
 	if err := n.Trace.Cleanup(); err != nil {
 		n.Log.Error("cleanup trace failed", "error", err)
 	}
+
+	// Stop the system applier before tearing down the routes below so that the
+	// removal sees a settled AppliedSystem state and no reconciliation can
+	// overwrite it mid-shutdown.
+	close(n.sysApply.stop)
+	n.sysApply.stopped.Wait()
 
 	return n.cleanupWireGuard()
 }

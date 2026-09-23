@@ -24,6 +24,9 @@ interface_name: "" # override the interface name (default: "nylon", or utunX on 
 dns_resolvers: [] # DNS servers for nylon's own lookups, e.g. ["1.1.1.1:53"]
 observability_addr: "" # e.g. "0.0.0.0:9090"; enables /metrics, /healthz, /readyz, and /discovery
 mtu: 1420 # TUN interface MTU (omit for the device default 1420)
+tun_queues: 4 # TUN queues drained in parallel (default: min(CPU count, 4)); Linux only
+tun_txqueuelen: 10000 # kernel tx queue length per TUN queue (default: 10000; 0 = kernel default 500)
+tun_backpressure: false # request IFF_BACKPRESSURE (default: false; requires kernel >= 6.15)
 dynamic_prefixes_dir: "" # directory watched for dynamic prefix JSON files, e.g. /etc/nylon/prefixes.d (empty = disabled)
 
 # Bootstrap: fetch central.yaml from a remote bundle on first start
@@ -43,6 +46,8 @@ post_up:
   - iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -d 192.168.0.0/24 -j MASQUERADE
 post_down: []
 ```
+
+The `tun_*` fields size the TUN datapath and apply on Linux only; every other platform keeps the single-queue path. `tun_queues` drains the interface from several queues in parallel — the kernel steers each flow to one queue, so per-flow packet order is preserved and more queues mean more CPU parallelism for the drain. `tun_txqueuelen` is the kernel burst buffer the daemon reads from (one packet per unit, roughly 1.4 KB of kernel memory per queue at MTU 1420); it is programmed at interface creation and only takes effect when more than one queue is created. `tun_backpressure` asks the kernel to stop dropping when a queue is full and let the qdisc queue instead, trading dropped packets for added latency; it needs kernel >= 6.15 and is otherwise a silent no-op. Both counts are validated when the config is loaded: `tun_queues` must be 1–32 and `tun_txqueuelen` 0–1048576.
 
 When you set `dynamic_prefixes_dir`, the nylon daemon watches that directory and announces prefixes from JSON files that local writers (scripts, Kubernetes sidecars, the nylon-lb agent) place there. See [Dynamic Prefixes](/reference/dynamic-prefixes) for the file contract.
 

@@ -15,6 +15,7 @@ var (
 	QueueOutboundSize                 = 1024
 	QueueInboundSize                  = 1024
 	QueueHandshakeSize                = 1024
+	QueueWriteSize                    = 32 // bounce packets handed to a TUN writer before dropping
 	PreallocatedBuffersPerPool uint32 = 1024
 )
 

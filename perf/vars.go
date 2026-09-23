@@ -5,6 +5,7 @@ import (
 	"expvar"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/encodeous/metric"
 )
@@ -13,6 +14,8 @@ var (
 	DispatchLatency     = metric.NewHistogram("1m1s")
 	SendBatchSize       = metric.NewHistogram("10s1s")
 	RecvBatchSize       = metric.NewHistogram("10s1s")
+	TunReadBatchSize    = metric.NewHistogram("10s1s")
+	TunWriteBatchSize   = metric.NewHistogram("10s1s")
 	SendsPerSecond      = metric.NewCounter("10s1s")
 	RecvsPerSecond      = metric.NewCounter("10s1s")
 	SentPacketPerSecond = metric.NewCounter("10s1s")
@@ -21,11 +24,19 @@ var (
 	RecvBytesPerSecond  = metric.NewCounter("10s1s")
 )
 
+// Monotonic totals of packets lost inside the TUN datapath. They are exported
+// as counters, unlike the windowed rates above.
+var (
+	TunStagedDropsTotal     atomic.Uint64 // reader -> per-peer staged handoff, drop-oldest evictions (packets)
+	TunWriteQueueDropsTotal atomic.Uint64 // bounce -> TUN writer handoff, queue full (packets)
+	TunKernelTxDroppedTotal atomic.Uint64 // /sys/class/net/<iface>/statistics/tx_dropped, last sample
+)
+
 // Sample is a single Prometheus sample derived from the live perf counters.
 type Sample struct {
 	Name   string
 	Help   string
-	Type   string // always "gauge": windowed rates are NOT monotonic
+	Type   string // gauge for windowed values, counter for monotonic totals
 	Labels map[string]string
 	Value  float64
 }
@@ -44,6 +55,8 @@ var perfHistograms = []struct {
 	{"nylon_perf_dispatch_latency_us", "Windowed main-loop dispatch latency in microseconds.", DispatchLatency},
 	{"nylon_perf_send_batch_size", "Windowed number of packets per send batch.", SendBatchSize},
 	{"nylon_perf_recv_batch_size", "Windowed number of packets per receive batch.", RecvBatchSize},
+	{"nylon_perf_tun_read_batch_size", "Packets per TUN read call.", TunReadBatchSize},
+	{"nylon_perf_tun_write_batch_size", "Packets per TUN write call.", TunWriteBatchSize},
 }
 
 var perfCounters = []struct {
@@ -59,9 +72,32 @@ var perfCounters = []struct {
 	{"nylon_perf_recv_bytes_per_second", "Bytes received per second (10s windowed).", RecvBytesPerSecond},
 }
 
+// totalVar exposes a monotonic atomic total on the metrics page. The metric
+// handler only renders expvar values that implement metric.Metric, so a plain
+// expvar.Func would not show up there.
+type totalVar struct{ v *atomic.Uint64 }
+
+func (t totalVar) Add(n float64) { t.v.Add(uint64(n)) }
+
+func (t totalVar) String() string { return strconv.FormatUint(t.v.Load(), 10) }
+
+func (t totalVar) MarshalJSON() ([]byte, error) {
+	return []byte(`{"type":"c","count":` + strconv.FormatUint(t.v.Load(), 10) + `}`), nil
+}
+
+var perfTotals = []struct {
+	name string
+	help string
+	v    *atomic.Uint64
+}{
+	{"nylon_tun_staged_drops_total", "Packets evicted from a per-peer staged queue because they were too old.", &TunStagedDropsTotal},
+	{"nylon_tun_write_queue_drops_total", "Bounce packets dropped because the target TUN writer queue was full.", &TunWriteQueueDropsTotal},
+	{"nylon_tun_kernel_tx_dropped_total", "Kernel tx_dropped counter of the TUN interface (last sample, resets with the interface).", &TunKernelTxDroppedTotal},
+}
+
 // Snapshot converts the live counters via String() into Prometheus samples.
 func Snapshot() []Sample {
-	samples := make([]Sample, 0, len(perfHistograms)*3+len(perfCounters))
+	samples := make([]Sample, 0, len(perfHistograms)*3+len(perfCounters)+len(perfTotals))
 	for _, h := range perfHistograms {
 		var q quantiles
 		if err := json.Unmarshal([]byte(h.m.String()), &q); err != nil {
@@ -96,6 +132,14 @@ func Snapshot() []Sample {
 			Value: value,
 		})
 	}
+	for _, t := range perfTotals {
+		samples = append(samples, Sample{
+			Name:  t.name,
+			Help:  t.help,
+			Type:  "counter",
+			Value: float64(t.v.Load()),
+		})
+	}
 	return samples
 }
 
@@ -111,4 +155,10 @@ func init() {
 	expvar.Publish("nylon:SentBytes/s", SentBytesPerSecond)
 	expvar.Publish("nylon:RecvBytes/s", RecvBytesPerSecond)
 	expvar.Publish("nylon:DispatchLatency (µs)", DispatchLatency)
+
+	expvar.Publish("tun:readBatchSize", TunReadBatchSize)
+	expvar.Publish("tun:writeBatchSize", TunWriteBatchSize)
+	expvar.Publish("tun:stagedDrops", totalVar{&TunStagedDropsTotal})
+	expvar.Publish("tun:writeQueueDrops", totalVar{&TunWriteQueueDropsTotal})
+	expvar.Publish("tun:kernelTxDropped", totalVar{&TunKernelTxDroppedTotal})
 }

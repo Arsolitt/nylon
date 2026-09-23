@@ -4,15 +4,13 @@ import (
 	"bufio"
 	"cmp"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"net/netip"
-	"runtime"
 	"slices"
 	"strings"
 
 	"github.com/encodeous/nylon/polyamide/conn"
 	"github.com/encodeous/nylon/polyamide/device"
+	"github.com/encodeous/nylon/polyamide/tun"
 	"github.com/encodeous/nylon/state"
 )
 
@@ -22,6 +20,21 @@ func resolveMTU(cfg *state.LocalCfg) int {
 		return int(*cfg.MTU)
 	}
 	return device.DefaultMTU
+}
+
+// resolveTunOptions returns the configured TUN link options or the defaults.
+func resolveTunOptions(cfg *state.LocalCfg) tun.CreateOptions {
+	opts := tun.DefaultCreateOptions()
+	if cfg.TunQueues != nil {
+		opts.Queues = *cfg.TunQueues
+	}
+	if cfg.TunTxQueueLen != nil {
+		opts.TxQueueLen = *cfg.TunTxQueueLen
+	}
+	if cfg.TunBackpressure != nil {
+		opts.Backpressure = *cfg.TunBackpressure
+	}
+	return opts
 }
 
 // obfDeviceIPC renders the device-level AWG 2.0 UAPI knobs for the active
@@ -133,13 +146,17 @@ listen_port=%d
 		}
 	}
 
-	// schedule application state reconciliation
+	// schedule application state reconciliation: the periodic tick re-applies
+	// wireguard endpoints and recomputes routes, then hands the OS-level route
+	// and alias programming to the applier goroutine
 	n.RepeatTask(func() error {
 		if err := n.SyncApplicationState(); err != nil {
 			n.Log.Warn("runtime reconciliation incomplete; will retry", "err", err)
 		}
 		return nil
 	}, n.ProbeDelay)
+
+	n.startTunStatsPolling()
 
 	return nil
 }
@@ -280,89 +297,4 @@ func (n *Nylon) syncWireGuardEndpoints() error {
 	}
 
 	return nil
-}
-
-func (n *Nylon) SyncSystemState() error {
-	if n.NoNetConfigure || n.NoTun {
-		return nil
-	}
-	return errors.Join(n.syncAliases(), n.syncSystemRoutes())
-}
-
-func (n *Nylon) syncAliases() error {
-	desired := n.GetRouter(n.LocalCfg.Id).Addresses
-	applied := slices.Clone(n.AppliedSystem.Aliases)
-	var syncErr error
-	// we must first add the new alias before removing the old ones, else the system might flush our routes
-	for _, newEntry := range desired {
-		if !slices.Contains(applied, newEntry) {
-			n.Log.Debug("installing alias", "addr", newEntry.String())
-			err := ConfigureAlias(n.Log, n.Interface, newEntry)
-			if err != nil {
-				n.Log.Error("failed to configure alias", "err", err)
-				syncErr = errors.Join(syncErr, fmt.Errorf("install alias %s: %w", newEntry, err))
-				continue
-			}
-			applied = append(applied, newEntry)
-		}
-	}
-	hadAliases := len(applied) != 0
-	for _, oldEntry := range slices.Clone(applied) {
-		if !slices.Contains(desired, oldEntry) {
-			n.Log.Debug("removing old alias", "addr", oldEntry.String())
-			err := RemoveAlias(n.Log, n.Interface, oldEntry)
-			if err != nil {
-				n.Log.Error("failed to remove alias", "err", err)
-				syncErr = errors.Join(syncErr, fmt.Errorf("remove alias %s: %w", oldEntry, err))
-				continue
-			}
-			applied = slices.DeleteFunc(applied, func(addr netip.Addr) bool {
-				return addr == oldEntry
-			})
-		}
-	}
-	// special case for linux: if all aliases are removed, the kernel will also flush the routes
-	if hadAliases && len(applied) == 0 && runtime.GOOS == "linux" {
-		n.AppliedSystem.Routes = nil
-	}
-	n.AppliedSystem.Aliases = applied
-	return syncErr
-}
-
-func (n *Nylon) syncSystemRoutes() error {
-	newEntries := n.ComputeSysRouteTable()
-	applied := slices.Clone(n.AppliedSystem.Routes)
-	var syncErr error
-	// Install new routes before removing old ones so a partial reconciliation
-	// preserves as much connectivity as possible.
-	for _, newEntry := range newEntries {
-		if !slices.Contains(applied, newEntry) {
-			// install route
-			n.Log.Debug("installing new route", "prefix", newEntry.String())
-			err := ConfigureRoute(n.Log, n.Tun, n.Interface, newEntry)
-			if err != nil {
-				n.Log.Error("failed to configure route", "err", err)
-				syncErr = errors.Join(syncErr, fmt.Errorf("install route %s: %w", newEntry, err))
-				continue
-			}
-			applied = append(applied, newEntry)
-		}
-	}
-	for _, oldEntry := range slices.Clone(applied) {
-		if !slices.Contains(newEntries, oldEntry) {
-			// uninstall route
-			n.Log.Debug("removing old route", "prefix", oldEntry.String())
-			err := RemoveRoute(n.Log, n.Tun, n.Interface, oldEntry)
-			if err != nil {
-				n.Log.Error("failed to remove route", "err", err)
-				syncErr = errors.Join(syncErr, fmt.Errorf("remove route %s: %w", oldEntry, err))
-				continue
-			}
-			applied = slices.DeleteFunc(applied, func(prefix netip.Prefix) bool {
-				return prefix == oldEntry
-			})
-		}
-	}
-	n.AppliedSystem.Routes = applied
-	return syncErr
 }

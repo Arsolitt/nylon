@@ -46,3 +46,12 @@ func ConfigureRoute(logger *slog.Logger, dev tun.Device, itfName string, route n
 func RemoveRoute(logger *slog.Logger, dev tun.Device, itfName string, route netip.Prefix) error {
 	return Exec(logger, "ip", "route", "del", route.String(), "dev", itfName)
 }
+
+func defaultSysApplyOps() SysApplyOps {
+	return SysApplyOps{
+		ConfigureAlias: ConfigureAlias,
+		RemoveAlias:    RemoveAlias,
+		ConfigureRoute: ConfigureRoute,
+		RemoveRoute:    RemoveRoute,
+	}
+}

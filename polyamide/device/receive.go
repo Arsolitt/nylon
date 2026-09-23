@@ -510,7 +510,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			if peer.ReceivedWithKeypair(elem.keypair) {
 				peer.SetEndpointFromPacket(elem.endpoint)
 				peer.timersHandshakeComplete()
-				peer.SendStagedPackets()
+				peer.notifyStaged()
 			}
 			rxBytesLen += uint64(len(elem.packet) + MinMessageSize)
 			rxPkts++

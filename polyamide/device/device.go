@@ -69,6 +69,9 @@ type Device struct {
 	indexTable    IndexTable
 	cookieChecker CookieChecker
 
+	// nextWriteIndex round-robins new peers over the TUN writer queues.
+	nextWriteIndex atomic.Uint32
+
 	pool struct {
 		inboundElementsContainer  *WaitPool
 		outboundElementsContainer *WaitPool
@@ -85,8 +88,12 @@ type Device struct {
 	}
 
 	tun struct {
-		device tun.Device
-		mtu    atomic.Int32
+		device  tun.Device
+		multi   tun.MultiQueueDevice // non-nil when the device exposes multiple queues
+		queues  int                  // reader/writer count, >= 1
+		writers []*tunWriteQueue     // one per queue
+		wg      sync.WaitGroup       // TUN writer goroutines
+		mtu     atomic.Int32
 	}
 
 	ipcMutex   sync.RWMutex
@@ -368,9 +375,28 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 		go device.RoutineHandshake(i + 1)
 	}
 
-	device.state.stopping.Add(1)      // RoutineReadFromTUN
-	device.queue.encryption.wg.Add(1) // RoutineReadFromTUN
-	go device.RoutineReadFromTUN()
+	if mq, ok := tunDevice.(tun.MultiQueueDevice); ok && mq.QueueCount() > 1 {
+		device.tun.multi = mq
+		device.tun.queues = mq.QueueCount()
+	}
+	if device.tun.queues == 0 {
+		device.tun.queues = 1
+	}
+
+	device.state.stopping.Add(device.tun.queues)      // RoutineReadFromTUN
+	device.queue.encryption.wg.Add(device.tun.queues) // RoutineReadFromTUN
+	for q := range device.tun.queues {
+		go device.RoutineReadFromTUN(q)
+	}
+
+	device.tun.writers = make([]*tunWriteQueue, device.tun.queues)
+	for q := range device.tun.queues {
+		wq := newTunWriteQueue()
+		device.tun.writers[q] = wq
+		device.tun.wg.Add(1)
+		go device.RoutineTUNWriter(q, wq)
+	}
+
 	go device.RoutineTUNEventReader()
 
 	return device
@@ -453,6 +479,10 @@ func (device *Device) Close() {
 	// Remove peers before closing queues,
 	// because peers assume that queues are active.
 	device.RemoveAllPeers()
+
+	// The TUN writers only hold references to pooled memory; they must be
+	// stopped and drained before the device's pools go out of reach.
+	device.closeTunWriters()
 
 	// We kept a reference to the encryption and decryption queues,
 	// in case we started any new peers that might write to them.
