@@ -146,9 +146,19 @@ Version stamping works through `internal/buildinfo`: the defaults are `Version='
 
 ## Demo Tooling
 
-The `demo/` directory packages a self-contained mesh stand for demos and screenshots:
+The `demo/` directory packages a self-contained mesh stand (alice, bob, charlie) plus the recorder that produces the demo assets used by this site. Both entry points need only Docker with Compose v2 and `python3` — everything else runs inside the image:
 
-- **`demo/docker-compose.yml`** — brings up a 3-node nylon mesh on `172.31.0.10`–`172.31.0.12` with one command.
-- **`demo/record.sh`** — records the routing-recovery GIF end to end. It builds the debug image, generates fresh keys and configs into `demo/configs/`, starts the 3-node compose stand, cuts the `alice`–`charlie` link with `iptables` to force a reroute, and arranges a `tmux` layout running `mtr` and `ping` so the failover is visible. Requires Docker Compose v2 plus `python3`.
+```bash
+./demo/up.sh      # stand up and leave it running
+./demo/record.sh  # record the failover assets into docs/assets/
+```
 
-Run it when you want a reproducible, visual proof that rerouting works — no cluster or manual setup needed.
+- **`demo/lib.sh`** — shared helpers: paths, the `docker compose` wrapper, subnet picking (a free `10.2xx.y.0/24` from the same pool the e2e harness uses) and the next-hop query against the daemon's own route table.
+- **`demo/generate-configs.sh`** — writes `demo/.env`, three keypairs and the central/node configs, then validates them with `nylon verify`. Idempotent; `--force` regenerates.
+- **`demo/up.sh`** — the documented one command: configs, `docker compose up`, then a bounded wait until alice really reaches charlie through the mesh. Prints the next hop per node and leaves the stand running.
+- **`demo/record.sh`** — records the failover end to end: a 140x35 `tmux` layout running `mtr`, `ping`, alice's forwarding table and the story pane, recorded with asciinema, converted with `agg` and installed into `docs/assets/demo.{cast,gif}`. `--no-install` keeps the files in `demo/output/`.
+- **`demo/panes/`** — the four pane scripts, copied into the container by the recorder. The story pane cuts the `alice`–`charlie` link with `iptables`, then asserts each transition by polling alice's route table — a `PASS` line per step, and a run that never observed the reroute fails instead of printing a success.
+
+Three properties of the stand are worth knowing before changing it. Alice's link to bob is shaped to 20ms (`pre_up` in the generated `alice.yaml`), because on a docker bridge every link measures the same sub-millisecond latency with comparable jitter — without the shaping the mesh re-selects routes on noise and the failover timing is a coin flip. The stand is then warmed up with one cut/restore cycle before anything is recorded (`warm_up` in `lib.sh`, also run by `up.sh`), because the algorithm only accepts the backup route while the mesh reconverges: a cold mesh can otherwise sit without it and turn a ~6s reroute into a ~45s one. And the story pane asserts that state itself — it waits for the direct route and for bob advertising `10.99.0.3/32` before cutting anything.
+
+The recorder is the gate: a green run proves the reroute happened and leaves the assets the README and the [docs landing page](/) render. Tear the stand down with `docker compose --env-file demo/.env -f demo/docker-compose.yml -p nylon-demo down --remove-orphans`.
