@@ -30,15 +30,26 @@ func ctrlHarness(t *testing.T, pools *PoolSet) (*fake.Clientset, *record.FakeRec
 // scoping the controller to Services carrying that spec.loadBalancerClass.
 func ctrlHarnessWithClass(t *testing.T, pools *PoolSet, lbClass string) (*fake.Clientset, *record.FakeRecorder, func()) {
 	t.Helper()
+	cs, recorder, cancel, _ := ctrlHarnessMetrics(t, pools, lbClass)
+	return cs, recorder, cancel
+}
+
+// ctrlHarnessMetrics is the full harness: on top of ctrlHarnessWithClass it
+// installs a Metrics set and runs the cluster-state metrics observer, and
+// returns the metrics for assertions.
+func ctrlHarnessMetrics(t *testing.T, pools *PoolSet, lbClass string) (*fake.Clientset, *record.FakeRecorder, func(), *Metrics) {
+	t.Helper()
 	cs := fake.NewSimpleClientset()
 	recorder := record.NewFakeRecorder(64)
 	factory := informers.NewSharedInformerFactory(cs, 100*time.Millisecond)
+	metrics := NewMetrics("test-node")
 	controller := NewController(ControllerOptions{
 		Client:   cs,
 		Factory:  factory,
 		Pools:    pools,
 		LBClass:  lbClass,
 		Recorder: recorder,
+		Metrics:  metrics,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -50,8 +61,9 @@ func ctrlHarnessWithClass(t *testing.T, pools *PoolSet, lbClass string) (*fake.C
 		}
 	}
 	go func() { _ = controller.Run(ctx) }()
+	go func() { _ = controller.RunStateMetrics(ctx) }()
 	t.Cleanup(cancel)
-	return cs, recorder, cancel
+	return cs, recorder, cancel, metrics
 }
 
 // mustPoolSet parses specs of the form name=cidr into a PoolSet, failing
@@ -518,4 +530,60 @@ func TestControllerLoadBalancerIPOutsideSelectedPool(t *testing.T) {
 
 	ctrlAwaitEvent(t, rec, "BadLoadBalancerIP")
 	ctrlAwaitIngress(t, cs, "web", "198.51.100.1")
+}
+
+// The cluster-state gauges track the cluster, not this process's own writes:
+// owned Services count toward nylon_lb_services whether or not they have an
+// address, an owned Service with a settled pool ingress contributes to
+// nylon_lb_allocated_ips, and foreign classes, releases and deletions move
+// the numbers.
+func TestControllerStateMetricsTrackClusterState(t *testing.T) {
+	cs, rec, _, metrics := ctrlHarnessMetrics(t, mustPoolSet(t), "nylon")
+
+	awaitGauges := func(services, allocated int64) {
+		t.Helper()
+		assert.Eventually(t, func() bool {
+			return metrics.Services.Load() == services && metrics.AllocatedIPs.Load() == allocated
+		}, 5*time.Second, 50*time.Millisecond, "services/allocated_ips gauges, want %d/%d", services, allocated)
+	}
+
+	// An owned Service with a valid pool annotation settles at the pool's
+	// lowest free address: one managed Service, one allocated address.
+	_, err := cs.CoreV1().Services("default").Create(context.Background(),
+		ctrlService("web", ctrlWithClass("nylon"), ctrlWithPool("test")), metav1.CreateOptions{})
+	require.NoError(t, err)
+	ctrlAwaitIngress(t, cs, "web", "192.0.2.1")
+	awaitGauges(1, 1)
+
+	// A Service that fails closed (no pool annotation) is still an owned
+	// Service: it appears as the services-minus-allocated gap, not as silence.
+	_, err = cs.CoreV1().Services("default").Create(context.Background(),
+		ctrlService("bare", ctrlWithClass("nylon")), metav1.CreateOptions{})
+	require.NoError(t, err)
+	ctrlAwaitEvent(t, rec, "MissingPoolAnnotation")
+	awaitGauges(2, 1)
+
+	// A foreign-class Service holding an in-pool address and requesting
+	// another one counts in neither gauge.
+	foreign := ctrlService("foreign", ctrlWithClass("other"))
+	foreign.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "192.0.2.5"}}
+	foreign.Spec.LoadBalancerIP = "192.0.2.6"
+	_, err = cs.CoreV1().Services("default").Create(context.Background(), foreign, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	// Stripping web's annotation releases its address; the release event is
+	// also the sync point that proves the foreign Service is not counted —
+	// its in-pool ingress and its request would otherwise hold allocated at 1.
+	svc, err := cs.CoreV1().Services("default").Get(context.Background(), "web", metav1.GetOptions{})
+	require.NoError(t, err)
+	updated := svc.DeepCopy()
+	delete(updated.Annotations, PoolAnnotation)
+	_, err = cs.CoreV1().Services("default").Update(context.Background(), updated, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	ctrlAwaitIngress(t, cs, "web")
+	awaitGauges(2, 0)
+
+	// Deleting an owned Service drops it from both gauges immediately.
+	require.NoError(t, cs.CoreV1().Services("default").Delete(context.Background(), "bare", metav1.DeleteOptions{}))
+	awaitGauges(1, 0)
 }

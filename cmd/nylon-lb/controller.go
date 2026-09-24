@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	informers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -70,6 +71,10 @@ type Controller struct {
 	// svcSynced closes over the service informer's HasSynced; Run blocks on it.
 	svcSynced cache.InformerSynced
 
+	// stateTrigger wakes RunStateMetrics after a Service event; capacity 1 so
+	// a burst of events coalesces into at most one pending refresh.
+	stateTrigger chan struct{}
+
 	// ctx is captured at Run startup, before any worker goroutine exists, so
 	// reconcile can bind API calls to the controller lifetime. It is never
 	// written again afterwards.
@@ -97,15 +102,16 @@ func NewController(opts ControllerOptions) *Controller {
 	}
 	svcInformer := opts.Factory.Core().V1().Services()
 	c := &Controller{
-		client:    opts.Client,
-		factory:   opts.Factory,
-		pools:     opts.Pools,
-		lbClass:   opts.LBClass,
-		recorder:  opts.Recorder,
-		logger:    logger,
-		metrics:   opts.Metrics,
-		queue:     workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
-		svcSynced: svcInformer.Informer().HasSynced,
+		client:       opts.Client,
+		factory:      opts.Factory,
+		pools:        opts.Pools,
+		lbClass:      opts.LBClass,
+		recorder:     opts.Recorder,
+		logger:       logger,
+		metrics:      opts.Metrics,
+		queue:        workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
+		svcSynced:    svcInformer.Informer().HasSynced,
+		stateTrigger: make(chan struct{}, 1),
 	}
 	_, err := svcInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: c.enqueue,
@@ -135,6 +141,7 @@ func (c *Controller) enqueue(obj interface{}) {
 		return
 	}
 	c.queue.Add(key)
+	c.wakeStateMetrics()
 }
 
 // enqueueDeleted is the delete-side handler; DeletionHandlingMetaNamespaceKeyFunc
@@ -147,6 +154,7 @@ func (c *Controller) enqueueDeleted(obj interface{}) {
 		return
 	}
 	c.queue.Add(key)
+	c.wakeStateMetrics()
 }
 
 // Run blocks until ctx is done: it waits for the informer cache to sync, then
@@ -169,6 +177,75 @@ func (c *Controller) Run(ctx context.Context) error {
 	<-ctx.Done()
 	c.logger.Info("stopping load balancer allocator")
 	return nil
+}
+
+// RunStateMetrics blocks until ctx is done, maintaining the cluster-wide
+// allocation gauges from the Service informer cache: nylon_lb_services and
+// nylon_lb_allocated_ips describe the cluster, not this process's own
+// actions, so EVERY replica runs this loop (never leader-elected) and reports
+// the same values — a leader change or restart must not zero or freeze them.
+// The caller owns factory.Start; this waits for the cache itself. Always
+// returns nil on ctx cancellation.
+func (c *Controller) RunStateMetrics(ctx context.Context) error {
+	if c.metrics == nil {
+		return nil
+	}
+	if !cache.WaitForCacheSync(ctx.Done(), c.svcSynced) {
+		return ctx.Err()
+	}
+	c.refreshStateMetrics()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-c.stateTrigger:
+			c.refreshStateMetrics()
+		}
+	}
+}
+
+// refreshStateMetrics recomputes both cluster-wide gauges from the informer
+// cache. Every Service owned by this controller counts toward
+// nylon_lb_services, allocated or not; every owned Service whose status holds
+// exactly one IPv4 address inside a configured pool counts its address toward
+// nylon_lb_allocated_ips (serviceIngressIP — the allocator's output, which
+// does not consult the annotation that produced it). The difference between
+// the two gauges is the number of owned Services still waiting for an
+// address, which is what makes a fail-closed Service (missing or unknown pool
+// annotation, exhausted pool, status write not yet observed) visible in the
+// metrics instead of silent. A lister failure leaves the previous values in
+// place and counts as a "list" error, matching the speaker's handling.
+func (c *Controller) refreshStateMetrics() {
+	services, err := c.factory.Core().V1().Services().Lister().List(labels.Everything())
+	if err != nil {
+		c.logger.Warn("listing services for state metrics", "error", err)
+		c.metrics.addError("list")
+		return
+	}
+	owned := 0
+	allocated := make(map[netip.Addr]struct{})
+	for _, svc := range services {
+		if !ownsService(svc, c.lbClass) {
+			continue
+		}
+		owned++
+		if ip, ok := serviceIngressIP(svc, c.pools, c.lbClass); ok {
+			allocated[ip] = struct{}{}
+		}
+	}
+	c.metrics.Services.Store(int64(owned))
+	c.metrics.AllocatedIPs.Store(int64(len(allocated)))
+}
+
+// wakeStateMetrics nudges the state-metrics loop from an informer event
+// without ever blocking the informer's delivery goroutine. The loop re-reads
+// the cache, so a burst collapsing into at most one pending refresh loses
+// nothing.
+func (c *Controller) wakeStateMetrics() {
+	select {
+	case c.stateTrigger <- struct{}{}:
+	default:
+	}
 }
 
 // runWorker drains the queue until it shuts down.
@@ -348,13 +425,9 @@ func (c *Controller) assignIngress(ctx context.Context, key, ns, name string, se
 		return err
 	}
 	taken := make(map[netip.Addr]struct{})
-	lbServices := 0
 	var svc *corev1.Service
 	for i := range list.Items {
 		s := &list.Items[i]
-		if ownsService(s, c.lbClass) {
-			lbServices++
-		}
 		if s.Namespace == ns && s.Name == name {
 			svc = s
 			// The target's own requested address is not "taken by
@@ -424,8 +497,6 @@ func (c *Controller) assignIngress(ctx context.Context, key, ns, name string, se
 		return err
 	}
 	if c.metrics != nil {
-		c.metrics.AllocatedIPs.Store(int64(len(taken)))
-		c.metrics.Services.Store(int64(lbServices))
 		c.metrics.Allocations.Add(1)
 	}
 	if candidate.IsValid() {

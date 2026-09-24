@@ -86,16 +86,21 @@ version/commit stamped at link time (see `Makefile` `-ldflags`).
 |---|---|---|---|
 | `nylon_lb_build_info` | gauge | `version`, `commit` | Build stamp; always `1`. |
 | `nylon_lb_leader` | gauge | `node` | `1` while this replica holds the allocator Lease. |
-| `nylon_lb_allocated_ips` | gauge | — | Distinct pool addresses currently claimed by Service ingress or `spec.loadBalancerIP`, across all pools. |
+| `nylon_lb_allocated_ips` | gauge | — | Distinct pool addresses currently held by owned Services' `status.loadBalancer.ingress` — the VIPs this controller has handed out. |
 | `nylon_lb_services` | gauge | — | `type=LoadBalancer` Services owned by this controller (empty `--lb-class`: all of them). |
 | `nylon_lb_announces` | gauge | — | LoadBalancer /32s this node currently announces. |
 | `nylon_lb_allocations_total` | counter | — | Fresh ingress assignments since start. |
-| `nylon_lb_releases_total` | counter | — | Ingress clearances (Service deleted or no longer LoadBalancer) since start. |
+| `nylon_lb_releases_total` | counter | — | Ingress clearances since start: a Service stopped being a LoadBalancer or lost a valid pool selection (missing/unknown annotation). A deleted Service is not counted — there is nothing left to clear; the speaker's garbage collection withdraws its announce. |
 | `nylon_lb_announce_writes_total` | counter | — | Successful announce-file writes since start. |
 | `nylon_lb_errors_total` | counter | `kind` | Failed operations since start; `kind` is one of `bind` (address bind failure), `write` (announce-file write failure), `reconcile` (Service reconcile error), `list` (informer lister failure), `glob` (announce-file glob failure). |
 
-Gauges refresh on each successful reconcile pass; `nylon_lb_leader` only
-ever becomes `1` on the leader-elected allocator replica.
+`nylon_lb_services` and `nylon_lb_allocated_ips` are cluster-wide and every
+replica reports the same values (they are read off the Service informer
+cache, not off this replica's own actions); subtracting them yields the
+number of managed Services still waiting for an address — a missing or
+unknown `nylon.io/lb-pool` annotation, an exhausted pool, or a status write
+not yet observed. `nylon_lb_leader` only ever becomes `1` on the
+leader-elected allocator replica.
 
 ## Deployment
 

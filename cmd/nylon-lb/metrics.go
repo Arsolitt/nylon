@@ -13,9 +13,9 @@ import (
 // *Metrics and treat nil as "metrics disabled", so every hook nil-checks
 // before recording.
 type Metrics struct {
-	// Gauges: current state, overwritten on every successful reconcile.
+	// Gauges: current state; each has exactly one writer: Leader by the allocator elector, AllocatedIPs/Services by RunStateMetrics, Announces by the speaker.
 	Leader       atomic.Int64 // 1 while this replica holds the allocator Lease
-	AllocatedIPs atomic.Int64 // distinct in-pool addresses claimed by Services
+	AllocatedIPs atomic.Int64 // distinct in-pool addresses held by owned Services
 	Services     atomic.Int64 // type=LoadBalancer Services owned by this controller
 	Announces    atomic.Int64 // /32s this node currently announces
 
@@ -63,7 +63,7 @@ func (m *Metrics) Handler() http.Handler {
 			map[string]string{"version": buildinfo.Version, "commit": buildinfo.Commit}, 1)
 		p.Metric("nylon_lb_leader", "1 when this replica holds the allocator Lease.", "gauge",
 			map[string]string{"node": m.node}, float64(m.Leader.Load()))
-		p.Metric("nylon_lb_allocated_ips", "Distinct pool addresses currently claimed by Service ingress or spec.loadBalancerIP.", "gauge",
+		p.Metric("nylon_lb_allocated_ips", "Distinct pool addresses currently allocated to LoadBalancer Services owned by this controller.", "gauge",
 			nil, float64(m.AllocatedIPs.Load()))
 		p.Metric("nylon_lb_services", "type=LoadBalancer Services owned by this controller (empty --lb-class: all of them).", "gauge",
 			nil, float64(m.Services.Load()))
@@ -71,7 +71,7 @@ func (m *Metrics) Handler() http.Handler {
 			nil, float64(m.Announces.Load()))
 		p.Metric("nylon_lb_allocations_total", "Fresh load balancer ingress assignments since start.", "counter",
 			nil, float64(m.Allocations.Load()))
-		p.Metric("nylon_lb_releases_total", "Ingress clearances (Service deleted or no longer LoadBalancer) since start.", "counter",
+		p.Metric("nylon_lb_releases_total", "Ingress clearances since start: a Service stopped being a LoadBalancer or lost its pool selection (deletion is not one of them).", "counter",
 			nil, float64(m.Releases.Load()))
 		p.Metric("nylon_lb_announce_writes_total", "Successful announce-file writes since start.", "counter",
 			nil, float64(m.AnnounceWrites.Load()))

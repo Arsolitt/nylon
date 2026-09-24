@@ -298,6 +298,17 @@ func run(opts *lbOptions) (err error) {
 	}
 	synced.Store(true)
 
+	// The cluster-state metrics loop runs on EVERY replica, whatever the
+	// component flags say and whoever holds the Lease: nylon_lb_services and
+	// nylon_lb_allocated_ips are cluster-wide facts read off the informer
+	// cache, so all replicas report identical values and a leadership change
+	// never resets or freezes them.
+	go func() {
+		if err := controller.RunStateMetrics(ctx); err != nil {
+			logger.Error("state metrics reporter failed", "error", err)
+		}
+	}()
+
 	if opts.speaker {
 		// The speaker runs on EVERY replica, never leader-elected: announce
 		// placement is per-node state (Cluster policy announces from every
