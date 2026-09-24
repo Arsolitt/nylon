@@ -1,5 +1,13 @@
+# The stand is driven by demo/lib.sh; addresses and subnet come from demo/.env,
+# which demo/generate-configs.sh writes. Always drive it through the scripts:
+#
+#   ./demo/up.sh        stand up, left running
+#   ./demo/record.sh    record the failover GIF
+#
+# Teardown: docker compose --env-file demo/.env -f demo/docker-compose.yml -p nylon-demo down --remove-orphans
 services:
   alice:
+    image: nylon-demo-node:local
     build:
       context: ..
       dockerfile: Dockerfile
@@ -14,9 +22,10 @@ services:
     entrypoint: ["/usr/local/bin/nylon", "run", "-c", "/app/config/central.yaml", "-n", "/app/config/node.yaml"]
     networks:
       mesh:
-        ipv4_address: 172.31.0.10
+        ipv4_address: ${ALICE_IP}
 
   bob:
+    image: nylon-demo-node:local
     build:
       context: ..
       dockerfile: Dockerfile
@@ -31,9 +40,10 @@ services:
     entrypoint: ["/usr/local/bin/nylon", "run", "-c", "/app/config/central.yaml", "-n", "/app/config/node.yaml"]
     networks:
       mesh:
-        ipv4_address: 172.31.0.11
+        ipv4_address: ${BOB_IP}
 
   charlie:
+    image: nylon-demo-node:local
     build:
       context: ..
       dockerfile: Dockerfile
@@ -48,12 +58,11 @@ services:
     entrypoint: ["/usr/local/bin/nylon", "run", "-c", "/app/config/central.yaml", "-n", "/app/config/node.yaml"]
     networks:
       mesh:
-        ipv4_address: 172.31.0.12
+        ipv4_address: ${CHARLIE_IP}
 
 networks:
   mesh:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.31.0.0/24
-          gateway: 172.31.0.1
+        - subnet: ${MESH_SUBNET}
