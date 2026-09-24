@@ -29,6 +29,7 @@ RUN apt-get update && \
     curl \
     iproute2 \
     iptables \
+    jq \
     fping \
     mtr-tiny \
     wireguard-tools \
