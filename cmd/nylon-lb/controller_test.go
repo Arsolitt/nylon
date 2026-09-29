@@ -224,6 +224,21 @@ func ctrlAwaitIngress(t *testing.T, cs *fake.Clientset, name string, want ...str
 	}, 5*time.Second, 50*time.Millisecond, "service %s ingress", name)
 }
 
+// ctrlAwaitIngressPair waits until the two Services hold the two given IPs,
+// in either order. The reconcile workers are concurrent, so which of two
+// Services wins the lower address of a shared pool is not deterministic —
+// only the pair is.
+func ctrlAwaitIngressPair(t *testing.T, cs *fake.Clientset, one, two string, ips ...string) {
+	t.Helper()
+	want := slices.Clone(ips)
+	slices.Sort(want)
+	assert.Eventually(t, func() bool {
+		got := append(ctrlStatusIngress(t, cs, one), ctrlStatusIngress(t, cs, two)...)
+		slices.Sort(got)
+		return slices.Equal(got, want)
+	}, 5*time.Second, 50*time.Millisecond, "services %s/%s ingress", one, two)
+}
+
 // A LoadBalancer Service is allocated the pool's lowest usable address: for
 // 192.0.2.0/29 that is 192.0.2.1 (network .0 and broadcast .7 are skipped).
 func TestControllerAllocatesLowestFreeIP(t *testing.T) {
@@ -342,8 +357,7 @@ func TestControllerBacksOffWhenPoolExhausted(t *testing.T) {
 			context.Background(), ctrlService(name, ctrlWithPool("test")), metav1.CreateOptions{})
 		require.NoError(t, err)
 	}
-	ctrlAwaitIngress(t, cs, "a", "192.0.2.1")
-	ctrlAwaitIngress(t, cs, "b", "192.0.2.2")
+	ctrlAwaitIngressPair(t, cs, "a", "b", "192.0.2.1", "192.0.2.2")
 
 	_, err := cs.CoreV1().Services("default").Create(
 		context.Background(), ctrlService("c", ctrlWithPool("test")), metav1.CreateOptions{})
@@ -545,9 +559,8 @@ func TestControllerPoolSelection(t *testing.T) {
 		context.Background(), ctrlService("c", ctrlWithPool("shared")), metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	ctrlAwaitIngress(t, cs, "a", "192.0.2.1")
+	ctrlAwaitIngressPair(t, cs, "a", "c", "192.0.2.1", "192.0.2.2")
 	ctrlAwaitIngress(t, cs, "b", "198.51.100.1")
-	ctrlAwaitIngress(t, cs, "c", "192.0.2.2")
 }
 
 // Re-pointing the annotation at another pool reassigns from the newly
