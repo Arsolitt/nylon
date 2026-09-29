@@ -10,6 +10,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
@@ -60,10 +61,70 @@ func ctrlHarnessMetrics(t *testing.T, pools *PoolSet, lbClass string) (*fake.Cli
 			t.Fatalf("informer %v failed to sync", typ)
 		}
 	}
+	ctrlAwaitWatchDelivery(t, cs, factory)
 	go func() { _ = controller.Run(ctx) }()
 	go func() { _ = controller.RunStateMetrics(ctx) }()
 	t.Cleanup(cancel)
 	return cs, recorder, cancel, metrics
+}
+
+// ctrlAwaitWatchDelivery blocks until the Service informer has observed live
+// watch events. The fake clientset delivers events only to watchers that were
+// registered when the mutation happened, so a Service created between the
+// informer's initial list and its watch registration would be invisible for
+// the rest of the test — and those creates follow the harness immediately. A
+// sentinel Service is created and deleted (retrying until the watch delivers)
+// so the tests after this point mutate a live watch.
+func ctrlAwaitWatchDelivery(t *testing.T, cs *fake.Clientset, factory informers.SharedInformerFactory) {
+	t.Helper()
+	const probeName = "nylon-lb-watch-probe"
+	lister := factory.Core().V1().Services().Lister()
+	client := cs.CoreV1().Services(metav1.NamespaceSystem)
+	probe := func() *corev1.Service {
+		return &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceSystem, Name: probeName},
+			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP},
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := client.Create(context.Background(), probe(), metav1.CreateOptions{}); err != nil &&
+			!apierrors.IsAlreadyExists(err) {
+			t.Fatalf("creating watch probe: %v", err)
+		}
+		if ctrlWaitCond(func() bool {
+			_, err := lister.Services(metav1.NamespaceSystem).Get(probeName)
+			return err == nil
+		}) {
+			if err := client.Delete(context.Background(), probeName, metav1.DeleteOptions{}); err != nil &&
+				!apierrors.IsNotFound(err) {
+				t.Fatalf("deleting watch probe: %v", err)
+			}
+			if ctrlWaitCond(func() bool {
+				_, err := lister.Services(metav1.NamespaceSystem).Get(probeName)
+				return apierrors.IsNotFound(err)
+			}) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Service informer never delivered watch events")
+		}
+	}
+}
+
+// ctrlWaitCond polls cond for up to 200 ms.
+func ctrlWaitCond(cond func() bool) bool {
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for {
+		if cond() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // mustPoolSet parses specs of the form name=cidr into a PoolSet, failing

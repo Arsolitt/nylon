@@ -54,6 +54,16 @@ propagates — the same reference pattern as `nylon-vip.service` +
   endpoint announce the /32; the announcement is withdrawn when the last ready
   endpoint leaves the node. Pass `--node-name` correctly (see the DaemonSet
   `NODE_NAME` note) or no node will ever match its endpoints.
+- `nylon.io/announce: single` (requires `Local`): exactly one of the eligible
+  nodes announces, elected deterministically from the sorted eligible node list
+  — the option for Services whose flows must not re-home, such as a database
+  endpoint in the middle of `pg_basebackup`. The elected node withdraws when its
+  direct API probe has been failing for 30 s (a bounded black-hole beats two
+  owners for a stateful path). With `Cluster` policy, or any unknown value, the
+  annotation is ignored with a warning and the Service is announced anycast.
+- Withdrawing an announce keeps the address bound for a 60-second drain window
+  before unbinding it, so flows the mesh still routes here survive until it
+  converges on the withdrawal; re-announcing cancels the pending drain.
 
 ## Logging
 

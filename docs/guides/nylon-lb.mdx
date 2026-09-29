@@ -73,6 +73,24 @@ The Service's `spec.externalTrafficPolicy` decides which nodes announce:
 - `Cluster` (default) — every node announces every Service `/32`. Babel treats the identical prefixes as anycast, so when a node dies, traffic simply flows to the remaining announcers. Failover is free.
 - `Local` — only nodes that hold at least one ready local endpoint announce the Service. An endpoint with no `Ready` condition counts as ready.
 
+### Single announcer
+
+Anycast is the default because it fails over for free, but a flow that must not move — a database endpoint in the middle of `pg_basebackup`, say — is better served by one stable announcer. The `nylon.io/announce: single` annotation pins exactly one:
+
+```yaml
+metadata:
+  annotations:
+    nylon.io/announce: single
+spec:
+  externalTrafficPolicy: Local
+```
+
+With `Local` and `single`, exactly one of the nodes holding a ready local endpoint announces the Service. Each speaker computes the winner from the sorted eligible node list itself, so no coordination is needed and no node can disagree about who wins for a given set of endpoints. Moving the ready endpoint to another node moves the announcement with it.
+
+The elected node withdraws its announcement when its own direct API view is more than 30 seconds stale — an unreachable API server means it can no longer be sure it is still the only owner. For a stateful path a bounded black-hole is preferable to two announcers, so the withdrawal is deliberately fail-closed; it is lifted as soon as a probe succeeds again.
+
+`single` requires `externalTrafficPolicy: Local`: the eligible set comes from EndpointSlices, and with the `Cluster` policy there is no node-local set to elect from. A Service with `single` and `Cluster` is announced anycast, with a warning. Any unrecognised value is treated the same way.
+
 ::::caution[Always pass --node-name]
 `deploy/daemonset.yaml` exports a `NODE_NAME` environment variable but does **not** pass `--node-name=$(NODE_NAME)` in the container args. Without the flag, nylon-lb falls back to the hostname, which does not match the Kubernetes node name inside a DaemonSet pod — so with `externalTrafficPolicy: Local` no node ever matches its local endpoints, and nothing gets announced. Add `--node-name=$(NODE_NAME)` to `args` in the DaemonSet before you rely on `Local` mode.
 ::::
@@ -80,6 +98,8 @@ The Service's `spec.externalTrafficPolicy` decides which nodes announce:
 ### Reconcile order
 
 The speaker's ordering is load-bearing. It binds the address to the loopback interface **before** writing the announce file, so the address already exists on the node by the time the `/32` propagates (about 250 ms after the file lands, per the prefix watcher debounce). When withdrawing a Service, it removes the announce file **before** unbinding the address.
+
+The unbind itself waits out a **60-second drain window**. The mesh needs a moment to converge on the withdrawal, and unbinding the instant the file disappears would black-hole flows it still routes to this node. A Service that becomes announced again during the window keeps its address: the pending drain is cancelled.
 
 ## Requirements and caveats
 
@@ -171,5 +191,5 @@ Note that `nylon_lb_releases_total` does not move when a Service is deleted: onc
 ## Shipped implementation vs. the design doc
 
 ::::note
-`design.md` §6 sketches an earlier LoadBalancer design: a ConfigMap state store, finalizers, writes to `spec.externalIPs`, and single/anycast mode flags. None of that shipped. The controller in `cmd/nylon-lb/` derives allocation from live Services and expresses both announcement modes through `spec.externalTrafficPolicy`.
+`design.md` §6 sketches an earlier LoadBalancer design: a ConfigMap state store, finalizers, writes to `spec.externalIPs`, and single/anycast mode flags. None of that shipped. The controller in `cmd/nylon-lb/` derives allocation from live Services, selects the announcing nodes through `spec.externalTrafficPolicy`, and elects a single announcer with the `nylon.io/announce: single` annotation.
 ::::

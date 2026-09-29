@@ -5,16 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -33,6 +36,26 @@ const speakerDefaultResync = 30 * time.Second
 // after its announce file is removed: the mesh keeps routing flows here
 // until it converges, and unbinding first would black-hole them.
 const speakerDefaultDrainDelay = 60 * time.Second
+
+// speakerAPICheckInterval is how often the speaker probes the API directly
+// (an uncached read through the typed clientset); speakerAPIStaleTTL is how
+// old that last success may get before a single-announcer Service is
+// withdrawn — announcing from nobody beats announcing from two owners.
+const (
+	speakerAPICheckInterval = 10 * time.Second
+	speakerAPIStaleTTL      = 30 * time.Second
+)
+
+// AnnounceAnnotation selects the announce mode for a LoadBalancer Service:
+// "anycast" (default) announces from every node externalTrafficPolicy
+// allows; "single" elects exactly one announcer among the nodes holding a
+// ready local endpoint and requires externalTrafficPolicy: Local.
+const AnnounceAnnotation = "nylon.io/announce"
+
+const (
+	announceModeAnycast = "anycast"
+	announceModeSingle  = "single"
+)
 
 // AddrBinder keeps announced addresses present on a local interface so the
 // node actually answers traffic for the /32s it announces into the mesh.
@@ -67,7 +90,9 @@ type SpeakerOptions struct {
 // replica — the mesh announce is deliberately anycast: under the default
 // externalTrafficPolicy=Cluster every node announces the Service's /32, and
 // Babel routes traffic to whichever announce is closest, which is also what
-// makes node failover automatic.
+// makes node failover automatic. A Service can opt out with the
+// nylon.io/announce: single annotation, which elects one announcer among the
+// nodes holding a ready local endpoint.
 type Speaker struct {
 	client        kubernetes.Interface
 	pools         *PoolSet
@@ -99,6 +124,17 @@ type Speaker struct {
 	// so the address survives until the mesh stops routing flows here.
 	drainDelay time.Duration
 	draining   map[netip.Addr]time.Time
+
+	// Single-announcer election state: apiInterval is the direct API probe
+	// cadence, apiStaleTTL how old the last success may get before
+	// single-mode announces are withdrawn, lastAPIOK the unix-nano time of
+	// that success (0 before the first probe), and singleElected the
+	// Services this node currently announces under single mode (transition
+	// logging).
+	apiInterval   time.Duration
+	apiStaleTTL   time.Duration
+	lastAPIOK     atomic.Int64
+	singleElected map[string]struct{}
 }
 
 // NewSpeaker validates options and builds the speaker, registering handlers
@@ -146,6 +182,9 @@ func NewSpeaker(opts SpeakerOptions) (*Speaker, error) {
 		bound:         make(map[netip.Addr]struct{}),
 		drainDelay:    speakerDefaultDrainDelay,
 		draining:      make(map[netip.Addr]time.Time),
+		apiInterval:   speakerAPICheckInterval,
+		apiStaleTTL:   speakerAPIStaleTTL,
+		singleElected: make(map[string]struct{}),
 	}
 	handler := cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(interface{}) { s.kick() },
@@ -177,6 +216,10 @@ func (s *Speaker) Run(ctx context.Context) error {
 	if !cache.WaitForCacheSync(ctx.Done(), s.svcInformer.HasSynced, s.sliceInformer.HasSynced) {
 		return fmt.Errorf("speaker: informer caches did not sync: %w", context.Cause(ctx))
 	}
+	// The cache sync just proved the API reachable; single-announcer
+	// elections count on that view until the first direct probe renews it.
+	s.lastAPIOK.Store(time.Now().UnixNano())
+	go s.runAPIProbe(ctx)
 	s.reconcile()
 
 	ticker := time.NewTicker(s.resync)
@@ -193,6 +236,41 @@ func (s *Speaker) Run(ctx context.Context) error {
 	}
 }
 
+// runAPIProbe refreshes lastAPIOK with a direct, uncached API read every
+// apiInterval until ctx is done.
+func (s *Speaker) runAPIProbe(ctx context.Context) {
+	ticker := time.NewTicker(s.apiInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.probeAPI(ctx)
+		}
+	}
+}
+
+// probeAPI performs one direct API read (the typed clientset never reads the
+// informer cache) and records the success time; failures are logged and
+// leave the timestamp untouched.
+func (s *Speaker) probeAPI(ctx context.Context) {
+	reqCtx, cancel := context.WithTimeout(ctx, s.apiInterval)
+	defer cancel()
+	if _, err := s.client.DiscoveryV1().EndpointSlices(metav1.NamespaceAll).List(reqCtx, metav1.ListOptions{Limit: 1}); err != nil {
+		s.log.Warn("api liveness probe failed", "error", err)
+		return
+	}
+	s.lastAPIOK.Store(time.Now().UnixNano())
+}
+
+// apiFresh reports whether the last successful direct API probe is within
+// apiStaleTTL; a speaker that never probed reports stale.
+func (s *Speaker) apiFresh(now time.Time) bool {
+	last := s.lastAPIOK.Load()
+	return last != 0 && now.Sub(time.Unix(0, last)) <= s.apiStaleTTL
+}
+
 // announce is one desired mesh announce: Service ns/name holds ingress IP ip,
 // published under the prefix file named file.
 type announce struct {
@@ -204,36 +282,65 @@ type announce struct {
 
 // desiredAnnounces is the pure function of the informer listers producing
 // the announces this node should currently hold, sorted by file name for
-// deterministic reconciliation.
+// deterministic reconciliation, plus the keys ("ns/name") of the Services it
+// announces under single mode.
 //
 // A type=LoadBalancer Service owned by this controller (empty --lb-class:
 // all of them) is announced when its status carries exactly one IPv4
 // ingress address inside any configured pool (the allocator's output —
 // the speaker never allocates) and:
 //
-//   - externalTrafficPolicy != Local (the Cluster default): always. Every
-//     node announces the /32; Babel anycast picks the closest one and
-//     failover is automatic.
-//   - externalTrafficPolicy == Local: only while at least one ready endpoint
-//     runs on this node.
-func (s *Speaker) desiredAnnounces() []announce {
+//   - externalTrafficPolicy != Local (the Cluster default): always, under
+//     any announce mode. Every node announces the /32; Babel anycast picks
+//     the closest one and failover is automatic.
+//   - externalTrafficPolicy == Local, mode anycast (the default): only
+//     while at least one ready endpoint of the Service runs on this node.
+//   - externalTrafficPolicy == Local, mode single (nylon.io/announce:
+//     single): only on the one node singleAnnouncer elects among the nodes
+//     holding a ready endpoint, and only while this node's direct API view
+//     is fresh — a stateful path prefers a bounded black-hole over two
+//     owners.
+func (s *Speaker) desiredAnnounces() (out []announce, singleKeys []string) {
+	now := time.Now()
 	services, err := s.svcLister.List(labels.Everything())
 	if err != nil {
 		s.log.Warn("listing services", "error", err)
 		if s.metrics != nil {
 			s.metrics.addError("list")
 		}
-		return nil
+		return nil, nil
 	}
-	var out []announce
 	for _, svc := range services {
 		ip, ok := serviceIngressIP(svc, s.pools, s.lbClass)
 		if !ok {
 			continue
 		}
-		if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyLocal &&
-			!s.hasLocalEndpoint(svc.Namespace, svc.Name) {
-			continue
+		local := svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyLocal
+		mode := announceModeValue(svc)
+		switch {
+		case mode == announceModeSingle && !local:
+			s.log.Warn("announce mode single requires externalTrafficPolicy: Local; announcing anycast",
+				"service", svc.Namespace+"/"+svc.Name)
+			mode = announceModeAnycast
+		case mode != "" && mode != announceModeSingle && mode != announceModeAnycast:
+			s.log.Warn("unknown announce mode; announcing anycast",
+				"service", svc.Namespace+"/"+svc.Name, "mode", mode)
+			mode = announceModeAnycast
+		}
+		if local {
+			key := svc.Namespace + "/" + svc.Name
+			eligible := s.eligibleNodes(svc.Namespace, svc.Name)
+			if mode == announceModeSingle {
+				if !s.apiFresh(now) {
+					continue // stale own view: withdraw single-mode announces
+				}
+				if singleAnnouncer(key, eligible) != s.nodeName {
+					continue
+				}
+				singleKeys = append(singleKeys, key)
+			} else if !containsNode(eligible, s.nodeName) {
+				continue
+			}
 		}
 		out = append(out, announce{
 			ns:   svc.Namespace,
@@ -243,7 +350,8 @@ func (s *Speaker) desiredAnnounces() []announce {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].file < out[j].file })
-	return out
+	sort.Strings(singleKeys)
+	return out, singleKeys
 }
 
 // serviceIngressIP extracts the single IPv4 address from a Service's
@@ -269,13 +377,19 @@ func serviceIngressIP(svc *corev1.Service, pools *PoolSet, lbClass string) (neti
 	return ip, true
 }
 
-// hasLocalEndpoint reports whether any EndpointSlice of Service ns/name (the
-// kubernetes.io/service-name label links slices to their service) places a
-// ready endpoint on this node. Readiness follows k8s semantics:
-// Conditions.Ready == nil counts as ready. The union across a service's
-// slices is what Local policy requires — any slice placing a ready endpoint
-// here makes the service locally reachable.
-func (s *Speaker) hasLocalEndpoint(ns, name string) bool {
+// announceModeValue returns the raw value of the announce annotation, or ""
+// when the Service does not carry it.
+func announceModeValue(svc *corev1.Service) string {
+	return svc.Annotations[AnnounceAnnotation]
+}
+
+// eligibleNodes returns the sorted names of the nodes that hold at least one
+// ready endpoint of Service ns/name. EndpointSlices are matched by namespace
+// and the kubernetes.io/service-name label; an endpoint counts when NodeName
+// is set and Conditions.Ready is nil or true (k8s semantics: nil means
+// ready) — the same rule externalTrafficPolicy: Local applies. A lister
+// error yields nil: no node is eligible, which is the fail-closed reading.
+func (s *Speaker) eligibleNodes(ns, name string) []string {
 	slices, err := s.sliceLister.EndpointSlices(ns).List(
 		labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: name}))
 	if err != nil {
@@ -283,20 +397,49 @@ func (s *Speaker) hasLocalEndpoint(ns, name string) bool {
 		if s.metrics != nil {
 			s.metrics.addError("list")
 		}
-		return false
+		return nil
 	}
+	set := make(map[string]struct{})
 	for _, slice := range slices {
+		if slice.Namespace != ns {
+			continue
+		}
 		for i := range slice.Endpoints {
 			ep := &slice.Endpoints[i]
-			if ep.NodeName == nil || *ep.NodeName != s.nodeName {
+			if ep.NodeName == nil {
 				continue
 			}
-			if ep.Conditions.Ready == nil || *ep.Conditions.Ready {
-				return true
+			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
+				continue
 			}
+			set[*ep.NodeName] = struct{}{}
 		}
 	}
-	return false
+	nodes := make([]string, 0, len(set))
+	for node := range set {
+		nodes = append(nodes, node)
+	}
+	sort.Strings(nodes)
+	return nodes
+}
+
+// singleAnnouncer returns the node elected to announce a single-mode Service
+// key ("ns/name"), or "" when no node is eligible. It is a pure function of
+// the key and the sorted eligible list, so every speaker computes the same
+// winner without coordination.
+func singleAnnouncer(key string, eligible []string) string {
+	if len(eligible) == 0 {
+		return ""
+	}
+	h := fnv.New64a()
+	h.Write([]byte(key))
+	return eligible[h.Sum64()%uint64(len(eligible))]
+}
+
+// containsNode reports whether the sorted node list contains node.
+func containsNode(nodes []string, node string) bool {
+	i := sort.SearchStrings(nodes, node)
+	return i < len(nodes) && nodes[i] == node
 }
 
 // reconcile converges the node onto the desired state. The order inside is
@@ -311,10 +454,11 @@ func (s *Speaker) reconcile() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	anns := s.desiredAnnounces()
+	anns, singleKeys := s.desiredAnnounces()
 	if s.metrics != nil {
 		s.metrics.Announces.Store(int64(len(anns)))
 	}
+	s.logSingleTransitions(singleKeys)
 	now := time.Now()
 
 	// 1. Bind, then announce.
@@ -400,6 +544,25 @@ func (s *Speaker) reconcile() {
 			}
 		}
 	}
+}
+
+// logSingleTransitions records election changes for single-announcer
+// Services: one line when this node becomes the elected announcer, one when
+// it stops being it. reconcile calls this under s.mu.
+func (s *Speaker) logSingleTransitions(keys []string) {
+	next := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		next[key] = struct{}{}
+		if _, ok := s.singleElected[key]; !ok {
+			s.log.Info("announcing as elected single announcer", "service", key, "node", s.nodeName)
+		}
+	}
+	for key := range s.singleElected {
+		if _, ok := next[key]; !ok {
+			s.log.Info("stopped announcing single-announcer service", "service", key)
+		}
+	}
+	s.singleElected = next
 }
 
 // staleAnnounce is a withdrawable announce file together with the in-pool

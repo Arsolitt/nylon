@@ -3,22 +3,28 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // spkBinder is an in-memory AddrBinder standing in for the netlink
@@ -160,28 +166,144 @@ func newSpkHarnessWithClient(t *testing.T, client *fake.Clientset, nodeName, lbC
 	return h
 }
 
+// spkObserved retries mutate until every harness's informers report observed,
+// then returns. The fake clientset delivers watch events only to watchers
+// that were registered when the mutation happened, so a mutation racing
+// informer startup is otherwise lost for the rest of the test; retrying it
+// closes that window. Multi-node simulations pass every harness sharing the
+// clientset so all of them observe the change.
+func spkObserved(t *testing.T, what string, mutate func() error, hs []*spkHarness, observed func(*spkHarness) bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := mutate()
+		if err != nil && !apierrors.IsAlreadyExists(err) && !apierrors.IsNotFound(err) {
+			t.Fatalf("mutating %s: %v", what, err)
+		}
+		if spkWaitObserved(hs, observed) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("informer caches never observed %s", what)
+		}
+	}
+}
+
+// spkWaitObserved polls observed for every harness until all report true or
+// the window closes.
+func spkWaitObserved(hs []*spkHarness, observed func(*spkHarness) bool) bool {
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for {
+		all := true
+		for _, h := range hs {
+			if !observed(h) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func spkServiceObserved(svc *corev1.Service) func(*spkHarness) bool {
+	return func(h *spkHarness) bool {
+		got, err := h.speaker.svcLister.Services(svc.Namespace).Get(svc.Name)
+		return err == nil && reflect.DeepEqual(got.Spec, svc.Spec) &&
+			reflect.DeepEqual(got.Annotations, svc.Annotations) &&
+			reflect.DeepEqual(got.Status, svc.Status)
+	}
+}
+
+func spkSliceObserved(slice *discoveryv1.EndpointSlice) func(*spkHarness) bool {
+	return func(h *spkHarness) bool {
+		got, err := h.speaker.sliceLister.EndpointSlices(slice.Namespace).Get(slice.Name)
+		return err == nil && reflect.DeepEqual(got.Endpoints, slice.Endpoints) &&
+			reflect.DeepEqual(got.Labels, slice.Labels)
+	}
+}
+
+func spkSliceGone(ns, name string) func(*spkHarness) bool {
+	return func(h *spkHarness) bool {
+		_, err := h.speaker.sliceLister.EndpointSlices(ns).Get(name)
+		return apierrors.IsNotFound(err)
+	}
+}
+
+// spkCreateService publishes svc and waits until every harness's Service
+// informer observes it. A retry re-sends the object as an update: create is
+// idempotent (AlreadyExists) but emits no event, so only an update can reach
+// an informer whose watcher registration raced the create.
+func spkCreateService(t *testing.T, hs []*spkHarness, svc *corev1.Service) {
+	t.Helper()
+	spkObserved(t, "service "+svc.Namespace+"/"+svc.Name, func() error {
+		client := hs[0].client.CoreV1().Services(svc.Namespace)
+		_, err := client.Create(context.Background(), svc, metav1.CreateOptions{})
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		_, err = client.Update(context.Background(), svc, metav1.UpdateOptions{})
+		return err
+	}, hs, spkServiceObserved(svc))
+}
+
+// spkCreateSlice publishes slice and waits until every harness's EndpointSlice
+// informer observes it; see spkCreateService for the update fallback.
+func spkCreateSlice(t *testing.T, hs []*spkHarness, slice *discoveryv1.EndpointSlice) {
+	t.Helper()
+	spkObserved(t, "slice "+slice.Namespace+"/"+slice.Name, func() error {
+		client := hs[0].client.DiscoveryV1().EndpointSlices(slice.Namespace)
+		_, err := client.Create(context.Background(), slice, metav1.CreateOptions{})
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		_, err = client.Update(context.Background(), slice, metav1.UpdateOptions{})
+		return err
+	}, hs, spkSliceObserved(slice))
+}
+
+// spkUpdateSlice updates slice and waits until every harness's EndpointSlice
+// informer observes the new content.
+func spkUpdateSlice(t *testing.T, hs []*spkHarness, slice *discoveryv1.EndpointSlice) {
+	t.Helper()
+	spkObserved(t, "slice "+slice.Namespace+"/"+slice.Name, func() error {
+		_, err := hs[0].client.DiscoveryV1().EndpointSlices(slice.Namespace).Update(context.Background(), slice, metav1.UpdateOptions{})
+		return err
+	}, hs, spkSliceObserved(slice))
+}
+
+// spkDeleteSlice deletes ns/name and waits until every harness's EndpointSlice
+// informer observes the deletion.
+func spkDeleteSlice(t *testing.T, hs []*spkHarness, ns, name string) {
+	t.Helper()
+	spkObserved(t, "slice "+ns+"/"+name, func() error {
+		return hs[0].client.DiscoveryV1().EndpointSlices(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
+	}, hs, spkSliceGone(ns, name))
+}
+
 func (h *spkHarness) createService(svc *corev1.Service) {
 	h.t.Helper()
-	_, err := h.client.CoreV1().Services(svc.Namespace).Create(context.Background(), svc, metav1.CreateOptions{})
-	assert.NoError(h.t, err)
+	spkCreateService(h.t, []*spkHarness{h}, svc)
 }
 
 func (h *spkHarness) createSlice(slice *discoveryv1.EndpointSlice) {
 	h.t.Helper()
-	_, err := h.client.DiscoveryV1().EndpointSlices(slice.Namespace).Create(context.Background(), slice, metav1.CreateOptions{})
-	assert.NoError(h.t, err)
+	spkCreateSlice(h.t, []*spkHarness{h}, slice)
 }
 
 func (h *spkHarness) updateSlice(slice *discoveryv1.EndpointSlice) {
 	h.t.Helper()
-	_, err := h.client.DiscoveryV1().EndpointSlices(slice.Namespace).Update(context.Background(), slice, metav1.UpdateOptions{})
-	assert.NoError(h.t, err)
+	spkUpdateSlice(h.t, []*spkHarness{h}, slice)
 }
 
 func (h *spkHarness) deleteSlice(ns, name string) {
 	h.t.Helper()
-	err := h.client.DiscoveryV1().EndpointSlices(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
-	assert.NoError(h.t, err)
+	spkDeleteSlice(h.t, []*spkHarness{h}, ns, name)
 }
 
 // spkService builds a type=LoadBalancer Service whose status already carries
@@ -216,6 +338,28 @@ func spkSlice(ns, name, svcName, nodeName string, ready *bool) *discoveryv1.Endp
 			Conditions: discoveryv1.EndpointConditions{Ready: ready},
 		}},
 	}
+}
+
+// spkSliceForNodes builds an EndpointSlice labelled for svcName with one
+// ready endpoint per node, in order. A speaker observes endpoints a slice at
+// a time, so nodes sharing one object always agree on the eligible set —
+// separate slices would let a speaker briefly see a subset of the nodes.
+func spkSliceForNodes(ns, name, svcName string, nodes ...string) *discoveryv1.EndpointSlice {
+	ready := true
+	slice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      name,
+			Labels:    map[string]string{discoveryv1.LabelServiceName: svcName},
+		},
+	}
+	for _, node := range nodes {
+		slice.Endpoints = append(slice.Endpoints, discoveryv1.Endpoint{
+			NodeName:   &node,
+			Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+		})
+	}
+	return slice
 }
 
 // spkWriteAnnounceFile writes a valid announce file directly into dir,
@@ -504,4 +648,155 @@ func TestExpiredDrainUnbinds(t *testing.T) {
 		return slices.Contains(h.binder.removedList(), ip)
 	}, 2*time.Second, 10*time.Millisecond, "expired drain should unbind the address")
 	assert.False(t, h.binder.contains(ip), "address should be gone after the drain expires")
+}
+
+// spkSingleMode marks a Service as nylon.io/announce: single.
+func spkSingleMode(svc *corev1.Service) *corev1.Service {
+	if svc.Annotations == nil {
+		svc.Annotations = map[string]string{}
+	}
+	svc.Annotations[AnnounceAnnotation] = announceModeSingle
+	return svc
+}
+
+// TestSingleAnnounceElectsOneNode: with a ready endpoint on both simulated
+// nodes, exactly one of them announces the single-mode Service — the one the
+// deterministic election picks; the other neither writes the file nor binds
+// the address.
+func TestSingleAnnounceElectsOneNode(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	a := newSpkHarnessWithClient(t, client, "node-a", "", 0)
+	b := newSpkHarnessWithClient(t, client, "node-b", "", 0)
+	ip := mustAddr(t, "10.110.0.20")
+
+	spkCreateService(t, []*spkHarness{a, b},
+		spkSingleMode(spkService("default", "svc", ip.String(), corev1.ServiceExternalTrafficPolicyLocal)))
+	spkCreateSlice(t, []*spkHarness{a, b}, spkSliceForNodes("default", "svc-1", "svc", "node-a", "node-b"))
+
+	winner, loser := a, b
+	if singleAnnouncer("default/svc", []string{"node-a", "node-b"}) == "node-b" {
+		winner, loser = b, a
+	}
+	path := filepath.Join(winner.dir, fileName("default", "svc"))
+	assert.Eventually(t, func() bool { return spkExists(path) },
+		2*time.Second, 10*time.Millisecond, "the elected node should announce")
+	assert.Never(t, func() bool { return spkExists(filepath.Join(loser.dir, fileName("default", "svc"))) },
+		time.Second, 10*time.Millisecond, "the losing node must never announce")
+	assert.Never(t, func() bool { return len(loser.binder.ensuredList()) > 0 },
+		time.Second, 10*time.Millisecond, "the losing node must never bind the address")
+}
+
+// TestSingleAnnounceRequiresLocalPolicy: single mode with the Cluster policy
+// is a misconfiguration; the Service falls back to anycast and every node
+// announces it.
+func TestSingleAnnounceRequiresLocalPolicy(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	a := newSpkHarnessWithClient(t, client, "node-a", "", 0)
+	b := newSpkHarnessWithClient(t, client, "node-b", "", 0)
+	ip := mustAddr(t, "10.110.0.21")
+
+	spkCreateService(t, []*spkHarness{a, b}, spkSingleMode(spkService("default", "svc", ip.String(), "")))
+	ready := true
+	spkCreateSlice(t, []*spkHarness{a, b}, spkSlice("default", "svc-1", "svc", "node-a", &ready))
+
+	for _, h := range []*spkHarness{a, b} {
+		path := filepath.Join(h.dir, fileName("default", "svc"))
+		assert.Eventually(t, func() bool { return spkExists(path) },
+			2*time.Second, 10*time.Millisecond, "Cluster policy should announce anycast despite single mode")
+	}
+}
+
+// TestSingleAnnounceUnknownValueIsAnycast: an unrecognised announce mode must
+// not stop the announce — it degrades to anycast.
+func TestSingleAnnounceUnknownValueIsAnycast(t *testing.T) {
+	h := newSpkHarness(t, "node-a")
+	ip := mustAddr(t, "10.110.0.22")
+
+	svc := spkService("default", "svc", ip.String(), corev1.ServiceExternalTrafficPolicyLocal)
+	svc.Annotations = map[string]string{AnnounceAnnotation: "elect"}
+	h.createService(svc)
+	ready := true
+	h.createSlice(spkSlice("default", "svc-1", "svc", "node-a", &ready))
+
+	path := filepath.Join(h.dir, fileName("default", "svc"))
+	assert.Eventually(t, func() bool { return spkExists(path) },
+		2*time.Second, 10*time.Millisecond, "an unknown mode should announce anycast")
+	assert.Eventually(t, func() bool { return h.binder.contains(ip) },
+		2*time.Second, 10*time.Millisecond, "an unknown mode should still bind the address")
+}
+
+// TestSingleAnnounceWithdrawsWhenAPIStale: the elected announcer withdraws its
+// single-mode announce once its own direct API view goes stale — a bounded
+// black-hole beats two owners for a stateful path.
+func TestSingleAnnounceWithdrawsWhenAPIStale(t *testing.T) {
+	h := newSpkHarness(t, "node-a")
+	ip := mustAddr(t, "10.110.0.23")
+
+	h.createService(spkSingleMode(spkService("default", "svc", ip.String(), corev1.ServiceExternalTrafficPolicyLocal)))
+	ready := true
+	h.createSlice(spkSlice("default", "svc-1", "svc", "node-a", &ready))
+
+	path := filepath.Join(h.dir, fileName("default", "svc"))
+	assert.Eventually(t, func() bool { return spkExists(path) },
+		2*time.Second, 10*time.Millisecond, "the only eligible node should announce")
+	assert.Eventually(t, func() bool { return h.binder.contains(ip) },
+		2*time.Second, 10*time.Millisecond, "the announce should bind the address")
+
+	h.speaker.lastAPIOK.Store(time.Now().Add(-time.Hour).UnixNano())
+	h.speaker.kick()
+
+	assert.Eventually(t, func() bool { return !spkExists(path) },
+		2*time.Second, 10*time.Millisecond, "a stale API view should withdraw the announce")
+	assert.Eventually(t, func() bool { return !h.binder.contains(ip) },
+		2*time.Second, 10*time.Millisecond, "withdrawal should unbind the address")
+}
+
+// TestSingleAnnounceFollowsEndpointHandover: the election follows the ready
+// endpoints — when the only ready endpoint moves from one node to the other,
+// the announce moves with it.
+func TestSingleAnnounceFollowsEndpointHandover(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	a := newSpkHarnessWithClient(t, client, "node-a", "", 0)
+	b := newSpkHarnessWithClient(t, client, "node-b", "", 0)
+	ip := mustAddr(t, "10.110.0.24")
+
+	spkCreateService(t, []*spkHarness{a, b},
+		spkSingleMode(spkService("default", "svc", ip.String(), corev1.ServiceExternalTrafficPolicyLocal)))
+	ready := true
+	spkCreateSlice(t, []*spkHarness{a, b}, spkSlice("default", "svc-1", "svc", "node-b", &ready))
+
+	bPath := filepath.Join(b.dir, fileName("default", "svc"))
+	aPath := filepath.Join(a.dir, fileName("default", "svc"))
+	assert.Eventually(t, func() bool { return spkExists(bPath) },
+		2*time.Second, 10*time.Millisecond, "the node holding the only ready endpoint should announce")
+
+	spkUpdateSlice(t, []*spkHarness{a, b}, spkSlice("default", "svc-1", "svc", "node-a", &ready))
+
+	assert.Eventually(t, func() bool { return spkExists(aPath) },
+		2*time.Second, 10*time.Millisecond, "handing the endpoint over should move the announce")
+	assert.Eventually(t, func() bool { return !spkExists(bPath) },
+		2*time.Second, 10*time.Millisecond, "the previous announcer should withdraw")
+}
+
+// TestProbeAPIRecordsFailureAndSuccess: a failed direct API read leaves the
+// recorded liveness untouched; a later success advances it.
+func TestProbeAPIRecordsFailureAndSuccess(t *testing.T) {
+	h := newSpkHarness(t, "node-a")
+	var fail atomic.Bool
+	fail.Store(true)
+	h.client.PrependReactor("list", "endpointslices", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if fail.Load() {
+			return true, nil, errors.New("api down")
+		}
+		return false, nil, nil
+	})
+
+	stale := time.Now().Add(-time.Minute).UnixNano()
+	h.speaker.lastAPIOK.Store(stale)
+	h.speaker.probeAPI(context.Background())
+	assert.Equal(t, stale, h.speaker.lastAPIOK.Load(), "a failed probe must not renew the view")
+
+	fail.Store(false)
+	h.speaker.probeAPI(context.Background())
+	assert.Greater(t, h.speaker.lastAPIOK.Load(), stale, "a successful probe should renew the view")
 }
