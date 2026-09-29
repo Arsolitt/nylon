@@ -70,7 +70,7 @@ make build
 Decide where the mesh-wide S/H/J parameters come from:
 
 - **Preset** (default): a named amnezigo preset, `standard-1420` by default. The preset supplies the junk and padding profile and the default MTU.
-- **Random**: pass `--random` to have the oracle generate a random profile instead. The preset still seeds the random generation's size and junk parameters and provides the default MTU.
+- **Random**: pass `--random` to have the oracle generate a random profile instead. The preset still seeds the random generation's size and junk parameters and provides the default MTU. A single random draw can collide a peer's `i1`–`i5` packet length with one of the profile's padded handshake sizes, which the AWG 2.0 size invariant forbids; the generator redraws the whole profile (shared parameters and every peer's `i`-set) until it validates, and only fails after 64 attempts.
 
 ### Step 2. Choose a protocol template
 
@@ -134,7 +134,7 @@ Treat an obfuscation profile rollout as a maintenance action. The new parameters
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--preset` | `standard-1420` | amnezigo preset name for the shared profile. |
-| `--random` | `false` | Generate a random shared profile via amnezigo's `GenerateConfig` instead of the preset. |
+| `--random` | `false` | Generate a random shared profile via amnezigo's `GenerateConfig` instead of the preset; the draw is redrawn until it satisfies the size-classification invariant (64 attempts, then an error). |
 | `--protocol` | `random` | Per-peer I1–I5 template: `quic`, `dns`, `dtls`, `stun`, `sip`, `rtp`, or `random`. |
 | `--mtu` | `0` | Underlay MTU clamp for I/junk sizes; `0` uses the preset default. |
 | `--peers` | empty | Comma-separated node ids to generate per-node I1–I5 for. |

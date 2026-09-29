@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	amnezigo "github.com/Arsolitt/amnezigo"
@@ -144,6 +145,57 @@ func TestGenerateRandomProfileValidates(t *testing.T) {
 		t.Fatal("routers[0].Obf is nil")
 	}
 	validateProfile(t, cfg.Obf, []*state.ObfPeerParams{cfg.Routers[0].Obf})
+}
+
+// TestGenerateRandomProfileFivePeersValidates drives the random path with
+// enough peers that the redraw loop in generateRandomProfile is
+// load-bearing. With protocol "random" every peer misses the padded
+// handshake sizes independently (measured: ~11% collision per peer at
+// mtu 1420), so a single raw attempt with 5 peers is invalid ~45% of the
+// time: without the redraw this test fails roughly every other run, while
+// the 64-attempt budget leaves a ~0.45^64 residual failure probability.
+func TestGenerateRandomProfileFivePeersValidates(t *testing.T) {
+	ids := []string{"n1", "n2", "n3", "n4", "n5"}
+	cfg := generate(t, "standard-1420", true, amnezigo.ProtocolRandom, 1420, strings.Join(ids, ","), false)
+
+	if len(cfg.Routers) != len(ids) {
+		t.Fatalf("expected exactly %d routers, got %d", len(ids), len(cfg.Routers))
+	}
+	var peers []*state.ObfPeerParams
+	for i, want := range ids {
+		if got := string(cfg.Routers[i].Id); got != want {
+			t.Errorf("routers[%d].Id = %q, want %q", i, got, want)
+		}
+		obf := cfg.Routers[i].Obf
+		if obf == nil {
+			t.Fatalf("routers[%d].Obf is nil", i)
+		}
+		if obf.Protocol != amnezigo.ProtocolRandom {
+			t.Errorf("routers[%d].Obf.Protocol = %q, want %q", i, obf.Protocol, amnezigo.ProtocolRandom)
+		}
+		// Random mode fills every interval; named templates leave I5 empty.
+		for j, seq := range []string{obf.I1, obf.I2, obf.I3, obf.I4, obf.I5} {
+			if seq == "" {
+				t.Errorf("routers[%d].Obf.I%d is empty", i, j+1)
+			}
+		}
+		peers = append(peers, obf)
+	}
+	validateProfile(t, cfg.Obf, peers)
+
+	// Each peer must keep its own draw: reusing one I-set for every peer
+	// would still satisfy the validators but violates the per-sender
+	// obfuscation contract this generator exists to produce.
+	shared := true
+	for _, p := range peers[1:] {
+		if *p != *peers[0] {
+			shared = false
+			break
+		}
+	}
+	if shared {
+		t.Error("all peers share one I-set; per-peer I1-I5 draws collapsed into a single draw")
+	}
 }
 
 func TestGenerateUnknownProtocolFails(t *testing.T) {

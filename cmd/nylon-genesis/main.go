@@ -131,33 +131,41 @@ func run(presetName string, random bool, protocol string, mtu int, peerIds strin
 		}
 	} else {
 		if random {
-			// One GenerateConfig call fixes the shared S/H/J (mesh-uniform
-			// by construction); its own I-set is discarded in favor of
-			// per-peer generation below.
-			ccfg := amnezigo.GenerateConfig(protocol, mtu, preset.S1, preset.Jc)
-			server = ccfg.ServerObfuscationConfig
+			// One attempt draws the shared S/H/J (mesh-uniform by
+			// construction) plus one I-set per peer; a draw can collide a
+			// peer's I-packet length with a padded handshake size, so the
+			// whole attempt is redrawn until it validates.
+			profile, peerParams, err = generateRandomProfile(protocol, mtu, preset.S1, preset.Jc, peers)
+			if err != nil {
+				return err
+			}
+			log.Debug("validated profile")
+			for _, id := range peers {
+				p := peerParams[id]
+				log.Debug("peer profile", "peer", id, "protocol", p.Protocol, "I1", p.I1, "I2", p.I2, "I3", p.I3, "I4", p.I4, "I5", p.I5)
+			}
 		} else {
 			server = preset.ToServerObfuscation()
-		}
-		profile = profileFromServer(server)
+			profile = profileFromServer(server)
 
-		if err := validateGenerated(&profile, server, peers, protocol); err != nil {
-			return err
-		}
-		log.Debug("validated profile")
+			if err := validateGenerated(&profile, server, peers, protocol); err != nil {
+				return err
+			}
+			log.Debug("validated profile")
 
-		peerParams = make(map[string]*state.ObfPeerParams, len(peers))
-		for _, id := range peers {
-			i1, i2, i3, i4, i5 := amnezigo.GenerateCPS(protocol, mtu, int(profile.S1), 0)
-			params := &state.ObfPeerParams{
-				Protocol: protocol,
-				I1:       i1, I2: i2, I3: i3, I4: i4, I5: i5,
+			peerParams = make(map[string]*state.ObfPeerParams, len(peers))
+			for _, id := range peers {
+				i1, i2, i3, i4, i5 := amnezigo.GenerateCPS(protocol, mtu, int(profile.S1), 0)
+				params := &state.ObfPeerParams{
+					Protocol: protocol,
+					I1:       i1, I2: i2, I3: i3, I4: i4, I5: i5,
+				}
+				if err := validatePeerI(&profile, params); err != nil {
+					return fmt.Errorf("peer %s: %w", id, err)
+				}
+				peerParams[id] = params
+				log.Debug("peer profile", "peer", id, "protocol", params.Protocol, "I1", i1, "I2", i2, "I3", i3, "I4", i4, "I5", i5)
 			}
-			if err := validatePeerI(&profile, params); err != nil {
-				return fmt.Errorf("peer %s: %w", id, err)
-			}
-			peerParams[id] = params
-			log.Debug("peer profile", "peer", id, "protocol", params.Protocol, "I1", i1, "I2", i2, "I3", i3, "I4", i4, "I5", i5)
 		}
 	}
 
@@ -186,6 +194,55 @@ func run(presetName string, random bool, protocol string, mtu int, peerIds strin
 	}
 	_, err = os.Stdout.Write(data)
 	return err
+}
+
+// randomProfileAttempts bounds the redraw loop in generateRandomProfile.
+// A draw fails when a peer's I-packet length collides with one of the four
+// padded handshake sizes (or, with several peers, when any one of them
+// collides); the shared S/H/J and all peer I-sets are redrawn together, so
+// attempts are independent. Protocol "random" with 5 peers was measured to
+// fail ~45% of attempts, and the worst realistic profiles stay below that,
+// so 64 attempts put the residual failure probability under 1e-20.
+const randomProfileAttempts = 64
+
+// generateRandomProfile draws an amnezigo random profile: one shared
+// mesh-uniform S/H/J per attempt plus a distinct per-peer I1-I5 draw, the
+// same shape the preset path emits. Every attempt is validated with the same
+// validators as the preset path (validateGenerated, then validatePeerI per
+// peer); the first fully valid attempt wins, and an invalid attempt is
+// redrawn rather than surfaced, because a padded-size collision is an
+// artifact of a single random draw and not a property of the inputs.
+func generateRandomProfile(protocol string, mtu, s1, jc int, peers []string) (state.ObfProfile, map[string]*state.ObfPeerParams, error) {
+	var lastErr error
+	for range randomProfileAttempts {
+		server := amnezigo.GenerateConfig(protocol, mtu, s1, jc).ServerObfuscationConfig
+		profile := profileFromServer(server)
+		if err := validateGenerated(&profile, server, peers, protocol); err != nil {
+			lastErr = err
+			continue
+		}
+
+		peerParams := make(map[string]*state.ObfPeerParams, len(peers))
+		valid := true
+		for _, id := range peers {
+			i1, i2, i3, i4, i5 := amnezigo.GenerateCPS(protocol, mtu, int(profile.S1), 0)
+			params := &state.ObfPeerParams{
+				Protocol: protocol,
+				I1:       i1, I2: i2, I3: i3, I4: i4, I5: i5,
+			}
+			if err := validatePeerI(&profile, params); err != nil {
+				lastErr = fmt.Errorf("peer %s: %w", id, err)
+				valid = false
+				break
+			}
+			peerParams[id] = params
+		}
+		if !valid {
+			continue
+		}
+		return profile, peerParams, nil
+	}
+	return state.ObfProfile{}, nil, fmt.Errorf("no valid random profile after %d attempts: %w", randomProfileAttempts, lastErr)
 }
 
 func profileFromServer(s amnezigo.ServerObfuscationConfig) state.ObfProfile {
