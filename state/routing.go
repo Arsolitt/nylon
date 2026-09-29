@@ -37,11 +37,15 @@ type Advertisement struct {
 }
 type RouterState struct {
 	*RouterTunables
-	Id         NodeId
-	SelfSeqno  map[netip.Prefix]uint16
-	Routes     map[netip.Prefix]SelRoute
-	Sources    map[Source]FD
-	Neighbours []*Neighbour
+	Id        NodeId
+	SelfSeqno map[netip.Prefix]uint16
+	Routes    map[netip.Prefix]SelRoute
+	// RouteSelectedAt records when the committed route for a prefix was
+	// installed; only routes whose next hop is a neighbour are tracked. It is
+	// maintained by ComputeRoutes and read by the route-switch hold-down.
+	RouteSelectedAt map[netip.Prefix]time.Time
+	Sources         map[Source]FD
+	Neighbours      []*Neighbour
 	// Advertised is a map tracking the prefix and the time it will be advertised until
 	Advertised map[netip.Prefix]Advertisement
 }

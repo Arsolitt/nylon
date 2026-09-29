@@ -20,6 +20,10 @@ func ConfigureConstants() *state.RouterTunables {
 	t := state.DefaultRouterTunables()
 	t.HopCost = 0
 	t.RouteExpiryTime = 10 * time.Hour
+	// These tests select routes microseconds apart, so the product default
+	// (5*ProbeDelay) would hold every re-selection down; the hold-down has
+	// dedicated tests that set it explicitly.
+	t.RouteSwitchHold = 0
 	return &t
 }
 

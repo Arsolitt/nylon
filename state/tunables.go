@@ -33,6 +33,10 @@ type RouterTunables struct {
 	UnknownPrefixWarnInterval time.Duration
 	LinkSwitchDeadband        float64 // We will switch to a new feasible route if: metric(new) * LinkSwitchDeadband <= metric(old)
 
+	// RouteSwitchHold is how long a committed route is kept before a better
+	// candidate may take over; 0 disables the hold-down.
+	RouteSwitchHold time.Duration
+
 	// client configuration
 	ClientKeepaliveInterval time.Duration
 	ClientDeadThreshold     time.Duration
@@ -64,6 +68,10 @@ type NylonOptions struct {
 func DefaultRouterTunables() RouterTunables {
 	probeDelay := time.Millisecond * 1000
 	routeUpdateDelay := time.Second * 5
+	// Keep the hold-down on the same order as LinkDeadThreshold (5*ProbeDelay):
+	// long enough to swallow a metric spike, short enough not to delay real
+	// convergence.
+	holdDown := 5 * probeDelay
 	return RouterTunables{
 		HopCost:               5,
 		LargeChangeThreshold:  100 * 1000,
@@ -87,6 +95,7 @@ func DefaultRouterTunables() RouterTunables {
 		RouteExpiryTime:           5 * routeUpdateDelay,
 		UnknownPrefixWarnInterval: time.Hour,
 		LinkSwitchDeadband:        1.1,
+		RouteSwitchHold:           holdDown,
 
 		ClientKeepaliveInterval: 3 * probeDelay,
 		ClientDeadThreshold:     6 * probeDelay, // 2 * ClientKeepaliveInterval

@@ -1524,3 +1524,163 @@ func TestRouterNet6A_ConvergeOptimal(t *testing.T) {
 10.0.0.3/32 via (nh: C, router: C, prefix: 10.0.0.3/32, seqno: 0, metric: 10000000)
 10.0.0.4/32 via (nh: C, router: D, prefix: 10.0.0.4/32, seqno: 0, metric: 10000001)`, rs.StringRoutes())
 }
+
+// TestRouter_DeadbandKeepsIncumbentWhenChallengerIsUnderMargin: B holds the
+// committed route to P; C then advertises P only slightly better, which is
+// inside LinkSwitchDeadband. The committed next hop must survive — the
+// deadband has to be applied against the route that is actually selected,
+// not against whichever neighbour enumeration happens to visit first. C is
+// listed first specifically to exercise that ordering defect.
+//
+//	  B  advertises P at 100
+//	1 |
+//	  A
+//	1 |
+//	  C  later advertises P at 95
+func TestRouter_DeadbandKeepsIncumbentWhenChallengerIsUnderMargin(t *testing.T) {
+	tunables := ConfigureConstants()
+	h := &RouterHarness{}
+	pPrefix := nodeToPrefix("P")
+	rs := &state.RouterState{
+		RouterTunables: tunables,
+		Id:             "A",
+		SelfSeqno:      make(map[netip.Prefix]uint16),
+		Routes:         make(map[netip.Prefix]state.SelRoute),
+		Sources:        make(map[state.Source]state.FD),
+		Neighbours:     MakeNeighbours("C", "B"),
+		Advertised:     map[netip.Prefix]state.Advertisement{nodeToPrefix("A"): {NodeId: state.NodeId("A"), Expiry: maxTime}},
+	}
+
+	_ = AddLink(rs, NewMockEndpoint("B", 1))
+	_ = AddLink(rs, NewMockEndpoint("C", 1))
+
+	h.NeighUpdate(rs, "B", "B", pPrefix, 0, 100)
+	ComputeRoutes(rs, h)
+	assert.Equal(t, "B", string(rs.Routes[pPrefix].Nh))
+	h.GetActions()
+
+	h.NeighUpdate(rs, "C", "C", pPrefix, 0, 95)
+	ComputeRoutes(rs, h)
+
+	assert.Equal(t, "B", string(rs.Routes[pPrefix].Nh),
+		"a challenger inside the switch deadband must not unseat the committed next hop")
+	assert.Empty(t, h.GetActions())
+}
+
+// TestRouter_SwitchesWhenChallengerExceedsDeadband: the same topology, but the
+// challenger is more than LinkSwitchDeadband better, so it must take over.
+func TestRouter_SwitchesWhenChallengerExceedsDeadband(t *testing.T) {
+	tunables := ConfigureConstants()
+	h := &RouterHarness{}
+	pPrefix := nodeToPrefix("P")
+	rs := &state.RouterState{
+		RouterTunables: tunables,
+		Id:             "A",
+		SelfSeqno:      make(map[netip.Prefix]uint16),
+		Routes:         make(map[netip.Prefix]state.SelRoute),
+		Sources:        make(map[state.Source]state.FD),
+		Neighbours:     MakeNeighbours("C", "B"),
+		Advertised:     map[netip.Prefix]state.Advertisement{nodeToPrefix("A"): {NodeId: state.NodeId("A"), Expiry: maxTime}},
+	}
+
+	_ = AddLink(rs, NewMockEndpoint("B", 1))
+	_ = AddLink(rs, NewMockEndpoint("C", 1))
+
+	h.NeighUpdate(rs, "B", "B", pPrefix, 0, 100)
+	ComputeRoutes(rs, h)
+	assert.Equal(t, "B", string(rs.Routes[pPrefix].Nh))
+	h.GetActions()
+
+	h.NeighUpdate(rs, "C", "C", pPrefix, 0, 80)
+	ComputeRoutes(rs, h)
+
+	assert.Equal(t, "C", string(rs.Routes[pPrefix].Nh),
+		"a challenger beyond the switch deadband should take over")
+	assert.Equal(t, uint32(81), rs.Routes[pPrefix].Metric)
+}
+
+// TestRouter_HoldDownBlocksSwitchUntilExpiry: with a hold-down, a much better
+// challenger waits until the committed route has been in place for
+// RouteSwitchHold; once the hold expires the switch happens, and the new
+// selection is itself held.
+func TestRouter_HoldDownBlocksSwitchUntilExpiry(t *testing.T) {
+	tunables := ConfigureConstants()
+	tunables.RouteSwitchHold = time.Minute
+	h := &RouterHarness{}
+	pPrefix := nodeToPrefix("P")
+	rs := &state.RouterState{
+		RouterTunables: tunables,
+		Id:             "A",
+		SelfSeqno:      make(map[netip.Prefix]uint16),
+		Routes:         make(map[netip.Prefix]state.SelRoute),
+		Sources:        make(map[state.Source]state.FD),
+		Neighbours:     MakeNeighbours("C", "B"),
+		Advertised:     map[netip.Prefix]state.Advertisement{nodeToPrefix("A"): {NodeId: state.NodeId("A"), Expiry: maxTime}},
+	}
+
+	_ = AddLink(rs, NewMockEndpoint("B", 1))
+	_ = AddLink(rs, NewMockEndpoint("C", 1))
+
+	h.NeighUpdate(rs, "B", "B", pPrefix, 0, 100)
+	ComputeRoutes(rs, h)
+	assert.Equal(t, "B", string(rs.Routes[pPrefix].Nh))
+	selectedAt, tracked := rs.RouteSelectedAt[pPrefix]
+	assert.True(t, tracked, "selecting a route should timestamp it")
+	assert.WithinDuration(t, time.Now(), selectedAt, time.Second)
+	h.GetActions()
+
+	h.NeighUpdate(rs, "C", "C", pPrefix, 0, 80)
+	ComputeRoutes(rs, h)
+	assert.Equal(t, "B", string(rs.Routes[pPrefix].Nh),
+		"the hold-down must keep the committed next hop inside the hold window")
+	assert.Equal(t, selectedAt, rs.RouteSelectedAt[pPrefix], "a held switch must not restart the hold")
+
+	rs.RouteSelectedAt[pPrefix] = time.Now().Add(-time.Hour)
+	ComputeRoutes(rs, h)
+	assert.Equal(t, "C", string(rs.Routes[pPrefix].Nh), "an expired hold-down lets the better route through")
+	assert.WithinDuration(t, time.Now(), rs.RouteSelectedAt[pPrefix], time.Second,
+		"the new selection should start its own hold window")
+
+	h.NeighUpdate(rs, "B", "B", pPrefix, 0, 10)
+	ComputeRoutes(rs, h)
+	assert.Equal(t, "C", string(rs.Routes[pPrefix].Nh),
+		"the hold applies to the newest selection as well")
+}
+
+// TestRouter_RetractedRouteRecoversWithoutHold: a held black-hole must never
+// be protected by the hold-down — the prefix was just selected, yet a feasible
+// advertisement has to take over immediately.
+func TestRouter_RetractedRouteRecoversWithoutHold(t *testing.T) {
+	tunables := ConfigureConstants()
+	tunables.RouteSwitchHold = time.Minute
+	h := &RouterHarness{}
+	pPrefix := nodeToPrefix("P")
+	rs := &state.RouterState{
+		RouterTunables: tunables,
+		Id:             "A",
+		SelfSeqno:      make(map[netip.Prefix]uint16),
+		Routes:         make(map[netip.Prefix]state.SelRoute),
+		Sources:        make(map[state.Source]state.FD),
+		Neighbours:     MakeNeighbours("B", "C"),
+		Advertised:     map[netip.Prefix]state.Advertisement{nodeToPrefix("A"): {NodeId: state.NodeId("A"), Expiry: maxTime}},
+	}
+
+	ab := AddLink(rs, NewMockEndpoint("B", 1))
+	_ = AddLink(rs, NewMockEndpoint("C", 1))
+
+	h.NeighUpdate(rs, "B", "B", pPrefix, 0, 0)
+	ComputeRoutes(rs, h)
+	assert.Equal(t, "B", string(rs.Routes[pPrefix].Nh))
+
+	RemoveLink(rs, ab)
+	ComputeRoutes(rs, h)
+	assert.Equal(t, state.INF, rs.Routes[pPrefix].Metric, "the lost link should leave a held black-hole")
+	rs.RouteSelectedAt[pPrefix] = time.Now()
+
+	h.NeighUpdate(rs, "C", "C", pPrefix, 0, 500)
+	ComputeRoutes(rs, h)
+
+	assert.Equal(t, "C", string(rs.Routes[pPrefix].Nh),
+		"recovery from a black-hole must not wait out the hold-down")
+	assert.Equal(t, uint32(501), rs.Routes[pPrefix].Metric)
+}

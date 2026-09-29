@@ -381,6 +381,29 @@ func HandleNeighbourUpdate(s *state.RouterState, r Router, neighId state.NodeId,
 	}
 }
 
+// neighLinkCost returns the cost of the link to neigh: the best endpoint's
+// metric plus the loop-prevention hop cost, or state.INF when the neighbour
+// has no active endpoint.
+func neighLinkCost(s *state.RouterState, neigh *state.Neighbour) uint32 {
+	bestEp := neigh.BestEndpoint()
+	if bestEp == nil {
+		return state.INF
+	}
+	return AddMetric(bestEp.Metric(), s.HopCost)
+}
+
+// routeSwitchHeld reports whether the committed route for prefix must be kept
+// for now: a route committed less than RouteSwitchHold ago is not displaced
+// by a candidate that merely beat the deadband. Retracted (infinite-metric)
+// routes are never held — recovery from a black-hole must be immediate.
+func routeSwitchHeld(s *state.RouterState, prefix netip.Prefix, cur state.SelRoute, now time.Time) bool {
+	if s.RouteSwitchHold <= 0 || cur.Metric == state.INF {
+		return false
+	}
+	since, ok := s.RouteSelectedAt[prefix]
+	return ok && now.Sub(since) < s.RouteSwitchHold
+}
+
 func isHeldRoute(s *state.RouterState, route state.SelRoute) bool {
 	if route.Nh == s.Id {
 		return false // we do not hold routes to ourselves
@@ -400,6 +423,7 @@ func isHeldRoute(s *state.RouterState, route state.SelRoute) bool {
 
 func ComputeRoutes(s *state.RouterState, r Router) {
 	newTable := make(map[netip.Prefix]state.SelRoute)
+	now := time.Now()
 
 	// 3.5.4.  Hold Time
 	//
@@ -441,6 +465,43 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 		if isHeldRoute(s, route) {
 			route.Metric = state.INF
 			newTable[prefix] = route
+		}
+	}
+
+	// Re-seed the committed route as the incumbent: the switch decision below
+	// must compare candidates against what is actually selected, not against
+	// whichever neighbour the enumeration happens to visit first. The seeded
+	// entry carries the committed next hop with a refreshed metric, and only
+	// a currently feasible advertisement may re-seed it — an unfeasible
+	// update still unselects its route.
+	for prefix, route := range s.Routes {
+		if _, ok := newTable[prefix]; ok {
+			continue // held/blackholed route already seeded
+		}
+		if route.Metric == state.INF || route.Nh == s.Id {
+			continue
+		}
+		neigh := s.GetNeighbour(route.Nh)
+		if neigh == nil {
+			continue
+		}
+		cost := neighLinkCost(s, neigh)
+		adv, ok := neigh.Routes[prefix]
+		if !ok || adv.Metric == state.INF || cost == state.INF {
+			continue
+		}
+		total := AddMetric(cost, adv.Metric)
+		if total == state.INF || !checkFeasibility(s, adv.PubRoute) {
+			continue
+		}
+		newTable[prefix] = state.SelRoute{
+			PubRoute: state.PubRoute{
+				Source: adv.Source,
+				FD:     state.FD{Seqno: adv.Seqno, Metric: total},
+			},
+			Nh:          route.Nh,
+			ExpireAt:    adv.ExpireAt,
+			RetractedBy: []state.NodeId{},
 		}
 	}
 
@@ -492,20 +553,14 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 
 	// enumerate through neighbours
 	for _, neigh := range s.Neighbours {
-		bestEp := neigh.BestEndpoint()
-		if bestEp == nil {
+		if neigh.BestEndpoint() == nil {
 			r.RouterEvent(log.EventNoEndpointToNeigh, "no endpoint to neighbour", "neigh", neigh.Id)
 		}
 
 		// We refer to our current node as A, our neighbour as B, and S as our source.
 
 		// Cost(A, B)
-		CAB := state.INF
-
-		if bestEp != nil {
-			CAB = bestEp.Metric()
-			CAB = AddMetric(CAB, s.HopCost) // to prevent 0 cost metric
-		}
+		CAB := neighLinkCost(s, neigh)
 
 		// enumerate through neighbour advertisements
 		for prefix, adv := range neigh.Routes {
@@ -557,6 +612,10 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 					}
 				}
 				if ShouldSwitch(oldRoute, newRoute, s.RouterTunables) {
+					if prevRoute, ok := s.Routes[prefix]; ok && sameRoute(oldRoute, prevRoute) &&
+						routeSwitchHeld(s, prefix, oldRoute, now) {
+						continue // hold-down: keep the committed next hop
+					}
 					newTable[prefix] = newRoute
 				}
 			}
@@ -612,6 +671,32 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 				// blackhole so a covering route can be used again.
 				r.TableDeleteRoute(prefix)
 			}
+		}
+	}
+
+	// Record when each committed route was installed, so the hold-down below
+	// knows how fresh it is. A route that keeps its next hop and source keeps
+	// its timestamp — the hold measures the age of the next-hop commitment,
+	// not the age of the last metric refresh. Routes to non-neighbours (self,
+	// passive-hold clients) are never held down.
+	if s.RouteSelectedAt == nil {
+		s.RouteSelectedAt = make(map[netip.Prefix]time.Time)
+	}
+	for prefix, route := range newTable {
+		if s.GetNeighbour(route.Nh) == nil {
+			delete(s.RouteSelectedAt, prefix)
+			continue
+		}
+		if prev, ok := s.Routes[prefix]; ok && sameRoute(prev, route) {
+			if _, tracked := s.RouteSelectedAt[prefix]; tracked {
+				continue
+			}
+		}
+		s.RouteSelectedAt[prefix] = now
+	}
+	for prefix := range s.RouteSelectedAt {
+		if _, ok := newTable[prefix]; !ok {
+			delete(s.RouteSelectedAt, prefix)
 		}
 	}
 
