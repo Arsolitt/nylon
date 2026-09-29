@@ -88,8 +88,18 @@ func ctrlAwaitWatchDelivery(t *testing.T, cs *fake.Clientset, factory informers.
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if _, err := client.Create(context.Background(), probe(), metav1.CreateOptions{}); err != nil &&
-			!apierrors.IsAlreadyExists(err) {
+		// Re-issue the probe as an update when the object already exists: the
+		// fake tracker notifies watchers on mutations only, so a create that
+		// raced watcher registration leaves no event behind, and the retry
+		// has to emit one itself.
+		err := func() error {
+			if _, err := client.Create(context.Background(), probe(), metav1.CreateOptions{}); !apierrors.IsAlreadyExists(err) {
+				return err
+			}
+			_, err := client.Update(context.Background(), probe(), metav1.UpdateOptions{})
+			return err
+		}()
+		if err != nil {
 			t.Fatalf("creating watch probe: %v", err)
 		}
 		if ctrlWaitCond(func() bool {
