@@ -153,18 +153,13 @@ func run(presetName string, random bool, protocol string, mtu int, peerIds strin
 			}
 			log.Debug("validated profile")
 
-			peerParams = make(map[string]*state.ObfPeerParams, len(peers))
+			peerParams, err = generatePeerParams(&profile, protocol, mtu, peers)
+			if err != nil {
+				return err
+			}
 			for _, id := range peers {
-				i1, i2, i3, i4, i5 := amnezigo.GenerateCPS(protocol, mtu, int(profile.S1), 0)
-				params := &state.ObfPeerParams{
-					Protocol: protocol,
-					I1:       i1, I2: i2, I3: i3, I4: i4, I5: i5,
-				}
-				if err := validatePeerI(&profile, params); err != nil {
-					return fmt.Errorf("peer %s: %w", id, err)
-				}
-				peerParams[id] = params
-				log.Debug("peer profile", "peer", id, "protocol", params.Protocol, "I1", i1, "I2", i2, "I3", i3, "I4", i4, "I5", i5)
+				p := peerParams[id]
+				log.Debug("peer profile", "peer", id, "protocol", p.Protocol, "I1", p.I1, "I2", p.I2, "I3", p.I3, "I4", p.I4, "I5", p.I5)
 			}
 		}
 	}
@@ -196,13 +191,14 @@ func run(presetName string, random bool, protocol string, mtu int, peerIds strin
 	return err
 }
 
-// randomProfileAttempts bounds the redraw loop in generateRandomProfile.
-// A draw fails when a peer's I-packet length collides with one of the four
-// padded handshake sizes (or, with several peers, when any one of them
-// collides); the shared S/H/J and all peer I-sets are redrawn together, so
-// attempts are independent. Protocol "random" with 5 peers was measured to
-// fail ~45% of attempts, and the worst realistic profiles stay below that,
-// so 64 attempts put the residual failure probability under 1e-20.
+// randomProfileAttempts bounds both redraw loops: generateRandomProfile
+// redraws the shared S/H/J, and generatePeerI redraws one peer's I-set. A
+// draw fails when a peer's I-packet length collides with one of the four
+// padded handshake sizes. Protocol "random" with 5 peers was measured to fail
+// ~45% of runs per attempt, and the worst realistic profiles stay below that,
+// so 64 attempts put the residual failure probability under 1e-20 (the two
+// loops nest, so a peer draw that needs several attempts still gets a fresh
+// shared profile afterwards).
 const randomProfileAttempts = 64
 
 // generateRandomProfile draws an amnezigo random profile: one shared
@@ -222,27 +218,54 @@ func generateRandomProfile(protocol string, mtu, s1, jc int, peers []string) (st
 			continue
 		}
 
-		peerParams := make(map[string]*state.ObfPeerParams, len(peers))
-		valid := true
-		for _, id := range peers {
-			i1, i2, i3, i4, i5 := amnezigo.GenerateCPS(protocol, mtu, int(profile.S1), 0)
-			params := &state.ObfPeerParams{
-				Protocol: protocol,
-				I1:       i1, I2: i2, I3: i3, I4: i4, I5: i5,
-			}
-			if err := validatePeerI(&profile, params); err != nil {
-				lastErr = fmt.Errorf("peer %s: %w", id, err)
-				valid = false
-				break
-			}
-			peerParams[id] = params
-		}
-		if !valid {
+		peerParams, err := generatePeerParams(&profile, protocol, mtu, peers)
+		if err != nil {
+			lastErr = err
 			continue
 		}
 		return profile, peerParams, nil
 	}
 	return state.ObfProfile{}, nil, fmt.Errorf("no valid random profile after %d attempts: %w", randomProfileAttempts, lastErr)
+}
+
+// generatePeerParams draws one I-set per peer and validates it against the
+// shared profile, redrawing a peer's draw while it collides with one of the
+// profile's four padded handshake sizes.
+func generatePeerParams(profile *state.ObfProfile, protocol string, mtu int, peers []string) (map[string]*state.ObfPeerParams, error) {
+	peerParams := make(map[string]*state.ObfPeerParams, len(peers))
+	for _, id := range peers {
+		params, err := generatePeerI(profile, protocol, mtu, id)
+		if err != nil {
+			return nil, err
+		}
+		peerParams[id] = params
+	}
+	return peerParams, nil
+}
+
+// generatePeerI draws one peer's I1-I5 until it satisfies the size invariant
+// against profile. Public amnezigo GenerateCPS draws against an empty
+// forbidden set — its documentation defers collision avoidance to
+// GenerateConfig — so a draw collides with a padded handshake size now and
+// then. With the random protocol the I lengths vary per draw and a redraw
+// resolves it; a named template has one fixed length per (protocol, mtu, S1),
+// so an incompatible combination simply never validates and the budget turns
+// it into one clear error instead of a coin flip.
+func generatePeerI(profile *state.ObfProfile, protocol string, mtu int, id string) (*state.ObfPeerParams, error) {
+	var lastErr error
+	for range randomProfileAttempts {
+		i1, i2, i3, i4, i5 := amnezigo.GenerateCPS(protocol, mtu, int(profile.S1), 0)
+		params := &state.ObfPeerParams{
+			Protocol: protocol,
+			I1:       i1, I2: i2, I3: i3, I4: i4, I5: i5,
+		}
+		if err := validatePeerI(profile, params); err != nil {
+			lastErr = err
+			continue
+		}
+		return params, nil
+	}
+	return nil, fmt.Errorf("peer %s: no collision-free I-set in %d draws: %w", id, randomProfileAttempts, lastErr)
 }
 
 func profileFromServer(s amnezigo.ServerObfuscationConfig) state.ObfProfile {
