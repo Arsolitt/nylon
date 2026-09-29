@@ -29,6 +29,11 @@ import (
 // externally written announce file, a manually added lo address) can drift.
 const speakerDefaultResync = 30 * time.Second
 
+// speakerDefaultDrainDelay is how long a withdrawn address stays bound
+// after its announce file is removed: the mesh keeps routing flows here
+// until it converges, and unbinding first would black-hole them.
+const speakerDefaultDrainDelay = 60 * time.Second
+
 // AddrBinder keeps announced addresses present on a local interface so the
 // node actually answers traffic for the /32s it announces into the mesh.
 // The speaker talks to this interface only; the netlink-backed production
@@ -88,6 +93,12 @@ type Speaker struct {
 	// to keep Ensure off the hot path on every resync (netlink churn).
 	mu    sync.Mutex
 	bound map[netip.Addr]struct{}
+
+	// drainDelay is how long an address stays bound after its announce file
+	// is withdrawn; draining maps a withdrawn address to its unbind deadline
+	// so the address survives until the mesh stops routing flows here.
+	drainDelay time.Duration
+	draining   map[netip.Addr]time.Time
 }
 
 // NewSpeaker validates options and builds the speaker, registering handlers
@@ -133,6 +144,8 @@ func NewSpeaker(opts SpeakerOptions) (*Speaker, error) {
 		sliceInformer: sliceInformer,
 		trigger:       make(chan struct{}, 1),
 		bound:         make(map[netip.Addr]struct{}),
+		drainDelay:    speakerDefaultDrainDelay,
+		draining:      make(map[netip.Addr]time.Time),
 	}
 	handler := cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(interface{}) { s.kick() },
@@ -291,7 +304,9 @@ func (s *Speaker) hasLocalEndpoint(ns, name string) bool {
 // bind interface when the /32 propagates through the mesh (~250 ms after
 // the file lands, per the daemon's watcher debounce); and withdraw the
 // announce file BEFORE unbinding, so traffic stops being routed here before
-// the address disappears.
+// the address disappears. Withdrawal also starts a drain: the address stays
+// bound for drainDelay after the file is gone, so flows the mesh still
+// routes here survive until it converges on the withdrawal.
 func (s *Speaker) reconcile() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -300,9 +315,11 @@ func (s *Speaker) reconcile() {
 	if s.metrics != nil {
 		s.metrics.Announces.Store(int64(len(anns)))
 	}
+	now := time.Now()
 
 	// 1. Bind, then announce.
 	for _, a := range anns {
+		delete(s.draining, a.ip) // a re-desired address cancels a pending drain
 		if s.binder != nil {
 			if _, ensured := s.bound[a.ip]; !ensured {
 				if err := s.binder.Ensure(a.ip); err != nil {
@@ -345,10 +362,15 @@ func (s *Speaker) reconcile() {
 	if s.binder != nil {
 		for _, st := range stale {
 			for _, ip := range st.ips {
+				if !s.beginDrain(ip, now) {
+					s.log.Info("draining withdrawn LB address", "ip", ip, "file", st.file, "delay", s.drainDelay)
+					continue
+				}
 				if err := s.binder.Remove(ip); err != nil {
 					s.log.Warn("unbinding withdrawn LB address", "error", err, "ip", ip, "file", st.file)
 				} else {
 					delete(s.bound, ip)
+					delete(s.draining, ip)
 				}
 			}
 		}
@@ -366,10 +388,14 @@ func (s *Speaker) reconcile() {
 				if _, ok := desiredIPs[ip]; ok {
 					continue
 				}
+				if deadline, ok := s.draining[ip]; ok && now.Before(deadline) {
+					continue // still inside the drain window
+				}
 				if err := s.binder.Remove(ip); err != nil {
 					s.log.Warn("removing drifted LB address", "error", err, "ip", ip)
 				} else {
 					delete(s.bound, ip)
+					delete(s.draining, ip)
 				}
 			}
 		}
@@ -381,6 +407,19 @@ func (s *Speaker) reconcile() {
 type staleAnnounce struct {
 	file string
 	ips  []netip.Addr
+}
+
+// beginDrain starts the drain window for an address this node withdraws and
+// reports whether the unbind may proceed now. The first sighting starts the
+// window; a zero drainDelay leaves it already over, so the address is
+// unbound in the same pass (the pre-drain behaviour).
+func (s *Speaker) beginDrain(ip netip.Addr, now time.Time) bool {
+	deadline, ok := s.draining[ip]
+	if !ok {
+		deadline = now.Add(s.drainDelay)
+		s.draining[ip] = deadline
+	}
+	return !now.Before(deadline)
 }
 
 // staleAnnounces globs the controller's lb-*.json files and reads each one

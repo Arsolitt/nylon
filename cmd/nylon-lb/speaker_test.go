@@ -91,6 +91,7 @@ type spkHarness struct {
 	binder  *spkBinder
 	pools   *PoolSet
 	dir     string
+	speaker *Speaker
 	cancel  context.CancelFunc
 	done    chan struct{}
 }
@@ -104,9 +105,19 @@ func newSpkHarness(t *testing.T, nodeName string) *spkHarness {
 // scoping the speaker to Services carrying that spec.loadBalancerClass.
 func newSpkHarnessWithClass(t *testing.T, nodeName, lbClass string) *spkHarness {
 	t.Helper()
+	return newSpkHarnessWithClient(t, fake.NewSimpleClientset(), nodeName, lbClass, 0)
+}
+
+// newSpkHarnessWithClient wires a Speaker over an existing clientset, so
+// several harnesses can simulate several nodes observing one cluster state.
+// drainDelay is applied before the speaker starts — writing it later would
+// race with the reconcile loop. Zero keeps the immediate-unbind behaviour the
+// withdrawal tests assert; the drain tests pass a non-zero window.
+func newSpkHarnessWithClient(t *testing.T, client *fake.Clientset, nodeName, lbClass string, drainDelay time.Duration) *spkHarness {
+	t.Helper()
 	h := &spkHarness{
 		t:      t,
-		client: fake.NewSimpleClientset(),
+		client: client,
 		binder: newSpkBinder(),
 		dir:    t.TempDir(),
 		done:   make(chan struct{}),
@@ -130,6 +141,8 @@ func newSpkHarnessWithClass(t *testing.T, nodeName, lbClass string) *spkHarness 
 		Resync:      100 * time.Millisecond,
 	})
 	assert.NoError(t, err)
+	speaker.drainDelay = drainDelay
+	h.speaker = speaker
 
 	h.factory.Start(ctx.Done())
 	go func() {
@@ -436,4 +449,59 @@ func TestSpeakerGCUnbindsForeignPoolAnnounce(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		return slices.Contains(h.binder.removedList(), ghost)
 	}, 2*time.Second, 10*time.Millisecond, "withdrawn ghost announce should unbind its private-pool address")
+}
+
+// TestWithdrawDrainsBeforeUnbind: withdrawal removes the announce file
+// immediately but keeps the address bound for the drain delay, so flows the
+// mesh is still routing here survive until it converges on the withdrawal;
+// neither the withdrawal path nor the drift sweep may unbind early.
+func TestWithdrawDrainsBeforeUnbind(t *testing.T) {
+	h := newSpkHarnessWithClient(t, fake.NewSimpleClientset(), "uk-node-1", "", 5*time.Second)
+	ip := mustAddr(t, "10.110.0.17")
+
+	h.createService(spkService("default", "drain", ip.String(), corev1.ServiceExternalTrafficPolicyLocal))
+	ready := true
+	h.createSlice(spkSlice("default", "drain-1", "drain", "uk-node-1", &ready))
+
+	path := filepath.Join(h.dir, fileName("default", "drain"))
+	assert.Eventually(t, func() bool { return spkExists(path) },
+		2*time.Second, 10*time.Millisecond, "ready local endpoint should announce")
+	assert.Eventually(t, func() bool { return h.binder.contains(ip) },
+		2*time.Second, 10*time.Millisecond, "announce should bind the address")
+
+	notReady := false
+	h.updateSlice(spkSlice("default", "drain-1", "drain", "uk-node-1", &notReady))
+
+	assert.Eventually(t, func() bool { return !spkExists(path) },
+		2*time.Second, 10*time.Millisecond, "withdrawal should remove the announce file immediately")
+	assert.Never(t, func() bool { return !h.binder.contains(ip) },
+		500*time.Millisecond, 10*time.Millisecond, "address must stay bound for the drain delay")
+	assert.Empty(t, h.binder.removedList(), "no unbind may happen before the drain expires")
+}
+
+// TestExpiredDrainUnbinds: once the drain deadline passes, the fallback sweep
+// unbinds the address even though the announce file is long gone.
+func TestExpiredDrainUnbinds(t *testing.T) {
+	h := newSpkHarnessWithClient(t, fake.NewSimpleClientset(), "uk-node-1", "", 100*time.Millisecond)
+	ip := mustAddr(t, "10.110.0.18")
+
+	h.createService(spkService("default", "drain", ip.String(), corev1.ServiceExternalTrafficPolicyLocal))
+	ready := true
+	h.createSlice(spkSlice("default", "drain-1", "drain", "uk-node-1", &ready))
+
+	path := filepath.Join(h.dir, fileName("default", "drain"))
+	assert.Eventually(t, func() bool { return spkExists(path) },
+		2*time.Second, 10*time.Millisecond, "ready local endpoint should announce")
+	assert.Eventually(t, func() bool { return h.binder.contains(ip) },
+		2*time.Second, 10*time.Millisecond, "announce should bind the address")
+
+	notReady := false
+	h.updateSlice(spkSlice("default", "drain-1", "drain", "uk-node-1", &notReady))
+
+	assert.Eventually(t, func() bool { return !spkExists(path) },
+		2*time.Second, 10*time.Millisecond, "withdrawal should remove the announce file")
+	assert.Eventually(t, func() bool {
+		return slices.Contains(h.binder.removedList(), ip)
+	}, 2*time.Second, 10*time.Millisecond, "expired drain should unbind the address")
+	assert.False(t, h.binder.contains(ip), "address should be gone after the drain expires")
 }
