@@ -70,7 +70,7 @@ make build
 Decide where the mesh-wide S/H/J parameters come from:
 
 - **Preset** (default): a named amnezigo preset, `standard-1420` by default. The preset supplies the junk and padding profile and the default MTU.
-- **Random**: pass `--random` to have the oracle generate a random profile instead. The preset still seeds the random generation's size and junk parameters and provides the default MTU. A draw can collide a peer's `i1`–`i5` packet length with one of the profile's padded handshake sizes, which the AWG 2.0 size invariant forbids; the generator redraws a whole random profile when that is what is random, and always redraws a peer's `i`-set, until it validates (64 attempts, then an error) — with the default `--protocol random` that combination failed about half the time before the redraw.
+- **Random**: pass `--random` to have the oracle generate a random profile instead. The preset still provides the default MTU and contributes `s1` and `jc`; `s2`–`s4`, `h1`–`h4`, and the `jmin`/`jmax` junk range are drawn fresh. A draw can collide a peer's `i1`–`i5` packet length with one of the profile's padded handshake sizes, which the AWG 2.0 size invariant forbids; the generator redraws a whole random profile when that is what is random, and always redraws a peer's `i`-set, until it validates (64 attempts, then an error) — with the default `--protocol random` that combination failed about half the time before the redraw.
 
 ### Step 2. Choose a protocol template
 
@@ -78,7 +78,7 @@ Decide where the mesh-wide S/H/J parameters come from:
 
 ### Step 3. Choose an MTU clamp (optional)
 
-`--mtu` clamps the generated I-packet and junk sizes to your underlay MTU. Leave it at the default `0` to use the preset's default MTU — `standard-1420` targets a 1420-byte underlay, and the fixture output above was generated with `--mtu 1420`.
+`--mtu` bounds only the generated per-node I-packet sizes to your underlay MTU (the oracle caps each I-packet at `mtu - 49 - 149 - s1`). Junk sizes are not clamped — they come from the preset, or from a fresh 64–1024 byte draw under `--random` — so a small `--mtu` can still emit junk datagrams large enough to fragment. Leave it at the default `0` to use the preset's default MTU — `standard-1420` targets a 1420-byte underlay, and the fixture output above was generated with `--mtu 1420`.
 
 ### Step 4. List your nodes
 
@@ -136,7 +136,7 @@ Treat an obfuscation profile rollout as a maintenance action. The new parameters
 | `--preset` | `standard-1420` | amnezigo preset name for the shared profile. |
 | `--random` | `false` | Generate a random shared profile via amnezigo's `GenerateConfig` instead of the preset; the draw is redrawn until it satisfies the size-classification invariant (64 attempts, then an error). |
 | `--protocol` | `random` | Per-peer I1–I5 template: `quic`, `dns`, `dtls`, `stun`, `sip`, `rtp`, or `random`. |
-| `--mtu` | `0` | Underlay MTU clamp for I/junk sizes; `0` uses the preset default. |
+| `--mtu` | `0` | Underlay MTU clamp for I-packet sizes only; `0` uses the preset default. |
 | `--peers` | empty | Comma-separated node ids to generate per-node I1–I5 for. |
 | `--compat` | `false` | Emit the fixed vanilla-compat profile; the output does not depend on `--preset` or `--protocol`, but they are still validated. |
 | `--out` | stdout | Write to `FILE` instead of stdout (file mode `0644`). |
