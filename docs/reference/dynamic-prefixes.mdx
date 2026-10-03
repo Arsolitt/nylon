@@ -71,6 +71,10 @@ The schema is a field-for-field mirror of the prefix health config (`StaticPrefi
 
 Durations use Go syntax: `10s`, `1m30s`, `500ms`.
 
+::::caution
+The JSON path skips the validation applied to prefixes declared in the central config, which rejects a `delay` of zero or less and a `max_failures` of zero or less. In `prefixes.d` these values pass through unchecked: a `delay` of `0s` or a negative duration panics the monitor goroutine inside `time.NewTicker`, and a `max_failures` of `0` panics the ping loop with an integer divide-by-zero — either panic crashes the daemon. A negative `max_failures` does not panic, but every probe round fails (`zero attempts`) and the prefix can never become healthy. Writers must validate both values before writing a file.
+::::
+
 ### Parsing rules
 
 Parsing is fail-closed at two levels:
@@ -92,7 +96,7 @@ Every skip is logged with the file name and entry index.
 | Situation | Behavior |
 | --- | --- |
 | Entry's prefix already exists in the central config for this node | Entry rejected with an error log — the central config wins. |
-| Same prefix in two `*.json` files | The file that comes first in lexicographic filename order wins; the later entry is rejected with a warning. |
+| Same prefix in two `*.json` files, or twice in one file | The first entry in scan order wins (lexicographic filename order, top-to-bottom within a file); the later entry is rejected with a warning whose text says the duplicate is "across files", even within a single file. |
 | Malformed JSON or unsupported `version` | Whole file skipped with an error; other files still apply. |
 | Invalid single entry | Only that entry is skipped; the rest of the file applies. |
 
@@ -110,7 +114,7 @@ Dynamic `ping` and `http` prefixes reuse the full prefix-health monitor machiner
 
 Details worth knowing:
 
-- Both monitors start retracted (infinite metric) and join the mesh after the first successful probe.
+- Both monitors start retracted (infinite metric) and join the mesh after the first successful probe — unless a `ping` entry sets `metric`: its override is advertised immediately from startup and never retracts. An `http` entry with `metric` still starts retracted; the override replaces only the healthy-path metric.
 - An `http` check fails on a transport error or any non-200 status code.
 - A failed probe round logs a warning and retracts the prefix through the normal Babel retraction path; a later successful round re-announces it.
 
