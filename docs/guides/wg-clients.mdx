@@ -68,7 +68,7 @@ graph LR
 
 3. ### Connect to a Gateway
 
-   In your WireGuard app, set the `Endpoint` to the address of any nylon node in your network that has a public endpoint.
+   In your WireGuard app, set the `Endpoint` to the address of a router that is graph-adjacent to this client (an edge such as `node-1, my-phone` in `central.yaml`). A router with no graph edge to the client never creates its WireGuard peer and drops its handshakes.
 
    ```ini title="wireguard.conf"
    [Interface]
@@ -107,7 +107,7 @@ You do not need to enable Persistent Keepalive, or any heartbeat mechanism for t
 
 ::::
 
-When a gateway is the **sole advertiser** of a passive client's prefix, nylon retains the route for that client indefinitely, ensuring it remains reachable even if it goes idle for an extended period. This permanent hold does not apply when the client is adjacent to multiple gateways: the route is refreshed only while the client keeps talking (packets within a 6-second window); once refreshes stop, it expires after a 3-second keepalive interval (defaults, derived from nylon's internal `ProbeDelay` tunable). With multiple gateways, enable Persistent Keepalive to keep the route alive during idle periods. With a sole-advertising gateway, you should only enable Keepalive if:
+When a gateway is the **sole advertiser** of a passive client's prefix, nylon retains the route for that client indefinitely, ensuring it remains reachable even if it goes idle for an extended period. The indefinite hold starts from the last live advertisement: a configured client that has not sent a packet since the gateway (re)started is not advertised until it does — any authenticated packet, including a keepalive, bootstraps it. The hold is skipped while another gateway's advertisement or route for the prefix is visible (a route with a finite metric from a different source); graph adjacency alone does not suppress it — the competing advertisement, refreshed by the gateway that now holds the client, is what ends the hold. Refreshes continue while the client keeps talking (silence under `ClientDeadThreshold`, 6 s); the last refresh sets the 3-second advertisement TTL, and the 1-second garbage collection removes the lapsed advertisement — so the prefix is withdrawn roughly 8-10 seconds after the client's last packet. With multiple gateways, enable Persistent Keepalive to keep the route alive during idle periods, with an interval faster than `ClientDeadThreshold` (6 s default) — 5 s as used by the passive-roaming e2e test, since the commonly recommended 25-second Persistent Keepalive is too slow and the route lapses; the conservative bound is under `ClientKeepaliveInterval` (3 s). With a sole-advertising gateway, you should only enable Keepalive if:
 
 1. You need other nodes to be able to initiate connections to the client after long periods of silence.
 2. You really wish to drain the battery of the client device for some reason...
