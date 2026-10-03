@@ -37,7 +37,7 @@ Nylon targets under 10 seconds of convergence time after a link failure, as you 
 ### Main Features
 - **Multi-hop Routing**: traffic flows through the lowest-latency path across your mesh. Unlike Tailscale, Nebula, or ZeroTier, nodes don't need to be directly reachable from each other. Nylon forwards through intermediate hops automatically.
 - **No Coordination Server**: no SaaS dependency, no single control-plane. Nodes exchange routes directly over the same WireGuard tunnel that carries your data.
-- **Single Binary, Single Port**: one statically-linked daemon binary, one UDP port (`57175`), one YAML config. That's it. Optional companion tools ship separately: `nylon-lb` and `nylon-genesis`.
+- **Single Binary, Single Port**: one statically-linked daemon binary, one UDP port, one config pair (`node.yaml` + `central.yaml`). That's it. Set `port` explicitly in `node.yaml` — no code default; `57175` is the default for endpoints that omit a port, and the conventional value. `central.yaml` can be auto-fetched from `node.yaml`'s `dist` block on first start. Optional companion tooling ships as separate artifacts: `nylon-genesis` as a raw release binary in the same release, `nylon-lb` as the `ghcr.io/arsolitt/nylon/nylon-lb` container image (never archived).
 - **WireGuard Client Compatibility**: on meshes running the vanilla compatibility profile, connect stock WireGuard clients (iOS, Android, Windows) with zero extra software, and let mobile clients roam between gateways seamlessly. Obfuscated (AmneziaWG) profiles change the handshake format, so stock clients cannot join those meshes.
 - **Native WireGuard Speeds**: the data-plane runs entirely in `wireguard-go` (polyamide), so forwarded traffic stays on the WireGuard data path with no extra proxy hop.
 
@@ -55,7 +55,7 @@ Sample systemd service and launchctl plist files can be found under the [`exampl
 >
 > **Security:** Obfuscation reshapes handshake packets on the wire — sizes, type words and padding — while the cryptography and key exchange stay vanilla WireGuard. All nylon control traffic (route updates, probes) is sent inside the encrypted WireGuard tunnel. Report security concerns via [GitHub issues](https://github.com/Arsolitt/nylon/issues).
 >
-> **Windows:** The Windows client has known issues. For now, I recommend connecting Windows machines as [passive WireGuard clients](https://arsolitt.github.io/nylon-docs/guides/wg-clients/) via a Linux/macOS gateway.
+> **Windows:** The Windows client has known issues, and no Windows binaries are published — it is cross-compiled in CI only. For now, I recommend connecting Windows machines as [passive WireGuard clients](https://arsolitt.github.io/nylon-docs/guides/wg-clients/) via a Linux/macOS gateway.
 >
 > Bugs and feature requests welcome via [GitHub issues](https://github.com/Arsolitt/nylon/issues).
 
