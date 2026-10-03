@@ -90,7 +90,7 @@ routers:
         delay: 10s               # interval between pings (default: 15s)
         max_failures: 3          # failures before withdrawal (default: 3)
         bind_if: en10            # optional: bind to a specific interface
-        # metric: 0              # optional: override RTT with a static metric
+        # metric: 0              # optional: override RTT with a static metric (advertised unconditionally; suppresses failure retraction)
 
       # HTTP: advertised with request duration as metric, withdrawn on non-200 response
       - type: http
@@ -207,6 +207,8 @@ graph:
 timestamp: 1740832962209309000
 ```
 
+A `metric` override behaves differently per check type. On a `ping` entry the value is advertised unconditionally from startup and suppresses failure retraction, so the prefix stays announced even when the probe target is down; leave it unset if you want health-driven withdrawal. On an `http` entry the override replaces only the healthy request-duration metric, and failures still retract. See [Dynamic Prefixes](/reference/dynamic-prefixes) for the full behavior.
+
 The `obf` profile and the per-node `i1`-`i5` specs are normally produced by `nylon genesis`, which picks viable header ranges automatically. See [Obfuscation](/guides/obfuscation) for the wire-format background and [Genesis](/guides/genesis) for the generation workflow.
 
 ---
@@ -223,7 +225,7 @@ Two independent `obf` blocks exist. The mesh-wide profile sits at the top level 
 | `jmin`  | uint32                          | `0`                 | must not exceed `jmax`                                                                                             |
 | `jmax`  | uint32                          | `0`                 | —                                                                                                                  |
 | `s1`-`s4` | uint32                        | `0`                 | —                                                                                                                  |
-| `h1`-`h4` | map with `min`/`max` (uint32) | `min: 0`, `max: 0`  | `min` must not exceed `max` within a range; ranges must not overlap (the device rejects overlaps with an `overlap` error) |
+| `h1`-`h4` | map with `min`/`max` (uint32) | `min: 0`, `max: 0`  | `min` must not exceed `max` within a range; ranges must not overlap (the device rejects overlaps at UAPI apply time with `headers must not overlap`) |
 
 Each `h1`-`h4` range maps to the AmneziaWG UAPI `min-max` form. Omitting the entire `obf` block keeps vanilla WireGuard-compatible header values (`h1` through `h4` pinned to `1-1`, `2-2`, `3-3`, and `4-4`). Ranges that `nylon genesis` generates avoid WireGuard message type ids 1-4.
 
