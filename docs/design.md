@@ -370,18 +370,20 @@ Field-for-field mirror of the three health-config structs in `state/prefix_healt
 ### 4.3 Merge semantics — one choke point
 
 Injection happens inside `ApplyCentralConfig` (`core/nylon_apply.go:21`), **after**
-`normalizeCentralConfig` (`:22–25`) and **before** the `reflect.DeepEqual` noop check (`:29`):
+`normalizeCentralConfig` (`:22–25`) and **before** the `reflect.DeepEqual` noop check (`:37`):
 
 1. `candidate` = normalized central config (validation runs on central content only).
-2. Append the parsed dynamic entries (held in a new field, planned `Nylon.dynamicPrefixes`) to the
-   local node's `Prefixes []state.PrefixHealthWrapper` entry in `candidate`.
+2. Append the parsed dynamic entries (held in `Nylon.dynamicPrefixes`, `core/nylon.go:41`, with the
+   pre-injection snapshot in `Nylon.centralCfgPristine`, `:42`, re-applied by the watcher through
+   `ApplyCentralConfig`, `core/dynamic_prefixes.go:238`) to the local node's
+   `Prefixes []state.PrefixHealthWrapper` entry in `candidate`.
 3. The noop check now sees dynamic state — steady state with unchanged files = `ApplyNoop`.
-4. `reconcileRouterState` (`:36`) → `reconcileAdvertisedPrefixes` (`:39`) start/stop health monitors
-   for the merged set and update `RouterState.Advertised` (`state/routing.go:45–46`).
-5. Commit `n.CentralCfg = *candidate` (`:40`).
+4. `reconcileRouterState` (`:44`) → `reconcileAdvertisedPrefixes` (`:47`) start/stop health monitors
+   for the merged set and update `RouterState.Advertised` (`state/routing.go:50`).
+5. Commit `n.CentralCfg = *candidate` (`:48`).
 
 All three callers inherit the injection: the distribution poller
-(`core/nylon_distribution.go:88`), IPC reload (`core/ipc_handler.go:469`), and the new watcher
+(`core/nylon_distribution.go:89`), IPC reload (`core/ipc_handler.go:506`), and the new watcher
 (§4.5). Central updates never clobber dynamic state because injection is re-applied from
 `Nylon.dynamicPrefixes` on every apply, and the committed `CentralCfg` carries the merged view.
 
@@ -453,7 +455,7 @@ Carried over from the 2026-08-16 note, updated to the JSON contract:
 
 ## 6. nylon-lb — LoadBalancer over the mesh (design only, this round)
 
-> **Implementation status:** nylon-lb has shipped (`cmd/nylon-lb`) with a simpler architecture than this section: a single per-node DaemonSet runs one binary containing a **leader-elected allocator** and a **per-node speaker** (`--allocator`/`--speaker`, both default true; the allocator is leader-elected via a Lease, `--leader-elect`, default true). Allocation is stateless — derived from live Services against the named `--pool name=cidr` set (each Service selects its pool via the `nylon.io/lb-pool` annotation; lowest free address within the selected pool, `--exclude` protects reserved IPs), not persisted in a ConfigMap (§6.3) — and there is no finalizer and no `spec.externalIPs` write (§6.2): the allocator sets `status.loadBalancer.ingress` and honors `spec.loadBalancerIP` when it is free and inside the selected pool. The `anycast`/`single` modes (§6.4) have no flags: `spec.externalTrafficPolicy` decides which nodes are eligible (`Cluster` — every node announces the /32; `Local` — only nodes with a ready endpoint), and the `nylon.io/announce: single` annotation elects exactly one eligible node deterministically (sorted node list, no coordination); `single` with the `Cluster` policy degrades to anycast with a warning. Announce files are one `lb-<namespace>-<service>.json` per Service in `--prefixes-dir` (default `/etc/nylon/prefixes.d`), and the speaker binds each announced /32 on `--bind-interface` (default `lo`) via netlink; a withdrawn /32 stays bound for a 60 s drain window before it is unbound. §6.7's anti-split-brain guard ships without the ConfigMap/lease machinery: a single-mode announcer withdraws when its own direct API probe has been failing for 30 s (probed every 10 s), so it cannot keep the /32 while the API view it relies on is stale. The persisted state store and §6.8 (control-plane VIP) are design-only.
+> **Implementation status:** nylon-lb has shipped (`cmd/nylon-lb`) with a simpler architecture than this section: a single per-node DaemonSet runs one binary containing a **leader-elected allocator** and a **per-node speaker** (`--allocator`/`--speaker`, both default true; the allocator is leader-elected via a Lease, `--leader-elect`, default true). Allocation is stateless — derived from live Services against the named `--pool name=cidr` set (each Service selects its pool via the `nylon.io/lb-pool` annotation; lowest free address within the selected pool, `--exclude` protects reserved IPs), not persisted in a ConfigMap (§6.3) — and there is no finalizer and no `spec.externalIPs` write (§6.2): the allocator sets `status.loadBalancer.ingress` and honors `spec.loadBalancerIP` when it is free and inside the selected pool. The `anycast`/`single` modes (§6.4) have no flags: `spec.externalTrafficPolicy` decides which nodes are eligible (`Cluster` — every node announces the /32; `Local` — only nodes with a ready endpoint), and the `nylon.io/announce: single` annotation elects exactly one eligible node deterministically (FNV-1a hash of the Service key modulo the sorted eligible-node list, no coordination); `single` with the `Cluster` policy degrades to anycast with a warning. Announce files are one `lb-<namespace>-<service>.json` per Service in `--prefixes-dir` (default `/etc/nylon/prefixes.d`), and the speaker binds each announced /32 on `--bind-interface` (default `lo`) via netlink; a withdrawn /32 stays bound for a 60 s drain window before it is unbound. §6.7's anti-split-brain guard ships without the ConfigMap/lease machinery: a single-mode announcer withdraws when its own direct API probe has been failing for 30 s (probed every 10 s), so it cannot keep the /32 while the API view it relies on is stale. The persisted state store and §6.8 (control-plane VIP) are design-only.
 
 ### 6.1 Concept
 
@@ -532,7 +534,7 @@ Design decision: the floating apiserver VIP uses **anycast** mode (§6.4).
 
 ## 7. Zones — org-wide multi-cluster mesh
 
-> **Implementation status:** Design-only — zones are not implemented and no zone or gossip code exists in the repository.
+> **Implementation status:** Design-only — zones are not implemented and no zone synthesis or gossip membership code exists. Zone-adjacent artifacts do exist: zone-aware comments (`core/router.go:262`), fail-closed receiver handling for foreign-gateway re-advertisements with a warn-once tunable (`core/router.go:360–370`; `state/tunables.go:30–33`, `:96`), two-zone gateway scenarios in unit tests (`core/sys_route_test.go:94–115`; `core/nylon_tc_test.go:33–66`), and the learned-more-specifics-inside-self-aggregates fixes those labs produced (`62e5823`, `d4c97a2`).
 
 ### 7.1 Model
 
@@ -649,6 +651,8 @@ their only control. Stated explicitly: L4/L7 policy exists only where Cilium run
 
 ## 8. PoC plan
 
+> **Implementation status:** Stage-2/3 outcome builds (`63c4349`, `fcc32ed`) are from the `fork/awg` test-stand branch and are not resolvable from this repository; stages 4 (soak) and 5 (two-zone lab) have no recorded outcomes.
+
 1. **Vanilla nylon** — 3 VMs, netem break A↔B: convergence time, throughput, long-lived TCP
    survival across link failure/recovery.
 2. **polyamide-awg** — pcap: handshake indistinguishable from the mimicked protocol (target from
@@ -715,7 +719,7 @@ their only control. Stated explicitly: L4/L7 policy exists only where Cilium run
 | R3 | k8s IPAM changes `podCIDR` on node recreation | sidecar rewrites `10-podcidr.json`; withdraw/re-announce handled by existing health/Babel machinery; acceptance covered in PoC stage 3 |
 | R4 | nylon is a per-node SPOF | systemd `Restart=always` + `StartLimitIntervalSec=0` + watchdog (§2.5b); drain/maintenance procedures (§5) |
 | R5 | `prefixes.d` is an unauthenticated local control surface | directory root-owned `0755`, files root-owned `0644`; only root/hostPath writers; fail-closed parsing (§4.4) |
-| R6 | zone synthesis bug leaks or strands routes | fail-closed by upstream `checkPrefix`/`checkNode` — unknown prefix or origin ⇒ drop (`core/router.go:327–343`, §7.3); e2e zone suite in CI (stage 5 assertions automated, §8) |
+| R6 | zone synthesis bug leaks or strands routes | fail-closed by upstream `checkPrefix`/`checkNode` — unknown prefix or origin ⇒ drop (`core/router.go:347–378`, §7.3); zone semantics exercised by unit tests only (`core/sys_route_test.go:94–115`, `core/nylon_tc_test.go:33–66`) — no zone e2e suite exists in `e2e/` |
 | R7 | single gateway per zone = cross-zone SPOF (worker-as-gateway, §7.6) | accepted temporarily; gate: ≥ 2 gateways per zone before production cross-zone traffic; monitor `nylon_selected_routes` / `nylon_route_metric` (`docs/guides/observability.mdx`) |
 
 ---
