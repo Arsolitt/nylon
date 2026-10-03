@@ -113,7 +113,7 @@ Nylon rejects invalid profiles at apply time rather than producing a broken mesh
 
 - Header ranges (`h1`–`h4`) must not overlap each other; an overlapping set fails with an `overlap` error.
 - Genesis-generated header ranges must stay clear of the vanilla WireGuard type ids 1–4. This clearance is enforced at generation time by [nylon-genesis](/guides/genesis); a hand-written `central.yaml` overlapping 1–4 is not rejected at apply.
-- AmneziaWG 3.x-only parameters are rejected with a `3.x-only` error: `header_protection_key`, `content_padding_addition`, `random_trailers`, `disable_cookies`, `rekey_after_time`, `rekey_timeout`, `reject_after_time`, `keepalive_timeout`, and `max_handshake_attempts`. No non-2.0 wire format can be activated.
+- AmneziaWG 3.x-only parameters (`header_protection_key`, `content_padding_addition`, `random_trailers`, `disable_cookies`, `rekey_after_time`, `rekey_timeout`, `reject_after_time`, `keepalive_timeout`, and `max_handshake_attempts`) are rejected only at the device UAPI boundary, where the parser fails them with `UAPI knob %q is AWG 3.x-only and unsupported by this AWG 2.0 build`. They are not `central.yaml` fields — the config decoder silently ignores unknown YAML keys, so a hand-written 3.x parameter under `obf:` is ignored, not rejected. No non-2.0 wire format can be activated.
 
 ## Generating Profiles with nylon-genesis
 
