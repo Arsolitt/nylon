@@ -56,18 +56,20 @@ A one-line human summary goes to stderr. Attach the JSON output and a short log 
 
 ## Inspect a running node
 
-Every command in this table except `nylon verify` talks to the daemon over its IPC socket, so it works only while the daemon is up. When the daemon is not running — or `-i` names the wrong interface — the command exits 1 with:
+Every command in this table except `nylon verify` talks to the daemon over its IPC socket, so it works only while the daemon is up. When the daemon is not running — or `-i` names the wrong interface — the command exits 1. On Linux with the default interface name, it prints:
 
 ```text
 Error: connect to nylon: dial unix /var/run/wireguard/nylon.sock: connect: no such file or directory
 ```
+
+The socket is named after the daemon's real interface (`<iface>.sock` under `/var/run/wireguard`): on macOS that is the kernel-assigned `utunN.sock` — pass that name to `-i` — and on Windows the endpoint is a named pipe (`\\.\pipe\ProtectedPrefix\Administrators\WireGuard\<name>`) instead.
 
 | Command | Purpose |
 | --- | --- |
 | `nylon status` | Neighbours and selected routes (`--routes` for route tables, `--full` for routing internals). |
 | `nylon probe <peer>` | Probe connectivity to one peer (`--timeout`, default `2s`; values above `10s` are silently capped). |
 | `nylon trace` | Live stream of the daemon's packet-routing decisions. Requires the daemon to have been started with `--dbg-trace-tc`; otherwise it fails with `Error: tracing not enabled; restart with --dbg-trace-tc`. |
-| `nylon reload` | Re-read the central config from disk without a restart; prints `Result: NOOP|APPLIED|REJECTED|RESTART_REQUIRED`, and exits non-zero on `REJECTED`. |
+| `nylon reload` | Re-read the central config from disk without a restart; prints `Result: NOOP|APPLIED|RESTART_REQUIRED` (plus `Message:` when set), and on `REJECTED` exits 1 with an `Error:` line. The `--file` flag is accepted but ignored. |
 | `nylon verify <central-config>` | Validate configs without starting the daemon (`--node <node-config>` also checks a node config); prints `Config is valid` or `Error: <reason>`. |
 
 `status`, `probe`, and `trace` accept `-i/--interface` (default `nylon`); `status` and `probe` also accept `--json` for machine-readable output. `trace` accepts no other flags.
@@ -80,11 +82,13 @@ Flags for `nylon run`:
 - `--dbg-trace` writes a Go runtime trace to `trace.out`; inspect it later with `go tool trace`.
 - `--dbg-trace-tc` traces the daemon's packet-routing decisions; `nylon trace` streams them live. `nylon status` reports `trace enabled` based on this flag only — setting `--dbg-trace` does not affect it.
 - `--dbg-wg` enables WireGuard (polyamide) logs. They are emitted at info level, so they appear at the default log level.
+- `--dbg-probe` (`-p`) writes probe debug lines (`probe from`, `probe back`) at Debug level; needs `--log-level debug` to be visible.
+- `--dbg-repo` logs stale repo bundles (`found old update bundle at <repo>, skipping`) at Debug level; also needs `--log-level debug`.
 
 ## Metrics quick pointers
 
 - Alert when a peer goes silent: `time() - nylon_wireguard_peer_latest_handshake_seconds > 300`. See [Observability](/guides/observability) for the full expression and its caveats.
-- Check hot-loop health with the `nylon_perf_*` gauges: dispatch latency and batch size quantiles, plus 10-second windowed send/receive rates.
+- Check hot-loop health with the `nylon_perf_*` gauges: dispatch latency and batch size quantiles (a 1-minute window for dispatch latency, 10 s for the rest), plus send/receive values that are counts accumulated over the 10-second window, not per-second rates.
 
 ## Debugging nylon-lb
 
