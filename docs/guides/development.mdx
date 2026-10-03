@@ -11,6 +11,7 @@ Everything in nylon's development workflow routes through one file: the `Makefil
 
 - **Go 1.26.3** — the toolchain is pinned to this exact version in `mise.toml`, `go.mod`, the root `Dockerfile`, and `cmd/nylon-lb/Dockerfile.dev`, and every CI job resolves it through `actions/setup-go` with `go-version-file: go.mod`, so every environment builds with the same compiler.
 - **Docker** — required for the e2e suite, which runs real containers through [testcontainers](https://go.testcontainers.org/). The unit and integration suites do not need it.
+
 The Makefile exports `CGO_ENABLED=0` for all builds, so you get fully static binaries without touching your shell environment.
 
 For the configs that `nylon-genesis` generates, see the [genesis guide](/guides/genesis).
@@ -24,7 +25,7 @@ For the configs that `nylon-genesis` generates, see the [genesis guide](/guides/
 | `make nylon-genesis` | Builds `bin/nylon-genesis` only, from `./cmd/nylon-genesis`. |
 | `make nylon-lb` | Builds `bin/nylon-lb` only, from `./cmd/nylon-lb`. |
 | `make test` | Runs `gotestsum --race -tags=router_test ./...` — the tagged Babel scenarios plus all untagged unit tests (core and `polyamide/`). |
-| `make test-integration` | Runs the in-process integration suite (`-tags=integration ./integration/...`) — needs no Docker. |
+| `make test-integration` | Runs the in-process integration suite (`--race -tags=integration ./integration/...`) — needs no Docker. |
 | `make test-e2e` | Runs the e2e suite (`-tags=e2e ./e2e/... -parallel $(NPROC)`) — requires Docker. |
 | `make test-all` | Runs all three suites in sequence. |
 | `make notice` | Regenerates `NOTICE` and `licenses/` via `go run ./hack/noticegen` — CI's licenses job fails when they are stale. |
@@ -95,7 +96,7 @@ Boots multi-node topologies as Docker containers (the `nylon-debug` image from a
 | `TestDistributionRejectsLocalNodeRemoval` | A bundle removing the local node is rejected; the timestamp stays unchanged. |
 | `TestDistributionRejectsInvalidCentralConfig` | An invalid bundle is rejected. |
 | `TestHealthcheckPing` | Two nodes anycast a ping-checked /32 and fail over by metric. |
-| `TestHealthcheckHTTP` | An HTTP-checked service IP fails over from backup (static metric 1000) to primary (HTTP metric 10) when the server starts. |
+| `TestHealthcheckHTTP` | An HTTP-checked service IP fails over from backup (static metric 10,000,000 µs = 10 s) to primary (HTTP metric 10) when the server starts. |
 | `TestJSONLogging` | `--json` emits slog JSON records. |
 | `TestIPCRawSocketJSONHasNoErrnoTrailer` | A raw UAPI `get=nylon` returns pure protojson with no errno trailer. |
 | `TestTunDropReproduction1CPU` | A 1-CPU node pushes eight iperf3 streams through `nylon0`; its `tx_dropped` grows by at most 50 over 15 s while the run carries ≥ 1e8 bit/s. |
