@@ -21,7 +21,7 @@ graph LR
 ```
 
 ### Connecting to a Gateway
-When a passive node connects to a gateway, the gateway identifies it using its WireGuard public key (defined in `central.yaml`). Once identified, the gateway begins advertising all of the addresses and prefixes associated with that passive node on the central config.
+When a passive node connects to a gateway, the gateway identifies it using its WireGuard public key (defined in `central.yaml`). A gateway creates the client's WireGuard peer only when the two are graph-adjacent (a `graph` edge in `central.yaml`), and it begins advertising all of the addresses and prefixes associated with that passive node on the central config only after receiving at least one authenticated packet from the client.
 
 :::note
 
@@ -32,7 +32,7 @@ There are no health checks for the prefixes advertised by the passive node.
 ### Seamless Roaming
 Nylon supports seamless roaming for passive nodes. If a passive node switches its connection from Gateway `A` to Gateway `B`:
 1. Gateway `B` detects the new connection and immediately begins advertising the node's IPs.
-2. Gateway `A` detects that the passive node has stopped sending traffic, and places the route into a "Passive Hold" state (see below).
+2. Gateway `A` detects that the passive node has stopped sending traffic and, about 6 s (`ClientDeadThreshold`) after the client's last packet, places the route into a "Passive Hold" state (see below), but only while it is the sole visible advertiser of the prefix and its own advertisement has not yet expired. If gateway `B`'s advertisement is already visible, `A` skips the hold and its advertisement lapses instead — `A` stops refreshing once the client is silent past `ClientDeadThreshold` and the competing advertisement is visible, and its advertisement is withdrawn roughly 8-10 seconds after the client's last packet to `A` (the last refresh sets a 3 s advertisement TTL, and the 1 s garbage collection removes it).
 3. Gateway `A` observes the new advertisement from Gateway `B`, and preempts its own "held" route.
 4. Gateway `A` stops advertising the node, allowing the network to converge on the path through Gateway `B`.
 
@@ -56,13 +56,17 @@ This means:
 
 To solve this, when a passive node goes silent, the gateway enters a "Passive Hold" state for that node. The gateway continues to advertise the client's prefixes, but at a metric of `INFM / 2` (where `INFM` = `0xFFFFFFFE`, so the hold metric is `2,147,483,647`). This allows the route to remain active in the network, but ensures that any new connection from the client to another gateway will take precedence.
 
-At the same time, if the gateway detects any new advertisement for that client from another gateway, it will immediately preempt its own "held" route and stop advertising the client altogether. This allows for seamless roaming without the need for keepalives.
+Passive hold is driven by built-in defaults rather than configuration fields: `ClientKeepaliveInterval` is the advertisement TTL (3 s), `ClientDeadThreshold` is the silence after which a client counts as gone (6 s, twice `ClientKeepaliveInterval`), `ProbeDelay` is the passive scan cadence (1 s), and `GcDelay` is the garbage collection cadence (1 s).
+
+At the same time, if the gateway detects any new advertisement for that client from another gateway, it stops refreshing its own "held" route. The advertisement expires `ClientKeepaliveInterval` (3 s) after its last refresh and is removed by the garbage collector (1 s cadence), so the prefix is withdrawn within roughly 4 s rather than instantly. This allows for seamless roaming without the need for keepalives.
 
 ---
 
 ## Miscellaneous Notes
 
 Nylon does support advanced routing features for passive nodes, such as **anycast**. However, there are some important caveats to be aware of when using passive nodes.
-1. Anycast passive nodes will stop having their prefixes advertised when they go silent. This can lead to suboptimal routing or oscillations if the passive node sends data over a long interval. You should consider enabling keepalives for anycast nodes to ensure they remain active in the network. (This should be less than `ClientKeepaliveInterval`)
+1. Anycast passive nodes will stop having their prefixes advertised when they go silent. This can lead to suboptimal routing or oscillations if the passive node sends data over a long interval. You should consider enabling keepalives for anycast nodes to ensure they remain active in the network. (Keepalives must arrive within `ClientDeadThreshold` (6 s, with scans every 1 s) to keep the advertisement refreshed. Use e.g. 5 s; staying below `ClientKeepaliveInterval` (3 s) is the conservative bound.)
 2. Passive nodes cannot advertise the same prefix as the gateway itself, or any other client which might be connected to the same gateway. This is because there is no easy way to determine which client is best.
-3. Due to passive hold, there will always be a gateway advertising the client's prefixes, even if the client is turned off. (Assuming the gateway is still active.) This means that if a client is truly offline, the route will be effectively blackholed.
+3. Due to passive hold, there will always be a gateway advertising the client's prefixes, even if the client is turned off. (Assuming the gateway is still active and the client has been heard since the gateway started: the hold bootstraps from a live advertisement, so a client that has not sent a packet since a gateway restart is simply not advertised.) This means that if a client is truly offline, the route will be effectively blackholed.
+
+The **Passive Hold** state is visible in the CLI and discovery surfaces: `nylon status` marks client neighbours with `[passive client]` and held advertisements with `passive-hold`, and the discovery endpoint reports `nylon_node_type=passive` for client nodes. Because `INFM / 2` is well below `INFM`, a held metric still renders numerically (`2147483647`) rather than as `INF`.
