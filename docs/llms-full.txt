@@ -1,0 +1,2062 @@
+---
+url: /
+---
+# nylon
+
+:::note[Hard fork]
+This site documents a **hard fork** of [encodeous/nylon](https://github.com/encodeous/nylon) with fork-only additions: [AmneziaWG 2.0 traffic obfuscation](/guides/obfuscation), [runtime dynamic prefixes](/reference/dynamic-prefixes), the [`nylon-lb` LoadBalancer controller](/guides/nylon-lb), and the [`nylon-genesis` obfuscation-parameter generator](/guides/genesis). The upstream project and its original documentation remain at [github.com/encodeous/nylon](https://github.com/encodeous/nylon) and [nylon.jq.ax](https://nylon.jq.ax).
+:::
+
+Nylon is a self-healing WireGuard mesh that routes around failures. If a link goes down, nylon reroutes traffic through the next-best path in seconds. No manual intervention, no central coordination servers.
+
+[See how nylon compares to Tailscale, Nebula, and DIY setups →](/why-nylon)
+
+## Here's another example
+
+Here is a network of 5 nodes, where the numbers on the edges represent the routing metric (nylon uses latency).
+
+:::note
+Nylon does not require a fully connected network. Nodes forward packets on behalf of their neighbours, so routing works as long as any path exists between two nodes.
+:::
+
+```mermaid
+graph LR
+    vps --- |2| charlie
+    vps --- |2| alice
+    eve --- |1| bob
+    vps --- |5| eve
+    alice --- |1| bob
+```
+
+```yaml
+routers:
+  - id: vps
+    pubkey: dJcUE1qnXCQ5x8pMhFb/MZab7YrBaaHcrgfbmQI0MW4=
+    addresses: [10.0.0.1]
+    endpoints:
+      - "vps.encodeous.ca"
+  - id: alice
+    pubkey: xmfAovAKN4AY5ocK5s+/VsG9I27KrQ13Vzb0HOsLKAs=
+    addresses: [10.0.0.2]
+  - id: bob
+    pubkey: 4GfHHSyVpXc+wkbjyIIONERa6Xf5EafB0nVGZLf2r2o=
+    addresses: [10.0.0.3]
+    endpoints:
+      - "192.168.1.19:57175"
+  - id: charlie
+    pubkey: WcCkKijU0brYnRzxk867HTDyYFf/cqiKTTOLSxtWoFc=
+    addresses: [10.0.0.4]
+  - id: eve
+    pubkey: 2mXTTD+FYdtJm/v1vSHz8qimvCucjW9vY+nLYacXJFE=
+    addresses: [10.0.0.5]
+
+graph:
+  - trio = alice, charlie, eve
+  - vps, trio
+  - bob, eve
+  - bob, alice
+```
+
+From `alice`, nylon selects the path of least metric to each destination (highlighted):
+
+```mermaid
+graph LR
+    vps --- |2| charlie
+    vps --- |2| alice
+    eve --- |1| bob
+    vps --- |5| eve
+    alice --- |1| bob
+    linkStyle 0 stroke:#4caf50,stroke-width:2px
+    linkStyle 1 stroke:#4caf50,stroke-width:2px
+    linkStyle 2 stroke:#4caf50,stroke-width:2px
+    linkStyle 4 stroke:#4caf50,stroke-width:2px
+```
+
+If the `alice - bob` link goes down, the network automatically reconfigures around the failure:
+
+```mermaid
+graph LR
+    vps --- |2| charlie
+    vps --- |2| alice
+    eve --- |1| bob
+    vps --- |5| eve
+    alice --- |1| bob
+    linkStyle 0 stroke:#4caf50,stroke-width:2px
+    linkStyle 1 stroke:#4caf50,stroke-width:2px
+    linkStyle 2 stroke:#4caf50,stroke-width:2px
+    linkStyle 3 stroke:#4caf50,stroke-width:2px
+    linkStyle 4 stroke:#e53935,stroke-width:2px,stroke-dasharray:5
+```
+---
+url: /why-nylon
+---
+# Why Nylon?
+
+Nylon is a self-healing WireGuard mesh that routes around failures. If a link goes down, nylon reroutes traffic through the next-best path in seconds. No manual intervention, no central coordination servers.
+
+Under the hood, nylon implements the machinery of the [Babel routing protocol (RFC 8966)](https://datatracker.ietf.org/doc/html/rfc8966) over a custom in-band protobuf control plane — not wire-interoperable with Babel daemons — on top of a [modified wireguard-go](https://github.com/Arsolitt/nylon/tree/main/polyamide), using measured latency as the routing metric for learned mesh links (some advertised prefixes carry static or health-check metrics), with damped switching (~10% deadband, 5 s hold).
+
+### Main Features
+
+- **Multi-hop Routing**: Traffic flows through the lowest-latency path across your mesh. Unlike Tailscale, Nebula, or ZeroTier, nodes don't need to be directly reachable from each other. Nylon forwards through intermediate hops automatically.
+- **No Coordination Server**: No SaaS dependency, no single control-plane. Nodes exchange routes directly over the same WireGuard tunnel that carries your data.
+- **Single Daemon Binary, Single Port**: One statically-linked daemon binary, one UDP port (set `port` in node.yaml — there is no code default; `57175` is the convention and the fallback for endpoints without a port), one YAML config per node (node.yaml), plus the shared central.yaml, which the daemon can bootstrap from node.yaml's `dist` block on first start. That's all a node runs. Optional companion tools: `nylon-genesis` as a raw binary in the same release (generates the mesh-wide `obf` profile and per-node I1-I5 obfuscation parameters) and `nylon-lb` as a container image only (anycast LoadBalancer VIPs).
+- **WireGuard Client Compatibility**: On meshes running the vanilla compatibility profile, stock WireGuard clients (iOS, Android, Windows) join with zero extra software, and mobile clients roam between gateways seamlessly. Obfuscated (AmneziaWG) profiles change the handshake format, so stock clients cannot connect to obfuscated nodes — see [Traffic Obfuscation](/guides/obfuscation).
+- **Native WireGuard Speeds**: Data-plane runs entirely in `wireguard-go` (polyamide), so forwarded traffic stays on the WireGuard data path with no extra proxy hop.
+
+## Comparison
+
+| Feature               | **nylon**                                      | **Tailscale**                            | **Nebula**              | **DIY WG+Babel**                      |
+| :-------------------- | :--------------------------------------------- | :--------------------------------------- | :---------------------- | :------------------------------------ |
+| **Topology**          | **Partial mesh: nodes forward for each other** | Full mesh (every pair needs a tunnel)    | Full mesh               | Partial mesh (manual setup)           |
+| **Routing**           | **Latency-aware, automatic multi-hop**         | No routing (relay only, no optimization) | No routing              | Yes (depends on daemon)               |
+| **Self-healing**      | **Yes — mesh links heal in seconds**           | Relies on coordination server            | No automatic failover   | Yes (depends on daemon)               |
+| **Coordination**      | **None required (fully in-band)**              | Centralized (SaaS/Headscale)             | Lighthouse servers      | Manual (out-of-band protocol)         |
+| **WireGuard Clients** | **Stock iOS/Android/Windows clients work**     | Tailscale client only                    | Nebula client only      | Manual configuration                  |
+| **NAT Traversal**     | Port forward or public relay node              | **STUN/ICE/DERP (best-in-class)**        | Public lighthouse nodes | Manual                                |
+| **Configuration**     | Central YAML file                              | Web Dashboard / SSO                      | Certificates & CA       | Multiple configs + network namespaces |
+| **License**           | Apache 2.0                                     | Proprietary SaaS / BSD-3 client          | MIT                     | Various                               |
+
+Healing times depend on what failed. Measured by the fork maintainer in proof-of-concept testing: a broken mesh link heals in about **3 seconds**. Routes announced through dynamic prefix announcements (for example, Kubernetes pod CIDRs) converge in **20–25 seconds** — the route lags the mesh heal while Babel resolves the sequence-number request cycle. And when the original link comes back, restoring the direct path can take a couple of minutes (**102 s** observed) while Babel ages the stale route.
+
+:::caution[Encryption Model]
+Nylon uses WireGuard's encryption **hop-by-hop**, not end-to-end. Each link between adjacent nodes is encrypted, but intermediate nodes decrypt and re-encrypt forwarded traffic. This is the same model as DIY WireGuard+Babel setups. If you need end-to-end encryption between every pair of nodes, Tailscale or Nebula may be a better fit.
+:::
+
+## When to use nylon
+
+- **Distributed edge nodes**: Build low-latency anycast networks for geographically distributed services that adapt to changing conditions.
+- **Home lab networking**: Connect home devices, servers, and cloud resources into a single resilient network.
+- **Sovereign networks**: Fully independent mesh that works in isolated or air-gapped environments. No "phone-home" requirement.
+- **Optimized routing**: Automatically use the lowest-latency path without manual configuration changes.
+
+## Nylon vs. DIY WireGuard+Babel
+
+If you've ever tried to build a dynamic network using WireGuard + Babel (or BGP), you know how powerful it can be, but also how painful it is to maintain.
+
+[The typical setup](https://forum.mikrotik.com/t/best-approach-to-mesh-y-vpn-with-ospf/175811) involves running separate WireGuard interfaces for every peering arrangement, along with a routing daemon to manage dynamic routing. This gives you a powerful, self-healing network, but it's cumbersome to set up and maintain.
+
+**Nylon is that powerful DIY stack refined into a single, opinionated binary.** It automates the tedious parts, giving you the resilience of a professional routing setup with the ease of a modern VPN.
+---
+url: /guides/getting-started
+---
+# Getting Started
+
+This guide will walk you through setting up a basic nylon network with two nodes.
+
+```mermaid
+graph LR
+    node1(node-1<br/>10.0.0.1) <--> node2(node-2<br/>10.0.0.2)
+```
+
+## Prerequisites
+
+- Two machines with UDP port `57175` open (can configure with a different port).
+- The `nylon` binary downloaded on both machines from the [releases page](https://github.com/Arsolitt/nylon/releases).
+
+:::note
+The Linux and macOS versions are well tested. The fork maintainers report that the Windows TUN interface has stability issues, so for Windows we recommend using [WireGuard for Windows](https://www.wireguard.com/install/) and connecting to a Linux/macOS machine as a [passive client](/guides/wg-clients).
+:::
+
+1. **Generate Keypairs**
+
+   On each node, generate a WireGuard keypair:
+
+   ```bash
+   nylon key
+   ```
+
+   This will output two keys (example):
+
+   ```text
+   kPoLiC4+Nh9AoQGiBmJTh+8BUqCMsa6Zdr4M0Xz5bX0=
+   9Z1HGi7eip6GdQezqy3Vc7Er76ZgTfryda9wvHUgWzk=
+   ```
+
+   The first key (stdout) is your private key, and the second key (stderr) is your public key. Keep the private key safe, and note down the public key for the next step.
+
+   :::tip
+   If you already have a WireGuard keypair, you can use that interchangeably with nylon.
+   :::
+
+2. **Create Node Configuration**
+
+   On each node, create a `node.yaml` file. Replace `<YOUR_PRIVATE_KEY>` with the private key generated in step 1.
+
+   ```yaml
+   id: node-1 # Give each node a unique ID (e.g., node-1, node-2)
+   key: <YOUR_PRIVATE_KEY>
+   port: 57175
+   ```
+
+3. **Create Central Configuration**
+
+   The `central.yaml` file defines the topology of your network. Create one file and share it across all nodes.
+
+   ```yaml
+   routers:
+     - id: node-1
+       pubkey: <NODE_1_PUBLIC_KEY>
+       endpoints:
+         - "node1.example.com:57175" # could be a domain name
+         - "192.168.1.2:57175" # could be a local ip
+       addresses:
+         - 10.0.0.1 # this is the internal nylon IP
+     - id: node-2
+       pubkey: <NODE_2_PUBLIC_KEY>
+       endpoints:
+         - "node2.example.com:57175"
+       addresses:
+         - 10.0.0.2
+
+   # Define the connections between nodes
+   graph:
+     - node-1, node-2 # This means node-1 and node-2 will try to connect to each other
+   ```
+
+4. **Validate your configuration**
+
+   Before launching, you can check that your config files are correct:
+
+   ```bash
+   nylon verify central.yaml --node node.yaml
+   ```
+
+5. **Launch nylon**
+
+   Run nylon on both machines:
+
+   ```bash
+   sudo nylon run -c central.yaml -n node.yaml
+   ```
+
+   After a few seconds, the nodes will discover each other and establish a secure tunnel. You should be able to ping `10.0.0.2` from `node-1`.
+
+## Next Steps
+
+- Learn how to connect [Passive Nodes](/guides/wg-clients) to support edge platforms like iOS.
+- Discover how to use [Config Distribution](/guides/config-distribution) to manage your network configuration with ease.
+- Setup nylon without a static public IP using [Dynamic DNS & Port Forwarding](/guides/port-forward).
+- Monitor your nodes with [Prometheus metrics and health checks](/guides/observability).
+---
+url: /guides/wg-clients
+---
+# WireGuard Clients
+
+One of nylon's key features is compatibility with standard WireGuard clients (iOS, Android, Windows, etc.). These are called **Passive Nodes/Clients**.
+
+:::caution
+Stock WireGuard clients interoperate with a nylon mesh **only** when it uses a vanilla-compatible obfuscation profile (the default). Without an `obf` section in `central.yaml`, nylon pins the handshake headers to `h1=1-1` through `h4=4-4` — the vanilla WireGuard message types — so the mesh speaks byte-compatible vanilla WireGuard. The same byte-compatibility can be pinned explicitly with `nylon-genesis --compat`. If your mesh enables a profile that deviates from these vanilla-pinned values, stock WireGuard clients cannot complete handshakes with nylon peers. See [Obfuscation](/guides/obfuscation) for how profiles work.
+:::
+
+## How it Works
+
+Passive nodes do not participate in the routing protocol. Instead, they connect to a **Gateway Node** (a regular nylon node) which advertises their presence to the rest of the network.
+
+```mermaid
+graph LR
+    subgraph "Nylon Mesh"
+        N1[Node A]
+        N2[Node B]
+        N3[Node C]
+        N1 <--> N2
+        N2 <--> N3
+        N3 <--> N1
+    end
+    subgraph "Passive Clients"
+        P1[WireGuard iOS Client]
+        P2[WireGuard Android Client]
+        P3[WireGuard Windows Client]
+    end
+    P1 <--> N1
+    P2 <--> N2
+    P3 <--> N2
+```
+
+1. **Configure the Passive Node**
+
+   Use any WireGuard app to generate a keypair. Note the public key.
+
+2. **Update Central Configuration**
+
+   Add the passive node to your `central.yaml`. Passive nodes should **not** have endpoints.
+
+   ```yaml
+   routers:
+     - id: node-1
+       pubkey: <GATEWAY_NODE_PUBLIC_KEY>
+       addresses: [10.0.0.1]
+       endpoints:
+         - "node1.example.com:57175"
+     # ... other routers ...
+
+   clients:
+     - id: my-phone
+       pubkey: <PHONE_PUBLIC_KEY>
+       addresses:
+         - 10.0.0.5
+
+   graph:
+     - node-1, my-phone # Connect the passive node to a gateway node
+   ```
+
+3. **Connect to a Gateway**
+
+   In your WireGuard app, set the `Endpoint` to the address of a router that is graph-adjacent to this client (an edge such as `node-1, my-phone` in `central.yaml`). A router with no graph edge to the client never creates its WireGuard peer and drops its handshakes.
+
+   ```ini
+   [Interface]
+   PrivateKey = <PHONE_PRIVATE_KEY>
+   Address = 10.0.0.5/32
+
+   [Peer]
+   PublicKey = <GATEWAY_NODE_PUBLIC_KEY>
+   Endpoint = gateway.example.com:57175
+   AllowedIPs = 10.0.0.0/24 # or whatever you want to route through nylon
+   ```
+
+## Limitations
+
+- A single WireGuard peer entry in a client app has one active `Endpoint` at a time — this is standard client-side WireGuard behaviour, not a mesh constraint. The mesh itself accepts a passive client adjacent to multiple gateways; to reach several of them, configure multiple profiles sharing the same private key (see [Dynamic Routing](#dynamic-routing)).
+- They cannot forward traffic for other nodes.
+- They rely on the gateway node for connectivity to the rest of the network.
+
+## Dynamic Routing
+
+Even though passive nodes do not participate in routing, they can still benefit from nylon's dynamic routing capabilities. By configuring multiple VPN profiles using the same private key, a client can switch between gateways automatically.
+
+:::tip
+Depending on the WireGuard app, there may be features like Scene-based routing in [Shadowrocket](https://en.wikipedia.org/wiki/Shadowrocket) that can automatically switch the gateway node/VPN profile based on network conditions.
+
+This can help your passive node maintain optimal connectivity, even when you travel.
+:::
+
+### No Keepalive Needed
+
+:::note
+
+You do not need to enable Persistent Keepalive, or any heartbeat mechanism for this simple use case.
+
+:::
+
+When a gateway is the **sole advertiser** of a passive client's prefix, nylon retains the route for that client indefinitely, ensuring it remains reachable even if it goes idle for an extended period. The indefinite hold starts from the last live advertisement: a configured client that has not sent a packet since the gateway (re)started is not advertised until it does — any authenticated packet, including a keepalive, bootstraps it. The hold is skipped while another gateway's advertisement or route for the prefix is visible (a route with a finite metric from a different source); graph adjacency alone does not suppress it — the competing advertisement, refreshed by the gateway that now holds the client, is what ends the hold. Refreshes continue while the client keeps talking (silence under `ClientDeadThreshold`, 6 s); the last refresh sets the 3-second advertisement TTL, and the 1-second garbage collection removes the lapsed advertisement — so the prefix is withdrawn roughly 8-10 seconds after the client's last packet. With multiple gateways, enable Persistent Keepalive to keep the route alive during idle periods, with an interval faster than `ClientDeadThreshold` (6 s default) — 5 s as used by the passive-roaming e2e test, since the commonly recommended 25-second Persistent Keepalive is too slow and the route lapses; the conservative bound is under `ClientKeepaliveInterval` (3 s). With a sole-advertising gateway, you should only enable Keepalive if:
+
+1. You need other nodes to be able to initiate connections to the client after long periods of silence.
+2. You really wish to drain the battery of the client device for some reason...
+
+For mobile devices, leaving Keepalive disabled is recommended to maximize battery life.
+
+> For a deep dive into how nylon handles roaming and keeps idle clients reachable, see the [Passive Nodes Reference](/reference/passive-nodes).
+---
+url: /guides/config-distribution
+---
+# Config Distribution Setup
+
+Nylon's distribution system allows you to manage network topology from a central source using signed and encrypted "bundles".
+
+```mermaid
+graph TD
+    Admin[Admin] -- "nylon seal & upload" --> S3[("S3 Bucket / Web Server (central.nybundle)")]
+
+    subgraph "Nylon Mesh"
+        NodeA[Node A]
+        NodeB[Node B]
+    end
+
+    S3 -- "Fetch & Update" --> NodeA
+    S3 -- "Fetch & Update" --> NodeB
+```
+
+:::caution
+Despite being called a "public" key, the distribution key also acts as the shared secret for decrypting your network config. To keep your internal network structure private, only share this key with the nodes in your network.
+:::
+
+1. **Generate a Distribution Keypair**
+
+   First, generate a keypair specifically for distribution (separate from node keys).
+
+   ```bash
+   nylon key > dist.key 2> dist.pub
+   ```
+
+2. **Seal your Configuration**
+
+   Sign and encrypt your `central.yaml` into a `.nybundle` file.
+
+   ```bash
+   nylon seal -c central.yaml -k dist.key -o central.nybundle
+   ```
+
+3. **Publish the Bundle**
+
+   Host `central.nybundle` on any HTTP/HTTPS server (e.g., GitHub Pages, S3, or Nginx).
+
+4. **Configure Nodes**
+
+   **Initial Bootstrap (`node.yaml`)**
+
+   Nodes fetch their first central config using the `dist` block:
+
+   ```yaml
+   dist:
+     url: "https://your-server.com/central.nybundle"
+     key: "<contents-of-dist.pub>"
+   ```
+
+   The `dist` block in `node.yaml` is bootstrap-only: it is consulted only when `central.yaml` does not exist yet. Afterwards it is ignored, and updates flow solely from the `dist` block in `central.yaml`; a corrupt `central.yaml` is not replaced from `node.yaml`.
+
+   **Automatic Updates (`central.yaml`)**
+
+   Once bootstrapped, nodes poll the repositories defined in `central.yaml`:
+
+   ```yaml
+   dist:
+     key: "<contents-of-dist.pub>"
+     repos:
+       - "https://your-server.com/central.nybundle"
+   ```
+
+   Nylon polls for updates every 10 seconds, but applies a bundle only when its timestamp is strictly newer than the active config. `nylon seal` rewrites that timestamp to the sealing host's wall clock, so each seal is newer by construction; re-uploading an older bundle is ignored, and clock skew on the sealing host can block rollout.
+
+## Key rotation
+
+When `dist` is configured, `dist.key` must be set to a nonzero public key. To rotate it, put the new public key in `central.yaml` and sign that bundle with the old private key. That transition seal deliberately logs the warning `bundled public key differs from the signing key, check if this is intended!`, because the bundle is sealed with the old key (so old-key nodes can open it) while already carrying the new `dist.key`. After nodes apply the bundle, sign subsequent updates with the new private key; seals with the new key no longer warn.
+---
+url: /guides/port-forward
+---
+# Port Forwarding
+
+While nylon can often route traffic through intermediate nodes to overcome NAT issues, **port forwarding** is necessary when your nodes cannot establish any direct, or indirect path due to restrictive NATs.
+
+```mermaid
+graph LR
+    subgraph "Home Network A"
+    A[Node A]
+    end
+    subgraph "Home Network B"
+    B[Node B]
+    end
+    A <--> NAT1((NAT))
+    NAT2((NAT)) <--> B
+    NAT1 -.-|Inaccessible| NAT2
+```
+
+## Do I Need to Port Forward?
+
+Connectivity in nylon depends on whether at least one node in a peering pair is publicly reachable.
+
+| Your Setup | Port Forwarding? | Reason |
+| :--- | :--- | :--- |
+| **Node ↔ Public Server** | Not Required | The node behind NAT can connect directly to the public server. |
+| **Nodes across multiple NATs** | **Required** | If both nodes are behind NATs (e.g., two different home networks) and there are no other publicly accessible ports, the graph will be disconnected. |
+
+By forwarding a port on at least one node, you ensure that nodes across different networks can always find a path to each other, preventing "isolated islands" in your mesh.
+
+:::tip[Similar to BitTorrent]
+If you've ever used BitTorrent, this is the same as being **"connectable."** Just as two "unconnectable" torrent peers cannot share files with each other, two nylon nodes across different NATs cannot establish a tunnel unless at least one of them has an open port.
+:::
+
+## Configuration Steps
+
+1. **Configure Your Router/Firewall**
+
+   Log into your router or firewall and create a port forwarding rule:
+   - **External Port**: `57175`
+   - **Internal Port**: `57175`
+   - **Protocol**: `UDP`
+   - **Internal IP**: The local IP address of the machine running nylon.
+
+2. **Handle Dynamic IPs (DDNS)**
+
+   If your home or office has a dynamic public IP address, you should use a **Dynamic DNS (DDNS)** service. This ensures that even when your IP changes, other nodes can still find you.
+
+   Popular tools like [ddclient](https://github.com/ddclient/ddclient) can automatically update your DNS records (e.g., Cloudflare, Namecheap, DuckDNS) whenever your public IP changes. Your router may also have built-in DDNS support.
+
+3. **Update Central Configuration**
+
+   Once the port is forwarded and your DNS is set up, tell the rest of the network how to reach this node by adding an `endpoint` to your `central.yaml`.
+
+   ```yaml
+   routers:
+     - id: home-server
+       pubkey: <HOME_SERVER_PUBLIC_KEY>
+       endpoints:
+         - "home.example.com" # Your DDNS hostname
+       addresses:
+         - 10.0.0.1
+   ```
+
+   Alternatively, publish the node as a DNS SRV record. When nylon resolves an endpoint hostname, it first looks up a `_nylon._udp.<hostname>` SRV record; if one exists, the record's target and port are used, taking precedence over the hostname's A/AAAA records. The forwarded port then lives in DNS instead of `central.yaml`, so it can be changed by updating the record alone:
+
+   ```text
+   _nylon._udp.home.example.com. 0 IN SRV 10 10 57175 home.example.com.
+   ```
+
+   The SRV target must itself have an A/AAAA record, and the record is looked up again on every endpoint re-resolution, so DDNS-style updates to it are picked up automatically.
+
+   :::tip
+   Nylon re-resolves DNS endpoints automatically: a background sweep runs every 15 seconds and a resolved address is cached for 1 minute, so a DDNS record change is picked up within about 15 seconds once the cached value is older than a minute. While a refresh is in flight (DNS queries time out after 5 seconds) and after a dropped link, nodes keep using the last known good address until a refresh succeeds.
+   :::
+
+4. **Apply Configuration**
+
+   Ensure your changes are pushed to your configuration repository or updated on your nodes. Nylon will automatically detect the new endpoints and attempt to establish connectivity.
+
+## Frequently Asked Questions
+
+### Do I need to forward ports on every node?
+**No.** Nylon only needs *at least one* node with a public endpoint (either via port forwarding or a public static IP) to act as a point of entry for the mesh. However, the more nodes that have open ports, the more connected and resilient your network becomes.
+
+### What if I use a different port?
+If you use a custom port, you should configure it in your `node.yaml` (for local port), specify it in the `endpoints` section of your node in `central.yaml` (for forwarded port), and update your router's port forwarding rule accordingly.
+
+**node.yaml**
+
+```yaml
+id: my-node
+port: 12345 # This should match the internal port you forwarded
+```
+
+**central.yaml**
+
+```yaml
+routers:
+  - id: my-node
+    ...
+    endpoints:
+      - "home.example.com:12345" # This should match the external port you forwarded
+```
+
+:::note
+An endpoint written without a port — a bare hostname or a bare IP address — silently falls back to the default port `57175`. If the external port you forwarded differs from the default, always write the endpoint with an explicit port, as shown in the `central.yaml` tab above.
+:::
+---
+url: /guides/observability
+---
+# Observability
+
+Nylon can expose an HTTP server for Prometheus metrics, health checks, and service discovery.
+
+## Enable the server
+
+Set `observability_addr` in each node's `node.yaml`:
+
+```yaml
+observability_addr: "0.0.0.0:9090"
+```
+
+Restart nylon after changing the node configuration. You can then check the local node:
+
+```bash
+curl http://127.0.0.1:9090/healthz
+curl http://127.0.0.1:9090/readyz
+curl http://127.0.0.1:9090/metrics
+```
+
+:::caution
+The observability server does not provide authentication or TLS. Bind it to a trusted interface, or protect it with a firewall or authenticated reverse proxy. Avoid exposing it directly to the internet.
+:::
+
+## Endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/healthz` | Returns `200 OK` while the daemon is running and `503 Service Unavailable` while it is shutting down. |
+| `/readyz` | Returns `200 OK` when nylon's internal event loop responds, or `503 Service Unavailable` if it cannot respond within one second. It does not check whether every peer is reachable. |
+| `/metrics` | Returns metrics in the Prometheus text exposition format. Returns `503 Service Unavailable` if nylon cannot collect a status snapshot within one second. |
+| `/discovery` | Returns Prometheus HTTP service-discovery targets for the addresses in `central.yaml`. |
+
+## Configure Prometheus
+
+For a single node, add a static scrape target in `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: nylon
+    static_configs:
+      - targets:
+          - "10.0.0.1:9090"
+```
+
+For a mesh, Prometheus can discover the node addresses from any nylon observability server. Add the following to `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: nylon
+    http_sd_configs:
+      - url: "http://10.0.0.1:9090/discovery"
+        refresh_interval: 30s
+    relabel_configs:
+      - source_labels: [nylon_node_type]
+        regex: passive
+        action: drop
+```
+
+The discovery response uses every node address from `central.yaml`. Each target has a `nylon_node` label containing the node ID and a `nylon_node_type` label set to either `router` or `passive`. The example drops passive targets because they do not run the nylon daemon.
+
+Configure the same observability port on every router, and make sure Prometheus can reach their nylon addresses on that port.
+
+## Metrics
+
+All metric names start with `nylon_`.
+
+| Metric | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `nylon_build_info` | Gauge | `version`, `commit` | Build metadata for the running daemon; always `1`. |
+| `nylon_up` | Gauge | — | `1` when nylon can produce a metrics snapshot. |
+| `nylon_config_timestamp_seconds` | Gauge | — | Unix timestamp of the active central configuration. |
+| `nylon_neighbours` | Gauge | — | Number of configured neighbours. |
+| `nylon_active_endpoints` | Gauge | — | Number of active peer endpoints. |
+| `nylon_selected_routes` | Gauge | — | Number of selected Babel routes. |
+| `nylon_advertised_prefixes` | Gauge | — | Number of locally advertised prefixes. |
+| `nylon_wireguard_transmit_bytes_total` | Counter | — | WireGuard bytes transmitted by this node. |
+| `nylon_wireguard_receive_bytes_total` | Counter | — | WireGuard bytes received by this node. |
+| `nylon_wireguard_peer_transmit_bytes_total` | Counter | `peer` | WireGuard bytes transmitted to a peer. |
+| `nylon_wireguard_peer_receive_bytes_total` | Counter | `peer` | WireGuard bytes received from a peer. |
+| `nylon_wireguard_peer_latest_handshake_seconds` | Gauge | `peer` | Unix time of the peer's latest WireGuard handshake, or `0` before the first handshake. |
+| `nylon_endpoint_active` | Gauge | `peer`, `endpoint` | `1` when the endpoint is active, otherwise `0`. |
+| `nylon_endpoint_metric` | Gauge | `peer`, `endpoint` | Current Babel endpoint metric. |
+| `nylon_endpoint_rtt_seconds` | Gauge | `peer`, `endpoint` | Filtered endpoint round-trip time in seconds. |
+| `nylon_route_metric` | Gauge | `prefix`, `router`, `next_hop` | Metric of a selected Babel route. |
+
+For example, alert when a node cannot be scraped or when a peer has not completed a handshake in the last five minutes:
+
+```text
+up{job="nylon"} == 0
+```
+
+```text
+time() - nylon_wireguard_peer_latest_handshake_seconds > 300
+```
+
+The handshake metric is `0` before the first successful handshake, so this expression also selects peers that have never connected. When using it in an alerting rule, add `for: 5m` to avoid firing while nylon starts and establishes its initial peer connections.
+
+### Performance gauges
+
+Nylon exports its hot-loop performance counters on `/metrics` as `nylon_perf_*` metrics, plus three monotonic `nylon_tun_*_drops_total` counters. The windowed values are computed over a rolling 10-second window and exposed as gauges, because windowed values are not monotonic; the one exception is `nylon_perf_dispatch_latency_us`, which uses a 1-minute window. Metrics with a `quantile` label (`0.5`, `0.9`, `0.99`) report the p50, p90, and p99 over the window.
+
+| Metric | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `nylon_perf_dispatch_latency_us` | Gauge | `quantile` | Main-loop dispatch latency in microseconds; p50/p90/p99 over a rolling 1-minute window. |
+| `nylon_perf_send_batch_size` | Gauge | `quantile` | Packets per send batch. |
+| `nylon_perf_recv_batch_size` | Gauge | `quantile` | Packets per receive batch. |
+| `nylon_perf_tun_read_batch_size` | Gauge | `quantile` | Packets per TUN read call. |
+| `nylon_perf_tun_write_batch_size` | Gauge | `quantile` | Packets per TUN write call. |
+| `nylon_perf_sends_per_second` | Gauge | — | WireGuard sends per second. |
+| `nylon_perf_recvs_per_second` | Gauge | — | WireGuard receives per second. |
+| `nylon_perf_sent_packets_per_second` | Gauge | — | Packets sent per second. |
+| `nylon_perf_recv_packets_per_second` | Gauge | — | Packets received per second. |
+| `nylon_perf_sent_bytes_per_second` | Gauge | — | Bytes sent per second. |
+| `nylon_perf_recv_bytes_per_second` | Gauge | — | Bytes received per second. |
+| `nylon_tun_staged_drops_total` | Counter | — | Packets evicted from a per-peer staged queue because they were too old. |
+| `nylon_tun_write_queue_drops_total` | Counter | — | Bounce packets dropped because the target TUN writer queue was full. |
+| `nylon_tun_kernel_tx_dropped_total` | Counter | — | Kernel `tx_dropped` counter of the TUN interface, sampled from `/sys/class/net/<iface>/statistics/tx_dropped`. |
+
+Despite their `_per_second` names, these gauges are not normalized rates: each value is the count accumulated over the rolling 10-second window. Divide by 10 for an approximate per-second value.
+
+Unlike the gauges above, the three `nylon_tun_*_drops_total` counters are monotonic totals rather than windowed values. `nylon_tun_kernel_tx_dropped_total` is a ten-second sysfs sample of `/sys/class/net/<iface>/statistics/tx_dropped`: the kernel counter is monotonic only for the lifetime of the interface, so it resets to zero when the interface is recreated, and the exported value is the last successful sample. If these counters grow, the TUN drain is the bottleneck, not the network: `staged` counts packets evicted from a bounded per-peer userspace queue (the reader outran a peer), `write_queue` counts bounce batches dropped before reaching a TUN writer, and `kernel` counts packets the kernel could not hand to the daemon at all.
+
+These metrics are always available on `/metrics`; `--dbg-perf` is only required for the standalone debug server on port `6060`, which serves the performance web UI and `pprof` endpoints. The debug server's `/debug/metrics` page additionally lists the TUN totals as `tun:stagedDrops`, `tun:writeQueueDrops`, and `tun:kernelTxDropped`.
+
+## Logging
+
+Nylon writes structured logs to stderr. Every record carries a `component` attribute (`nylon`, `nylon-lb`, or `nylon-genesis`) and, for the daemon, a `node` attribute containing the node ID. Subsystem records add a `module` attribute, for example `router`, `polyamide`, `ipc`, `dynamic-prefixes`, `prefix-health`, or `observability`.
+
+Readiness transitions are logged once per state change, not per probe: when a ready node starts failing its readiness check, nylon logs `readiness failed` at warn level, and logs `readiness recovered` at info level when the check passes again.
+
+To keep logs on disk, set `log_path` in `node.yaml` (or pass `--log <file>` (`-l`) to `nylon run`). The file sink is written in JSON format, one record per line, so it can be ingested directly by log processors. See [Troubleshooting](/guides/troubleshooting) for log level control and day-to-day debugging.
+---
+url: /guides/troubleshooting
+---
+# Troubleshooting
+
+## Control logging
+
+The log level is resolved in this order (first match wins):
+
+1. `--log-level` flag (`debug`, `info`, `warn`, `error`) on `nylon run` and `nylon-lb`.
+2. `NYLON_LOG_LEVEL` environment variable, with the same values.
+3. `-v`/`--verbose`, a shorthand for `debug`.
+4. The default, `info`.
+
+An unknown value in the flag or the environment variable is rejected at startup.
+
+Other output controls:
+
+- `--json` writes JSON records to stderr instead of the default colored text output.
+- `log_path` in `node.yaml` (or `nylon run --log <file>` (`-l`)) additionally writes logs to a file. The file sink is always JSON, one record per line.
+
+To set the level for a systemd service:
+
+**nylon.service**
+
+```ini
+[Service]
+Environment=NYLON_LOG_LEVEL=debug
+```
+
+## Read the logs
+
+Records are structured and attributable: `component` identifies the binary (`nylon`, `nylon-lb`, `nylon-genesis`), `node` carries the node ID, and `module` names the subsystem (`router`, `polyamide`, `ipc`, `dynamic-prefixes`, `prefix-health`, `observability`, `allocator`, `speaker`).
+
+The router logs its decisions with an `event` attribute, at these levels:
+
+| Event | Level | Meaning |
+| --- | --- | --- |
+| `route_inserted`, `route_updated`, `route_retracted`, `route_expired` | Debug | Babel route lifecycle. |
+| `seqno_requested` | Debug | A sequence number was requested from a neighbour. |
+| `major_route_change` | Info | A significant change in the selected route set. |
+| `inconsistent_state` | Warn | The router detected inconsistent state. |
+| `no_endpoint_to_neighbour` | Warn | A neighbour has no usable endpoint. |
+
+At the default `info` level you see topology changes and problems, but not individual route updates — raise the level to `debug` while investigating.
+
+## Collect a snapshot for bug reports
+
+`nylon techinfo` produces a single JSON document on stdout combining the node's full status with a connectivity probe of every neighbour:
+
+```bash
+nylon techinfo -i nylon0
+```
+
+A one-line human summary goes to stderr. Attach the JSON output and a short log excerpt (with `--log-level debug` if possible) to your bug report. The command exits non-zero if the status request fails.
+
+## Inspect a running node
+
+Every command in this table except `nylon verify` talks to the daemon over its IPC socket, so it works only while the daemon is up. When the daemon is not running — or `-i` names the wrong interface — the command exits 1. On Linux with the default interface name, it prints:
+
+```text
+Error: connect to nylon: dial unix /var/run/wireguard/nylon.sock: connect: no such file or directory
+```
+
+The socket is named after the daemon's real interface (`<iface>.sock` under `/var/run/wireguard`): on macOS that is the kernel-assigned `utunN.sock` — pass that name to `-i` — and on Windows the endpoint is a named pipe (`\\.\pipe\ProtectedPrefix\Administrators\WireGuard\<name>`) instead.
+
+| Command | Purpose |
+| --- | --- |
+| `nylon status` | Neighbours and selected routes (`--routes` for route tables, `--full` for routing internals). |
+| `nylon probe <peer>` | Probe connectivity to one peer (`--timeout`, default `2s`; values above `10s` are silently capped). |
+| `nylon trace` | Live stream of the daemon's packet-routing decisions. Requires the daemon to have been started with `--dbg-trace-tc`; otherwise it fails with `Error: tracing not enabled; restart with --dbg-trace-tc`. |
+| `nylon reload` | Re-read the central config from disk without a restart; prints `Result: NOOP\|APPLIED\|RESTART_REQUIRED` (plus `Message:` when set), and on `REJECTED` exits 1 with an `Error:` line. The `--file` flag is accepted but ignored. |
+| `nylon verify <central-config>` | Validate configs without starting the daemon (`--node <node-config>` also checks a node config); prints `Config is valid` or `Error: <reason>`. |
+
+`status`, `probe`, and `trace` accept `-i/--interface` (default `nylon`); `status` and `probe` also accept `--json` for machine-readable output; `reload` accepts `-i/--interface` and `--json` as well (with `--json` it prints the raw response as JSON). `trace` accepts no other flags.
+
+## Debug flags
+
+Flags for `nylon run`:
+
+- `--dbg-perf` starts a debug server on port `6060` with the performance web UI and `pprof` endpoints.
+- `--dbg-trace` writes a Go runtime trace to `trace.out`; inspect it later with `go tool trace`.
+- `--dbg-trace-tc` traces the daemon's packet-routing decisions; `nylon trace` streams them live. `nylon status` reports `trace enabled` based on this flag only — setting `--dbg-trace` does not affect it.
+- `--dbg-wg` enables WireGuard (polyamide) logs. They are emitted at info level, so they appear at the default log level.
+- `--dbg-probe` (`-p`) writes probe debug lines (`probe from`, `probe back`) at Debug level; needs `--log-level debug` to be visible.
+- `--dbg-repo` logs stale repo bundles (`found old update bundle at <repo>, skipping`) at Debug level; also needs `--log-level debug`.
+
+## Metrics quick pointers
+
+- Alert when a peer goes silent: `time() - nylon_wireguard_peer_latest_handshake_seconds > 300`. See [Observability](/guides/observability) for the full expression and its caveats.
+- Check hot-loop health with the `nylon_perf_*` gauges: dispatch latency and batch size quantiles (a 1-minute window for dispatch latency, 10 s for the rest), plus send/receive values that are counts accumulated over the 10-second window, not per-second rates.
+
+## Debugging nylon-lb
+
+The load balancer uses the same log controls (`--log-level`, `NYLON_LOG_LEVEL`, `-v`, `--json`), and Kubernetes client-go/klog messages are routed into the same log.
+
+- `nylon_lb_leader` is `1` on the instance currently holding the leader lease.
+- `/healthz` is a liveness probe: it returns 200 once the process is serving. `/readyz` returns 503 until the informer caches have synced — point your readiness probe at `/readyz`.
+- `/metrics` exposes leader, allocation, and announce counters and gauges for scraping.
+---
+url: /guides/obfuscation
+---
+# Traffic Obfuscation
+
+Vanilla WireGuard is easy to recognize on the wire. Every handshake packet starts with a fixed 4-byte message type (1 through 4) and has fixed sizes, so deep packet inspection (DPI) can identify and block WireGuard connections even though their content is encrypted. Nylon's obfuscation layer — wire-compatible with the AmneziaWG 2.0 format — lets you reshape that traffic so the mesh no longer looks like WireGuard.
+
+Obfuscation changes the shape of handshake packets:
+
+- **Junk packets** — meaningless packets sent before a handshake; receivers discard them without validating them. Each junk datagram's length is drawn uniformly from the half-open range `[jmin, jmax)` — `jmax` itself is never emitted, and equal bounds give fixed-length junk.
+- **Custom type words** — each handshake message carries a type word drawn from a range you choose instead of the fixed 1–4.
+- **Custom padding** — each handshake message type is padded to a size you choose.
+- **Protocol templates** — initiation packets can be laid out to imitate another protocol such as QUIC, so a packet capture reads like ordinary application traffic.
+
+Obfuscation does **not** change anything else: the cryptography, the key exchange, and routing are exactly the same as vanilla WireGuard. Only the byte layout of packets on the wire differs.
+
+## Configuration Surface
+
+Obfuscation is configured at two levels in `central.yaml` (see [Configuration Reference](/reference/config) for the full field documentation):
+
+| Level | Fields | Scope |
+| --- | --- | --- |
+| Central `obf` profile | `jc`, `jmin`, `jmax`, `s1`–`s4`, `h1`–`h4` | One shared profile for the whole mesh |
+| Per-node `obf` (`routers[].obf`, `clients[].obf`) | `protocol`, `i1`–`i5` | Sender-local, may differ per node |
+
+A minimal central profile with a per-node QUIC-style template:
+
+```yaml
+obf:
+  jc: 5
+  jmin: 250
+  jmax: 800
+  s1: 32
+  s2: 28
+  s3: 20
+  s4: 16
+  h1:
+    min: 100
+    max: 5000000
+  h2:
+    min: 10000000
+    max: 200000000
+  h3:
+    min: 400000000
+    max: 800000000
+  h4:
+    min: 1000000000
+    max: 2100000000
+routers:
+- id: node1
+  obf:
+    protocol: quic
+    i1: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0040><b 0x00><b 0x01><t><r 40>
+    i2: <b 0xc0ff><b 0x00000001><b 0x08><d><b 0x00><b 0x00><b 0x0020><b 0x01><t><r 20>
+    i3: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0010><b 0x01><t><r 10>
+    i4: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0005><b 0x01><t><r 5>
+```
+
+### The Central Profile Must Match Mesh-Wide
+
+The `s1`–`s4` and `h1`–`h4` values are a wire contract between every pair of nodes:
+
+- A **sender** picks each outgoing message's type word from its own `h` ranges and pads the message by its own `s` values.
+- A **receiver** classifies incoming packets using **its own** `s`/`h` values.
+
+If two nodes carry different `s`/`h` values, the receiver fails to classify the sender's packets and drops them silently. The junk-packet knobs `jc`, `jmin`, `jmax` are not part of that wire contract — junk datagrams are sender-local camouflage that receivers discard unclassified — but they cannot diverge either: they exist only in the single central `obf` profile, which is distributed identically to every node. [nylon-genesis](/guides/genesis) enforces this by construction.
+
+### I-Patterns Are Sender-Local
+
+The `i1`–`i5` patterns (and the informational `protocol` label) describe only what **this node sends**. You never configure another node's I values anywhere, and receivers do not validate your patterns against their own. This is why two nodes can use different I-patterns — for example, different templates per site — while staying fully interoperable, as long as their central `s`/`h` profiles match.
+
+## The Default Profile Is Vanilla-Compatible
+
+If you omit the `obf` section entirely, nylon does **not** disable the obfuscation machinery. It pins the header ranges to the exact vanilla WireGuard message types — `h1=1-1` through `h4=4-4` — with zero padding, no junk packets, and no I-patterns. The mesh speaks byte-compatible vanilla WireGuard.
+
+:::caution
+This is deliberately **not** the AmneziaWG "all zeros" default, which would produce a type word of 0 and break interoperability with vanilla WireGuard. The converse also holds: any profile that deviates from these vanilla-pinned values breaks stock-client handshakes. To pin the vanilla-compatible values explicitly — for example across a version-skew window during a rollout — [nylon-genesis](/guides/genesis) `--compat` emits a profile with exactly these ranges (and zero padding, no junk packets, no I-patterns). The vanilla-compatible profile is the **only** mode in which a stock WireGuard client (iOS, Android, Windows, …) can complete a handshake with a nylon peer. See [WireGuard Clients](/guides/wg-clients).
+:::
+
+In practice:
+
+- Run the default (no `obf` section) if you need stock-client support anywhere in the mesh.
+- Enable an obfuscated profile only when every participant — every nylon node and every client — speaks the obfuscated format.
+
+## Initiation Packet Patterns
+
+Each `i1`–`i5` value is a pattern built from tags. Each tag describes one stage of the packet, and nylon renders the packet by concatenating every tag's output in order:
+
+| Tag | Produces |
+| --- | --- |
+| `<b 0x…>` | Fixed bytes written verbatim, e.g. `<b 0xc0ff>` |
+| `<r n>` | `n` random bytes |
+| `<rd n>` | `n` random digits |
+| `<rc n>` | `n` random letters |
+| `<t>` | The current Unix timestamp as a 4-byte big-endian value |
+| `<d>` | The packet's own data, passed through unchanged |
+| `<ds>` | The packet's own data, base64-encoded |
+| `<dz n>` | An `n`-byte field encoding the data size |
+
+In nylon, chains are rendered only for I-packet camouflage, and there the data source is empty: `<d>` and `<ds>` therefore contribute zero bytes, and `<dz n>` contributes `n` zero bytes. The QUIC-template `i2` in the example above renders 36 bytes on the wire — 8 bytes shorter than the upstream template's intent, because upstream assumes `<d>` re-uses the 8-byte connection ID that `i1` carries.
+
+Each pattern renders one pre-handshake camouflage datagram: `i1`–`i5` are sent in order ahead of every handshake initiation, followed by the `jc` junk datagrams and only then the real initiation message — none of them replaces or shapes an actual handshake message. Reading the `i1` example above: it opens with fixed bytes that imitate the target protocol's header, injects random bytes, carries a timestamp, and ends with trailing random bytes — so each camouflage datagram has the length and layout of the chosen template rather than of WireGuard.
+
+:::note
+No I-pattern content is verified when a packet is received: the live receive path classifies packets purely by size and by the `h` ranges of the mesh-uniform central profile, matching upstream AmneziaWG 2.0 behavior. The patterns shape what a node sends; the cryptography — not the pattern — provides authenticity.
+:::
+
+### Validation Limits
+
+Nylon rejects invalid profiles at apply time rather than producing a broken mesh:
+
+- Header ranges (`h1`–`h4`) must not overlap each other; an overlapping set fails at apply with the error `headers must not overlap`.
+- Genesis-generated header ranges must stay clear of the vanilla WireGuard type ids 1–4. This clearance is enforced at generation time by [nylon-genesis](/guides/genesis); a hand-written `central.yaml` overlapping 1–4 is not rejected at apply.
+- AmneziaWG 3.x-only parameters (`header_protection_key`, `content_padding_addition`, `random_trailers`, `disable_cookies`, `rekey_after_time`, `rekey_timeout`, `reject_after_time`, `keepalive_timeout`, and `max_handshake_attempts`) are rejected only at the device UAPI boundary, where the parser fails them with `UAPI knob %q is AWG 3.x-only and unsupported by this AWG 2.0 build`. They are not `central.yaml` fields — the config decoder silently ignores unknown YAML keys, so a hand-written 3.x parameter under `obf:` is ignored, not rejected. No non-2.0 wire format can be activated.
+
+## Generating Profiles with nylon-genesis
+
+Hand-writing a mesh-consistent profile is error-prone: one wrong `h` range on a single node blackholes that node's traffic. [nylon-genesis](/guides/genesis) is the recommended way to produce obfuscation config:
+
+- It generates the central `obf` profile and per-node I-patterns together, so the mesh-uniform values match by construction.
+- It offers named protocol templates (for example `quic`) that fill in realistic `i1`–`i4` patterns like the ones shown above.
+- Empty I-specs are never emitted, and `i5` stays empty for the named templates.
+
+If you are bootstrapping a new mesh, generate the config first and tune the obfuscation knobs in the generated file.
+
+## Operational Notes
+
+- **Profile switches are a maintenance event.** A changed profile applies live on config sync, but handshakes already in flight can fail for up to one rekey window while nodes converge on the new layout. Schedule profile changes accordingly.
+- **A brief packet loss at startup is benign.** Right after a profile change, packets sealed with the pre-profile layout are dropped and then retransmitted under the new one; connectivity recovers on its own.
+- **Correctness is pinned by tests.** The obfuscation layer is validated against golden vectors from upstream amneziawg-go (46 vectors over 3 profiles, pinned to a fixed upstream revision), and an interop harness runs nylon against an in-process reference device built from the upstream amneziawg-go implementation (`github.com/amnezia-vpn/amneziawg-go/v3`) over real UDP:
+
+```bash
+go test -tags awg_ref_interop ./interop/awgref/
+```
+
+See [Development](/guides/development) for the harness tags and how to run the interop suite.
+---
+url: /guides/genesis
+---
+# Config Genesis
+
+`nylon-genesis` is the internal companion tool that generates obfuscation parameters for a nylon mesh. It asks the [amnezigo](/guides/development) parameter oracle for a validated shared profile, generates per-node handshake camouflage, and writes the result as a paste-ready YAML fragment for your `central.yaml`: a top-level `obf:` block plus `routers:` entries that carry only `id` and `obf`.
+
+The tool generates obfuscation parameters only. WireGuard keys are a separate concern handled by `nylon key` — see [Getting started](/guides/getting-started).
+
+## What nylon-genesis generates
+
+Every run emits one fragment with two parts:
+
+- A mesh-wide shared profile under `obf:` — the junk (`jc`, `jmin`, `jmax`), padding sizes (`s1`–`s4`), and message-type header ranges (`h1`–`h4`) that every node in the mesh must share.
+- One `routers:` entry per node you list, each carrying only that node's `id` and its sender-local `obf` block with `i1`–`i5` CPS strings.
+
+The fragment unmarshals cleanly into the central config structure, but it does not merge itself — you paste it into `central.yaml` by hand (see [Generate a profile](#generate-a-profile)). The shared profile is mesh-uniform by construction: one oracle call fixes S/H/J for the whole mesh, and every node receives every peer's `i1`–`i5` spec through the central config while sending only with its own.
+
+The following output is the real committed fixture from this repository, generated with the command shown in Step 5. Each additional id you pass to `--peers` appends another entry with the same shape:
+
+```yaml
+obf:
+  jc: 5
+  jmin: 250
+  jmax: 800
+  s1: 32
+  s2: 28
+  s3: 20
+  s4: 16
+  h1:
+    min: 100
+    max: 5000000
+  h2:
+    min: 10000000
+    max: 200000000
+  h3:
+    min: 400000000
+    max: 800000000
+  h4:
+    min: 1000000000
+    max: 2100000000
+routers:
+- id: node1
+  obf:
+    protocol: quic
+    i1: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0040><b 0x00><b 0x01><t><r 40>
+    i2: <b 0xc0ff><b 0x00000001><b 0x08><d><b 0x00><b 0x00><b 0x0020><b 0x01><t><r 20>
+    i3: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0010><b 0x01><t><r 10>
+    i4: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0005><b 0x01><t><r 5>
+```
+
+For the meaning of each field, see [Obfuscation](/guides/obfuscation).
+
+## Build the tool first
+
+`nylon-genesis` is built from the same repository as the daemon; it links the GPL-3.0 [`amnezigo`](https://github.com/Arsolitt/amnezigo) oracle, which `go.mod` pins as an ordinary module dependency — the Go toolchain downloads it during the build, nothing extra to check out.
+
+```bash
+make build
+```
+
+`make build` produces `bin/nylon-genesis` alongside `bin/nylon` and `bin/nylon-lb`. Running `go run ./cmd/nylon-genesis` from the repository works identically.
+
+## Generate a profile
+
+1. **Choose the shared profile source**
+
+   Decide where the mesh-wide S/H/J parameters come from:
+
+   - **Preset** (default): a named amnezigo preset, `standard-1420` by default. The preset supplies the junk and padding profile and the default MTU.
+   - **Random**: pass `--random` to have the oracle generate a random profile instead. The preset still provides the default MTU and contributes `s1` and `jc`; `s2`–`s4`, `h1`–`h4`, and the `jmin`/`jmax` junk range are drawn fresh. A draw can collide a peer's `i1`–`i5` packet length with one of the profile's padded handshake sizes, which the AWG 2.0 size invariant forbids; the generator redraws a whole random profile when that is what is random, and always redraws a peer's `i`-set, until it validates (64 attempts, then an error) — with the default `--protocol random` that combination failed about half the time before the redraw.
+
+2. **Choose a protocol template**
+
+   `--protocol` selects the camouflage template for the per-node handshake packets: `quic`, `dns`, `dtls`, `stun`, `sip`, `rtp`, or `random` (the default). Named protocols use that protocol's template shape and fill `i1`–`i4`; `i5` is intentionally left empty. `random` does not pick a template — it generates randomized simple CPS patterns across all of `i1`–`i5`, including `i5`.
+
+3. **Choose an MTU clamp (optional)**
+
+   `--mtu` bounds only the generated per-node I-packet sizes to your underlay MTU (the oracle caps each I-packet at `mtu - 49 - 149 - s1`). Junk sizes are not clamped — they come from the preset, or from a fresh 64–1024 byte draw under `--random` — so a small `--mtu` can still emit junk datagrams large enough to fragment. Leave it at the default `0` to use the preset's default MTU — `standard-1420` targets a 1420-byte underlay, and the fixture output above was generated with `--mtu 1420`.
+
+4. **List your nodes**
+
+   `--peers` takes a comma-separated list of node ids. Use the same ids your routers carry in `central.yaml`, because you will merge each generated block into the matching router entry.
+
+5. **Run the tool**
+
+   ```bash
+   bin/nylon-genesis --preset standard-1420 --protocol quic --mtu 1420 --peers node1,node2
+   ```
+
+   The fragment goes to stdout. Pass `--out obf-fragment.yaml` to write it to a file instead (mode `0644`), and `-v`/`--verbose` for debug logging on stderr:
+
+   ```bash
+   bin/nylon-genesis --protocol quic --peers node1,node2 --out obf-fragment.yaml -v
+   ```
+
+6. **Merge the fragment into central.yaml**
+
+   Paste the `obf:` block at the top level of `central.yaml`, then merge each `routers:` entry into your existing `routers:` list:
+
+   ```yaml
+   # Top level: paste the generated obf block verbatim.
+   obf:
+     jc: 5
+     # ... rest of the generated obf block ...
+
+   routers:
+     - id: node1
+       # Keep every existing key of this router and add obf alongside them.
+       obf:
+         protocol: quic
+         i1: <b 0xc0ff><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x0040><b 0x00><b 0x01><t><r 40>
+         # ... i2, i3, i4 from the generated fragment ...
+   ```
+
+   The full field semantics — what S/H/J do on receive, why S/H must match mesh-wide, and how sender-local `i1`–`i5` are used — are covered in [Obfuscation](/guides/obfuscation), and the complete field reference lives in [Configuration reference](/reference/config).
+
+   :::caution
+   The fragment does not merge itself. Each `routers:` entry contains only `id` and `obf`, so never paste the fragment's `routers:` list over your existing one — merge each `obf` block into the matching node's entry and keep that node's other keys intact.
+   :::
+
+7. **Distribute and reload**
+
+   Ship the updated `central.yaml` to your mesh the same way you distribute any config change — via [config distribution](/guides/config-distribution) or a direct reload. Nodes pick up the new profile on their next config sync.
+
+   :::caution
+   Treat an obfuscation profile rollout as a maintenance action. The new parameters apply live when each node syncs, but in-flight handshakes can fail for one rekey window during the transition.
+   :::
+
+## Flag reference
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--preset` | `standard-1420` | amnezigo preset name for the shared profile. |
+| `--random` | `false` | Generate a random shared profile via amnezigo's `GenerateConfig` instead of the preset; the draw is redrawn until it satisfies the size-classification invariant (64 attempts, then an error). |
+| `--protocol` | `random` | Per-peer I1–I5 template: `quic`, `dns`, `dtls`, `stun`, `sip`, `rtp`, or `random`. |
+| `--mtu` | `0` | Underlay MTU clamp for I-packet sizes only; `0` uses the preset default. |
+| `--peers` | empty | Comma-separated node ids to generate per-node I1–I5 for. |
+| `--compat` | `false` | Emit the fixed vanilla-compat profile; the output does not depend on `--preset` or `--protocol`, but they are still validated. |
+| `--out` | stdout | Write to `FILE` instead of stdout (file mode `0644`). |
+| `-v`, `--verbose` | `false` | Log debug detail to stderr. |
+
+Print the stamped build version with the `--version` flag: `nylon-genesis --version` outputs `nylon-genesis version dev` (`dev` for local builds without version ldflags). There is no `version` subcommand — an unknown positional word is not an error, so `nylon-genesis version` silently generates a full obfuscation profile on stdout.
+
+## Vanilla compatibility (--compat)
+
+Pass `--compat` to generate the vanilla-compat profile instead of an obfuscated one. It pins `h1`–`h4` to the exact vanilla WireGuard message types and leaves everything else at zero — no junk, no padding, and no per-node `obf` blocks. This is the profile that keeps stock WireGuard clients working against your mesh during a version-skew window:
+
+```yaml
+obf:
+  h1:
+    min: 1
+    max: 1
+  h2:
+    min: 2
+    max: 2
+  h3:
+    min: 3
+    max: 3
+  h4:
+    min: 4
+    max: 4
+routers:
+- id: node1
+- id: node2
+```
+
+Two things to know about this mode:
+
+- The compat output does not depend on `--preset` or `--protocol`, but they are still validated: an unknown value fails before any output is produced.
+- It deliberately skips the header-range viability checks that normal generation runs, because pinning headers to 1–4 is exactly what those checks reject: obfuscated ranges must stay clear of the vanilla message types.
+
+If your whole mesh speaks vanilla WireGuard anyway, you can also omit the `obf` key from `central.yaml` altogether — a mesh with no profile pins the same 1–4 header types. See [Obfuscation](/guides/obfuscation) for the profile semantics, and [WireGuard clients](/guides/wg-clients) for attaching stock clients to a mesh.
+
+## Validation and failure behavior
+
+Before writing anything, the tool validates its own output:
+
+1. Structural checks on the profile: `jmin` must not exceed `jmax`, and every `h1`–`h4` range must have `min` no greater than `max`.
+2. Per-header range viability via the amnezigo validator.
+3. The packet-size classification invariant for the S-padded handshake sizes and the junk range.
+4. A re-check of the freshly generated per-peer `i1`–`i5` lengths.
+
+An unknown `--protocol` or `--preset` name fails before any output is produced, so a failed run never leaves a half-written `--out` file behind.
+
+## Provenance and licensing
+
+`nylon-genesis` links the GPL-3.0 [`amnezigo`](https://github.com/Arsolitt/amnezigo) parameter oracle, so a `nylon-genesis` binary is a GPL-3.0 combined work: if you distribute it, you must pass on the GPL-3.0 terms and the corresponding source — this repository plus amnezigo, both of which are public. The repository's own source files keep their source licenses (Apache-2.0 at the root, MIT for `polyamide/`), and the nylon daemon links only MIT-licensed device code and Apache-2.0 nylon code — it carries no copyleft obligations.
+
+For build requirements, see [Building and testing](/guides/development).
+---
+url: /guides/nylon-lb
+---
+# Kubernetes LoadBalancer
+
+`nylon-lb` gives Services of `type=LoadBalancer` real, reachable addresses inside a nylon mesh. It watches those Services, allocates a free IPv4 address from a pool you configure, writes the address into the Service's `status.loadBalancer.ingress`, and announces the address as a `/32` into the mesh by writing a file to the [dynamic prefixes directory](/reference/dynamic-prefixes). Cilium running in kube-proxy-replacement mode consumes `status.loadBalancer.ingress` and steers traffic to the Service.
+
+`nylon-lb` owns no datapath. Forwarding happens in the node's existing network stack; the controller only allocates addresses, and the speaker only makes the mesh aware of them.
+
+## Architecture
+
+One binary contains two components that you can enable and disable independently:
+
+- **Allocator** — runs once per cluster. It watches Services only, picks the lowest free address from the Service's selected pool for each LoadBalancer Service, and writes it to `status.loadBalancer.ingress` with single-object compare-and-swap updates. The allocator runs under leader election with a Lease named `nylon-lb-allocator`; the CAS status writes keep a partitioned ex-leader from corrupting anything.
+- **Speaker** — runs on every node. It watches Services and EndpointSlices, which is why `/readyz` waits for both informer caches to sync; for each Service the node should announce, it binds the allocated address to the loopback interface (Linux netlink) and writes an announce file into the prefixes directory. Speakers are never leader-elected: every node announcing the same `/32` is the design, and Babel treats the copies as anycast.
+
+## Command-line flags
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--pool` | required | Named IPv4 pool to allocate LoadBalancer addresses from, as `name=cidr` (e.g. `shared=192.0.2.0/24`). Repeat the flag for each pool. |
+| `--exclude` | none | Excludes addresses from the pool. Repeat the flag as needed. |
+| `--lb-class` | none | `loadBalancerClass` to claim. Empty claims all `type=LoadBalancer` Services; set it to scope nylon-lb to its own class and coexist with other LB controllers. |
+| `--prefixes-dir` | `/etc/nylon/prefixes.d` | Directory the speaker writes announce files into. |
+| `--bind-interface` | `lo` | Interface to bind announced addresses to. Set it empty (`--bind-interface=`) to disable binding. |
+| `--kubeconfig` | none | Path to a kubeconfig file. |
+| `--node-name` | hostname | Name of this node. Must match the Kubernetes node name for `externalTrafficPolicy: Local` to work. |
+| `--leader-elect` | `true` | Leader-elect the allocator. |
+| `--leader-namespace` | ServiceAccount namespace, else `kube-system` | Namespace for the leader-election Lease. |
+| `--resync` | `30s` | Informer resync period. |
+| `--health-addr` | `:9633` | Listen address for `/healthz`, `/readyz`, and `/metrics`. Set it empty to disable the server. |
+| `--speaker` | `true` | Enable the per-node announcer. |
+| `--allocator` | `true` | Enable the leader-elected IP allocator. |
+| `--log-level` | `$NYLON_LOG_LEVEL`, else `info` | Log level. |
+| `-v`, `--verbose` | off | Verbose logging. |
+| `--json` | off | Emit logs as JSON. |
+
+Logs are structured and carry the component name `nylon-lb`, `node=<name>`, and a module (`allocator` or `speaker`). Messages from klog (client-go) are bridged into the same log pipeline.
+
+## Allocation rules
+
+- nylon-lb claims **every** Service of `type=LoadBalancer` in the cluster **unless `--lb-class` scopes it**: with the flag set, only Services whose `spec.loadBalancerClass` matches exactly are claimed — unclassed Services are left pending for another controller.
+- Every Service selects its pool with the `nylon.io/lb-pool` annotation. Selection is fail-closed: a Service with no annotation (`MissingPoolAnnotation` event) or naming an unknown pool (`UnknownPool` event) gets no address and stays `<pending>`; an ingress address previously allocated for it is released.
+- A `spec.loadBalancerIP` set on a Service is honored when the address is free and inside the selected pool.
+- Allocation picks the lowest free address in the selected pool.
+- The taken set is global across all pools, so overlapping pools never hand out the same address twice.
+- An `--exclude` address applies to every pool that contains it.
+- The pool prefix must be at least a `/30`: the network and broadcast addresses are never allocated, so smaller pools have nothing to hand out.
+- Allocation is **derived, not stored**. nylon-lb recomputes the mapping from live Services on every resync and keeps no state anywhere, so deleting a Service frees its IP unconditionally. The only residual window is announce-file withdrawal lag on a down speaker node: the stale announce file persists until that node's next resync, when the stale-announce garbage collection withdraws it. There is no collision risk, because announce files are garbage-collected together with the Service.
+- Kubernetes events are emitted on the Service with a pinned, machine-readable reason vocabulary: `Allocated`, `Released`, `AllocationFailed` (the selected pool is exhausted — the Service stays pending and allocation retries with backoff until an address frees up), `BadLoadBalancerIP` (a `spec.loadBalancerIP` request rejected as outside the selected pool or already taken — a pool address is allocated instead), `MissingPoolAnnotation`, and `UnknownPool`. The reasons are stable so external tooling can rely on them.
+- IPv4 only.
+
+## Announcement semantics
+
+### Announce files
+
+For every Service it should announce, the speaker writes one file named `lb-<namespace>-<service>.json` into `--prefixes-dir`:
+
+```json
+{"version":1,"prefixes":[{"type":"static","prefix":"192.0.2.10/32","metric":0}]}
+```
+
+The file is compact JSON plus a trailing newline. The `lb-` prefix is the garbage-collection boundary: nylon-lb removes exactly the files it owns and never touches anything else in the directory, such as `00-vip.json`.
+
+Writes are atomic (write to a temp file, then rename). The temp file deliberately does not end in `.json`, because the nylon daemon globs `*.json` in that directory. Files whose content did not change are not rewritten, so the watcher sees no churn.
+
+### externalTrafficPolicy
+
+The Service's `spec.externalTrafficPolicy` decides which nodes announce:
+
+- `Cluster` (default) — every node announces every Service `/32`. Babel treats the identical prefixes as anycast, so when a node dies, traffic simply flows to the remaining announcers. Failover is free.
+- `Local` — only nodes that hold at least one ready local endpoint announce the Service. An endpoint with no `Ready` condition counts as ready.
+
+### Single announcer
+
+Anycast is the default because it fails over for free, but a flow that must not move — a database endpoint in the middle of `pg_basebackup`, say — is better served by one stable announcer. The `nylon.io/announce: single` annotation pins exactly one:
+
+```yaml
+metadata:
+  annotations:
+    nylon.io/announce: single
+spec:
+  externalTrafficPolicy: Local
+```
+
+With `Local` and `single`, exactly one of the nodes holding a ready local endpoint announces the Service. Each speaker computes the winner from the sorted eligible node list itself — FNV-1a 64 of `"ns/name"` modulo the list length — so no coordination is needed and no node can disagree about who wins for a given set of endpoints. Moving the ready endpoint to another node moves the announcement with it, but because the winner is an index into the eligible list, any change to that set (a node joining or leaving it) can reshuffle which node wins.
+
+The elected node withdraws its announcement when its own direct API view is more than 30 seconds stale — an unreachable API server means it can no longer be sure it is still the only owner. For a stateful path a bounded black-hole is preferable to two announcers, so the withdrawal is deliberately fail-closed; it is lifted as soon as a probe succeeds again.
+
+`single` requires `externalTrafficPolicy: Local`: the eligible set comes from EndpointSlices, and with the `Cluster` policy there is no node-local set to elect from. A Service with `single` and `Cluster` is announced anycast, with a warning. Any unrecognised value is treated the same way.
+
+:::caution[Always pass --node-name]
+`deploy/daemonset.yaml` exports a `NODE_NAME` environment variable but does **not** pass `--node-name=$(NODE_NAME)` in the container args. Without the flag, nylon-lb falls back to the hostname, which does not match the Kubernetes node name inside a DaemonSet pod — so with `externalTrafficPolicy: Local` no node ever matches its local endpoints, and nothing gets announced. Add `--node-name=$(NODE_NAME)` to `args` in the DaemonSet before you rely on `Local` mode.
+:::
+
+### Reconcile order
+
+The speaker's ordering is load-bearing. It binds the address to the loopback interface **before** writing the announce file, so the address already exists on the node by the time the `/32` propagates (about 250 ms after the file lands, per the prefix watcher debounce). When withdrawing a Service, it removes the announce file **before** unbinding the address.
+
+The unbind itself waits out a **60-second drain window**. The mesh needs a moment to converge on the withdrawal, and unbinding the instant the file disappears would black-hole flows it still routes to this node. A Service that becomes announced again during the window keeps its address: the pending drain is cancelled.
+
+## Requirements and caveats
+
+- **Configure every pool in every receiver.** Each pool must sit inside `dynamic_prefix_ranges` in every receiver's `central.yaml`. Receivers fail closed: announcements for prefixes outside their configured ranges are dropped. See the [configuration reference](/reference/config) and the [dynamic prefixes reference](/reference/dynamic-prefixes).
+- **Scope it with `--lb-class` to coexist.** With `--lb-class` set, nylon-lb owns only Services carrying that `loadBalancerClass`, and other class-scoped LoadBalancer controllers (servicelb, MetalLB, kube-vip) may run beside it; every other controller in the cluster must also be class-scoped, and unclassed Services stay `<pending>`. With the flag empty, nylon-lb claims every LoadBalancer Service and must be the only LoadBalancer controller in the cluster.
+- **IPv4 only.** No IPv6 pools.
+- **Run the identical pool set on every replica.** Every replica (all DaemonSet pods or bare-binary instances) must run the same `--pool` flags with the same `--exclude` addresses; each Service picks its pool with the `nylon.io/lb-pool` annotation.
+
+## Deployment
+
+### Use the released image
+
+Releases publish the controller image as `ghcr.io/arsolitt/nylon/nylon-lb`: GoReleaser tags each release with `:<version>`, and stable releases also move `:latest`. The shipped DaemonSet manifest consumes this image, so the install below needs no image build of your own; use the make targets in the next section only if you want to ship a custom image.
+
+### Build and push the image
+
+```bash
+make image-nylon-lb
+make push-nylon-lb
+```
+
+`make image-nylon-lb` builds a local, native-platform image with a plain `docker build`; only `make push-nylon-lb` builds multi-arch, via `docker buildx build --push`. The runtime image is built from `scratch` and exposes port 9633. A debug variant based on `ubuntu:24.04` is available with `make image-nylon-lb-debug`.
+
+### Install with the shipped manifests
+
+```bash
+kubectl apply -f cmd/nylon-lb/deploy/rbac.yaml
+kubectl apply -f cmd/nylon-lb/deploy/daemonset.yaml
+```
+
+`rbac.yaml` creates a ServiceAccount and a ClusterRole with get/list/watch on Services and EndpointSlices, update on `services/status`, get/create/update on Leases, and create/patch on Events.
+
+`daemonset.yaml` runs one pod per node in `kube-system`, tolerates control-plane nodes, mounts the prefixes directory from a hostPath, and runs as root (`runAsUser: 0`) with `NET_ADMIN` — both are required for the netlink bind. The manifest sets `hostNetwork: true` with `dnsPolicy: ClusterFirstWithHostNet` (the latter keeps cluster DNS resolvable), so the speaker runs in the node's network namespace and the announced `/32`s are bound on the node's `lo` rather than the pod's — which is what makes the node answer for the addresses it announces. Cilium in kube-proxy-replacement mode steers traffic using `status.loadBalancer.ingress`. Liveness and readiness probes target port 9633.
+
+Before you enable `externalTrafficPolicy: Local`, add `--node-name=$(NODE_NAME)` to `args` in the DaemonSet as explained in the caution above.
+
+### Allocator-only replica
+
+An allocator-only replica needs neither root nor `NET_ADMIN`:
+
+```bash
+nylon-lb --pool=shared=192.0.2.0/24 --allocator=true --speaker=false --bind-interface=
+```
+
+### Run as a bare binary
+
+You can run the binary directly instead of using the DaemonSet — for example under systemd, one instance per node:
+
+```bash
+nylon-lb \
+  --pool=shared=192.0.2.0/24 \
+  --prefixes-dir=/etc/nylon/prefixes.d \
+  --node-name=node-1 \
+  --kubeconfig=/etc/nylon/kubeconfig
+```
+
+Point `--prefixes-dir` at the directory your nylon daemon watches and set `--node-name` explicitly. A speaker still needs root or `CAP_NET_ADMIN` for the loopback bind. The bind is implemented with netlink and exists on Linux only: on other platforms nylon-lb refuses to start when `--bind-interface` is set (`netlink binder requires Linux`), so pass `--bind-interface=` to run a speaker without binding.
+
+## Observability
+
+See [Observability](/guides/observability) for wiring these signals into your monitoring stack.
+
+### Metrics
+
+All metrics are exposed at `/metrics` on `--health-addr` with the `nylon_lb_` prefix:
+
+| Metric | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `nylon_lb_build_info` | gauge | `version`, `commit` | Build identification. |
+| `nylon_lb_leader` | gauge | `node` | 1 while this replica holds the allocator Lease. |
+| `nylon_lb_allocated_ips` | gauge | — | Pool addresses currently allocated to owned LoadBalancer Services (`status.loadBalancer.ingress`) — the VIPs this controller has handed out. |
+| `nylon_lb_services` | gauge | — | LoadBalancer Services owned by this controller. |
+| `nylon_lb_announces` | gauge | — | Desired `/32` announcements for this node, recomputed each speaker reconcile (intended, not a count of successful binds or writes). |
+| `nylon_lb_allocations_total` | counter | — | Address allocations. |
+| `nylon_lb_releases_total` | counter | — | Ingress clearances on type change or pool-annotation failure. |
+| `nylon_lb_announce_writes_total` | counter | — | Successful announce-file sync calls, including unchanged no-op calls: it advances per desired announce per reconcile (~30 s resync) even when nothing on disk changes. |
+| `nylon_lb_errors_total` | counter | `kind` | Errors by kind: `bind`, `write`, `reconcile`, `list`, `glob`. |
+
+`nylon_lb_services` and `nylon_lb_allocated_ips` are cluster-wide: every replica derives them from the same Service informer cache and reports identical values, so aggregate them with `max`, never `sum`. Their difference is the number of managed Services still waiting for an address — a Service with a missing or unknown pool annotation, an exhausted pool, or a status write not yet observed.
+
+Note that `nylon_lb_releases_total` does not move when a Service is deleted: once the Service is gone from the lister there is no ingress left to clear, and the stale announce file is withdrawn by the speaker's garbage collection instead.
+
+### Health endpoints
+
+- `/healthz` — liveness. Returns 200 as soon as the HTTP server is serving.
+- `/readyz` — readiness. Returns 503 `informer caches not synced` until the Service and EndpointSlice informer caches have synced, then 200.
+- `/metrics` — Prometheus text format.
+
+## Shipped implementation vs. the design doc
+
+:::note
+`design.md` §6 sketches an earlier LoadBalancer design: a ConfigMap state store, finalizers, writes to `spec.externalIPs`, and single/anycast mode flags. None of that shipped. The controller in `cmd/nylon-lb/` derives allocation from live Services, selects the announcing nodes through `spec.externalTrafficPolicy`, and elects a single announcer with the `nylon.io/announce: single` annotation.
+:::
+---
+url: /guides/development
+---
+# Building & Testing
+
+Everything in nylon's development workflow routes through one file: the `Makefile`. You build with `make build` (or the per-binary targets `make nylon`, `make nylon-genesis`, `make nylon-lb`), run tests with `make test*`, regenerate protobufs with `make proto`, and cut container images with `make image-nylon-lb`. This page walks through the prerequisites, every make target, the build tags that gate each test suite, and how releases and the demo tooling work.
+
+## Prerequisites
+
+- **Go 1.26.3** — the toolchain is pinned to this exact version in `mise.toml`, `go.mod`, the root `Dockerfile`, and `cmd/nylon-lb/Dockerfile.dev`, and every CI job resolves it through `actions/setup-go` with `go-version-file: go.mod`, so every environment builds with the same compiler.
+- **Docker** — required for the e2e suite, which runs real containers through [testcontainers](https://go.testcontainers.org/). The unit and integration suites do not need it.
+
+The Makefile exports `CGO_ENABLED=0` for all builds, so you get fully static binaries without touching your shell environment.
+
+For the configs that `nylon-genesis` generates, see the [genesis guide](/guides/genesis).
+
+## Make Targets
+
+| Target | What it does |
+| --- | --- |
+| `make build` | Builds `bin/nylon`, `bin/nylon-genesis`, and `bin/nylon-lb`, stamping version/commit via `-ldflags` (`git describe` / `git rev-parse`). |
+| `make nylon` | Builds `bin/nylon` only, from `./cmd/nylon`. |
+| `make nylon-genesis` | Builds `bin/nylon-genesis` only, from `./cmd/nylon-genesis`. |
+| `make nylon-lb` | Builds `bin/nylon-lb` only, from `./cmd/nylon-lb`. |
+| `make test` | Runs `gotestsum --race -tags=router_test ./...` — the tagged Babel scenarios plus all untagged unit tests (core and `polyamide/`). |
+| `make test-integration` | Runs the in-process integration suite (`--race -tags=integration ./integration/...`) — needs no Docker. |
+| `make test-e2e` | Runs the e2e suite (`-tags=e2e ./e2e/... -parallel $(NPROC)`) — requires Docker. |
+| `make test-all` | Runs all three suites in sequence. |
+| `make notice` | Regenerates `NOTICE` and `licenses/` via `go run ./hack/noticegen` — CI's licenses job fails when they are stale. |
+| `make proto` | Runs `go generate ./cmd/nylon` to regenerate `protocol/*.pb.go`. |
+| `make image-nylon-lb` | Builds the `nylon-lb` container image (runtime stage of `cmd/nylon-lb/Dockerfile.dev`). |
+| `make image-nylon-lb-debug` | Builds the debug variant of the same `Dockerfile.dev` (debug stage: `ubuntu:24.04` plus `curl`, `iproute2`, and `tcpdump`). |
+| `make push-nylon-lb` | Rebuilds the `nylon-lb` runtime image multi-platform (`$PLATFORMS`) via `buildx --push` and pushes it to `$REGISTRY` — it does not push the local image left behind by `make image-nylon-lb`. |
+| `make clean` | Removes `bin/`. |
+
+After `make build`, you have all three binaries in `bin/`. To configure and run the daemon, continue with [Getting Started](/guides/getting-started).
+
+## Build Tags
+
+All test-only code sits behind build tags. The `interop/awgref` package (`awg_ref_interop`) and the `sys_virtual` layer (`integration`) stay out of a default `go build ./...` — the production `sys_physical` layer is the inverse (`!integration`), so it is always part of the default build and only swaps out for `sys_virtual` when the integration suite runs.
+
+| Tag | Gates |
+| --- | --- |
+| `router_test` | The core routing test suite: the 30 Babel scenario tests in `core/router_test.go` (including the `RouteSwitchHold`/deadband cases) plus their `core/router_harness.go` scaffolding — the only two files carrying this tag. The `sys_route`, `nylon_tc`, `nylon_scheduler`, `future`, `observability`, `ipc_handler`, `nylon_apply`, `system_apply`, `dynamic_prefixes`, `router_log`, and `nylon_wireguard` tests are untagged, as are all `polyamide/...` tests, and run under any `go test`. |
+| `integration` | The `./integration/...` suite: an in-process `VirtualHarness` built on `ChannelTUN` with configurable latency/jitter/loss links, checked for leaks with `goleak.VerifyNone`. |
+| `e2e` | The `./e2e/...` suite: full multi-node scenarios in Docker via testcontainers. |
+| `awg_ref_interop` | The `interop/awgref` interoperability suite, which validates nylon's [obfuscation](/guides/obfuscation) extensions against the reference AmneziaWG implementation. Not wired into any make target or CI job — run it manually with `go test -tags awg_ref_interop ./interop/awgref/ -v -count=1`. |
+
+### The `nylon-debug` Image
+
+The e2e suite needs a test-node image with real networking tools. Before any e2e test runs, `TestMain` pre-builds a `nylon-debug:latest` image from the `debug` target of the root `Dockerfile`: an unpinned `ubuntu:latest` base plus `iputils-ping`, `iperf3`, `curl`, `iproute2`, `iptables`, `jq`, `fping`, `mtr-tiny`, `wireguard-tools`, `net-tools`, `tcpdump`, `dnsutils`, `netcat-openbsd`, `tmux`, `asciinema`, and `python3`. Expect the first `make test-e2e` run to take longer while this image builds.
+
+The e2e harness also allocates its Docker networks dynamically: it picks a free `10.200`–`10.250.x.x/24` subnet at runtime so the suite never collides with networks you already have.
+
+## Test Suites
+
+### Unit: `make test`
+
+Runs `./...` with the `router_test` tag enabled and the race detector on — the tagged Babel routing scenarios plus every untagged unit test in `core/` (route-table handling, traffic-control plumbing, the scheduler, observability, IPC handlers, config apply, dynamic prefixes, and more) and all of `polyamide/`. This is the fastest feedback loop and needs no Docker.
+
+### Integration: `make test-integration`
+
+Starts real nylon logic against an in-process virtual network, so there are no TUN devices, no root, and no Docker. The harness wires nodes together over `ChannelTUN` links with tunable latency, jitter, and loss, and every test asserts clean shutdown with `goleak`.
+
+What the suite covers:
+
+- Basic lifecycle and connectivity: `TestStartStop`, `TestSimplePing`, `TestSimpleRoutedPing`.
+- Best-path selection under faster probes: `TestOptimalConvergence`.
+- In-process routing, TUN-less relay forwarding, and TTL expiry: `TestInProcessRouting`, `TestInProcessRoutingThroughTUNLessRelay`, `TestTTL`.
+- Wire-format behavior: `TestAckRetractSentOnWire`.
+- Central config application: live neighbour removal, restart-required local-node removal, and key rotation that keeps the next hop (`TestApplyCentralConfig*`).
+- Dynamic prefixes: writing to `prefixes.d` announces a prefix, deleting it retracts it (`TestDynamicPrefixAnnounceAndWithdraw`).
+- The full IPC matrix: status, probe timeout, reload, non-neighbour rejection, trace-disabled, malformed input, and clean no-errno responses (`TestIPC*`).
+- Race safety under rapid config applies (`TestRapidToggleConfig`).
+
+### E2E: `make test-e2e`
+
+Boots multi-node topologies as Docker containers (the `nylon-debug` image from above) and asserts on real traffic. Tests run in parallel across your CPU count.
+
+| Scenario | What it proves |
+| --- | --- |
+| `TestConnectivity` | A 3-node line graph converges and pings across. |
+| `TestRecoveryExample` | Blackholing the alice→bob route forces a reroute via vps; pings recover. |
+| `TestEndpointResolution` | Nodes resolve endpoints from CoreDNS A and SRV records. |
+| `TestDynamicResolution` | A DNS record change at runtime re-resolves the endpoint to the new IP. |
+| `TestProbeReportsResolvedDNSAndLatency` | Probe JSON shows `resolved=` and latency on a REPLIED hop. |
+| `TestProbeReportsResolveErrorForMissingDNS` | A missing DNS record yields a resolve-error status. |
+| `TestProbeReportsTimeout` | An unreachable hop yields a timeout status. |
+| `TestObfProfileConnectivity` | A genesis fixture obfuscation profile connects 2 nodes over obfuscated wire, with startup retransmit retry. |
+| `TestPassiveRoaming` | A kernel WireGuard client container roams node3→node2 and pings recover. |
+| `TestTUNLessRelay` | A `no_tun` relay forwards traffic; the TTL-expired hop shows up in traces. |
+| `TestDistribution` | A sealed bundle served by a lightweight Python HTTP server container applies on a new timestamp. |
+| `TestDistributionKeyRotation` | A bundle signed with the old key installs a new distribution key; the next bundle, signed with the new key, applies and preserves it. |
+| `TestDistributionRejectsLocalNodeRemoval` | A bundle removing the local node is rejected; the timestamp stays unchanged. |
+| `TestDistributionRejectsInvalidCentralConfig` | An invalid bundle is rejected. |
+| `TestHealthcheckPing` | Two nodes anycast a ping-checked /32 and fail over by metric. |
+| `TestHealthcheckHTTP` | An HTTP-checked service IP fails over from backup (static metric 10,000,000 µs = 10 s) to primary (HTTP metric 10) when the server starts. |
+| `TestJSONLogging` | `--json` emits slog JSON records. |
+| `TestIPCRawSocketJSONHasNoErrnoTrailer` | A raw UAPI `get=nylon` returns pure protojson with no errno trailer. |
+| `TestTunDropReproduction1CPU` | A 1-CPU node pushes eight iperf3 streams through `nylon0`; its `tx_dropped` grows by at most 50 over 15 s while the run carries ≥ 1e8 bit/s. |
+| `TestTunDropFree4CPU` | Four CPUs and twelve streams: the same bound on `tx_dropped` growth and throughput floor. |
+
+### Continuous Integration
+
+CI is `.github/workflows/ci.yml`, triggered on every push and PR to `main` (ignoring changes under `docs/**` and `README.md`, cancelling in-progress runs per ref) with seven jobs: `lint` (golangci-lint), `unit_test`, `integration`, and `e2e` — CI runs the same test commands as the local targets, directly through the pinned runner `go run gotest.tools/gotestsum@v1.13.0` rather than `make`, with e2e parallelism set to the runner's `$(nproc)` — plus `licenses` (regenerates `NOTICE`/`licenses/` and fails on any `git diff`), `release_config` (`goreleaser check`), and a push-only `cross_build` compile matrix that also compiles `windows/amd64` as a canary. Every job pins Go through `go-version-file: go.mod`.
+
+## Container Images
+
+The `nylon-lb` load balancer ships as a container image, built from `cmd/nylon-lb/Dockerfile.dev` — a `golang:1.26.3` builder, a `scratch` `runtime` stage with `EXPOSE 9633`, and an `ubuntu:24.04` `debug` stage with `curl`, `iproute2`, and `tcpdump`. (The plain `cmd/nylon-lb/Dockerfile` is GoReleaser-only: its build context is prebuilt release binaries, not the source tree.)
+
+```bash
+# runtime variant
+make image-nylon-lb
+
+# debug variant (extra tooling)
+make image-nylon-lb-debug
+
+# push to your registry
+REGISTRY=ghcr.io/yourorg make push-nylon-lb
+```
+
+The targets take these variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `REGISTRY` | — | Registry to push to (`push-nylon-lb`). |
+| `IMAGE_NAME` | `nylon-lb` | Image repository name. |
+| `IMAGE_TAG` | `$(VERSION)` | Image tag; defaults to the stamped version. |
+| `PLATFORMS` | `linux/amd64,linux/arm64` | Multi-arch build platforms. |
+| `IMAGE_EXTRA_ARGS` | — | Extra flags passed through to the image build. |
+
+For what the balancer actually does at runtime, see the [nylon-lb guide](/guides/nylon-lb).
+
+The root `Dockerfile` (for the nylon daemon itself) has two relevant stages: the `runtime` stage is `FROM scratch` with `ENTRYPOINT nylon run` and `WORKDIR /app/config`, while the `debug` stage adds `-v -w --dbg-trace-tc` to the entrypoint for verbose, traced runs — handy when you are [troubleshooting](/guides/troubleshooting) a live mesh.
+
+## Release Process
+
+The `release.yml` workflow triggers on a `v*` tag and runs GoReleaser, which publishes:
+
+- Raw binaries of **`nylon`** and **`nylon-genesis`** (loose executables named `nylon-linux-amd64` and so on, not archives) for Linux (`386`, `amd64`, `arm64`) and macOS (`amd64`, `arm64`; no `386`).
+- A license meta-archive `nylon-licenses_<version>.tar.gz` (`LICENSE`, `LICENSE.GPL-3.0`, `NOTICE`, `polyamide/LICENSE`, `licenses/`) and `checksums.txt`.
+- The **`nylon-lb`** container image `ghcr.io/arsolitt/nylon/nylon-lb` (Linux `amd64`/`arm64`), tagged with the release version; stable, non-prerelease releases also get the `latest` image tag, while `vX.Y.Z-rc.N` tags publish GitHub pre-releases.
+
+There are no Windows release artifacts — `windows/amd64` is compiled in CI as a canary only. `nylon-genesis` ships as raw release binaries, and `nylon-lb` ships as a container image only; build its raw binary from source with `make nylon-lb` if you need it.
+
+Version stamping works through `internal/buildinfo`: the defaults are `Version='dev'` and `Commit='none'`, and `make build` overrides both via `-ldflags -X` using `git describe` and `git rev-parse`. If a binary was built inside a git tree without explicit stamps, `nylon version` falls back to `debug.ReadBuildInfo` and reports the `vcs.revision`, truncated to 8 characters.
+
+## Demo Tooling
+
+The `demo/` directory packages a self-contained mesh stand (alice, bob, charlie) plus the recorder that produces the demo assets used by this site. Both entry points need only Docker with Compose v2 and `python3` — everything else runs inside the image:
+
+```bash
+./demo/up.sh      # stand up and leave it running
+./demo/record.sh  # record the failover assets into docs/assets/
+```
+
+- **`demo/lib.sh`** — shared helpers: paths, the `docker compose` wrapper, subnet picking (a free `10.2xx.y.0/24` from the same pool the e2e harness uses) and the next-hop query against the daemon's own route table.
+- **`demo/generate-configs.sh`** — writes `demo/.env`, three keypairs and the central/node configs, then validates them with `nylon verify`. Idempotent; `--force` regenerates.
+- **`demo/up.sh`** — the documented one command: configs, `docker compose up`, then a bounded wait until alice really reaches charlie through the mesh. Prints the next hop per node and leaves the stand running.
+- **`demo/record.sh`** — records the failover end to end: a 140x35 `tmux` layout running `mtr`, `ping`, alice's forwarding table and the story pane, recorded with asciinema, converted with `agg` and installed into `docs/assets/demo.{cast,gif}`. `--no-install` keeps the files in `demo/output/`.
+- **`demo/panes/`** — the four pane scripts, copied into the container by the recorder. The story pane cuts the `alice`–`charlie` link with `iptables`, then asserts each transition by polling alice's route table — a `PASS` line per step, and a run that never observed the reroute fails instead of printing a success.
+
+Three properties of the stand are worth knowing before changing it. Alice's link to bob is shaped to 20ms (`pre_up` in the generated `alice.yaml`), because on a docker bridge every link measures the same sub-millisecond latency with comparable jitter — without the shaping the mesh re-selects routes on noise and the failover timing is a coin flip. The stand is then warmed up with one cut/restore cycle before anything is recorded (`warm_up` in `lib.sh`, also run by `up.sh`), because the algorithm only accepts the backup route while the mesh reconverges: a cold mesh can otherwise sit without it and turn a ~6s reroute into a ~45s one. And the story pane asserts that state itself — it waits for the direct route and for bob advertising `10.99.0.3/32` before cutting anything.
+
+The recorder is the gate: a green run proves the reroute happened and leaves the assets the README and the [docs landing page](/) render. Tear the stand down with `docker compose --env-file demo/.env -f demo/docker-compose.yml -p nylon-demo down --remove-orphans`.
+---
+url: /reference/config
+---
+# Configuration Reference
+
+## node.yaml
+
+Each node has its own `node.yaml` with local settings. Generate a keypair with `nylon key`. Stdout is the private key, stderr is the public key.
+
+```yaml
+key: 0NcrMcaS1tORCTA88L5ZPE+H6yUMV4e5vRp6iypnPW8= # private key (from `nylon key`)
+id: alice # must match this node's id in central.yaml
+port: 57175 # UDP port nylon listens on
+
+# --- Optional fields below ---
+
+use_system_routing: false # if true, all peer packets exit via the TUN interface
+no_tun: false # if true, run as a userspace-only relay without a TUN (requires use_system_routing: false and no addresses/prefixes for this node in central.yaml)
+no_net_configure: false # if true, nylon won't touch system routes or interfaces
+log_path: "" # write logs to this file (empty = stderr only)
+interface_name: "" # override the interface name (default: "nylon", or utunX on macOS)
+dns_resolvers: [] # DNS servers for nylon's own lookups, e.g. ["1.1.1.1:53"]
+observability_addr: "" # e.g. "0.0.0.0:9090"; enables /metrics, /healthz, /readyz, and /discovery
+mtu: 1420 # TUN interface MTU (omit for the device default 1420)
+tun_queues: 4 # TUN queues drained in parallel (default: min(CPU count, 4)); Linux only
+tun_txqueuelen: 10000 # kernel tx queue length per TUN queue (default: 10000; 0 = kernel default 500)
+tun_backpressure: false # request IFF_BACKPRESSURE (default: false; requires kernel >= 6.15)
+dynamic_prefixes_dir: "" # directory watched for dynamic prefix JSON files, e.g. /etc/nylon/prefixes.d (empty = disabled)
+
+# Bootstrap: fetch central.yaml from a remote bundle on first start
+dist:
+  url: https://static.example.com/network1.nybundle
+  key: 7PaN6DmAayz4KnDnsXSXJH+Oy0TFGeoM4FEbQfLriVY= # distribution public key
+
+# Split tunneling (per-node overrides)
+exclude_ips: # add to the central exclude list
+  - 192.168.0.0/24
+unexclude_ips: [] # subtract from the central exclude list
+
+# Lifecycle hooks (run in order)
+pre_up: []
+pre_down: []
+post_up:
+  - iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -d 192.168.0.0/24 -j MASQUERADE
+post_down: []
+```
+
+The `tun_*` fields size the TUN datapath and apply on Linux only; every other platform keeps the single-queue path. `tun_queues` drains the interface from several queues in parallel — the kernel steers each flow to one queue, so per-flow packet order is preserved and more queues mean more CPU parallelism for the drain. `tun_txqueuelen` is the kernel burst buffer the daemon reads from (one packet per unit, roughly 1.4 KB of kernel memory per queue at MTU 1420); it is programmed at interface creation and only takes effect when more than one queue is created. `tun_backpressure` asks the kernel to stop dropping when a queue is full and let the qdisc queue instead, trading dropped packets for added latency; it needs kernel >= 6.15 and is otherwise a silent no-op. Both counts are validated when the config is loaded: `tun_queues` must be 1–32 and `tun_txqueuelen` 0–1048576.
+
+When you set `dynamic_prefixes_dir`, the nylon daemon watches that directory and announces prefixes from JSON files that local writers (scripts, Kubernetes sidecars, the nylon-lb agent) place there. See [Dynamic Prefixes](/reference/dynamic-prefixes) for the file contract.
+
+---
+
+## central.yaml
+
+The central config defines the entire network topology. It is shared across all nodes (either copied manually or via config distribution).
+
+```yaml
+# --- Config Distribution (optional) ---
+dist:
+  # The distribution key is used to verify and decrypt sealed bundles.
+  # Despite being called "public", treat it as a shared secret. It can decrypt your topology.
+  key: 7PaN6DmAayz4KnDnsXSXJH+Oy0TFGeoM4FEbQfLriVY=
+  # Nylon polls these URLs every 10 seconds for config updates
+  repos:
+    - file:central.nybundle          # local file
+    - https://static.example.com/network1.nybundle # remote URL (HTTP GET)
+
+# --- Routers ---
+# Active nylon nodes that participate in routing and can forward traffic.
+routers:
+  - id: alice
+    pubkey: xmfAovAKN4AY5ocK5s+/VsG9I27KrQ13Vzb0HOsLKAs=
+    addresses: [10.0.0.1] # nylon interface addresses (auto-advertised as /32 or /128)
+    endpoints:
+      - "alice.example.com:57175" # domain name (re-resolved periodically)
+      - "192.168.1.2:57175"       # LAN IP
+    prefixes:
+      # Static: always advertised at the given metric
+      - type: static
+        prefix: 192.168.0.0/24
+        metric: 0 # optional, default 0
+
+      # Ping: advertised with RTT as metric, withdrawn after max_failures consecutive failures
+      - type: ping
+        prefix: 10.1.0.0/24
+        addr: 10.1.0.8           # address to ping
+        delay: 10s               # interval between pings (default: 15s)
+        max_failures: 3          # failures before withdrawal (default: 3)
+        bind_if: en10            # optional: bind to a specific interface
+        # metric: 0              # optional: override RTT with a static metric (advertised unconditionally; suppresses failure retraction)
+
+      # HTTP: advertised with request duration as metric, withdrawn on non-200 response
+      - type: http
+        prefix: 10.2.0.0/24
+        url: http://example.com/healthz
+        delay: 15s               # interval between probes (default: 15s)
+        # metric: 5              # optional: override request duration with a static metric
+
+  - id: bob
+    pubkey: 4GfHHSyVpXc+wkbjyIIONERa6Xf5EafB0nVGZLf2r2o=
+    addresses: [10.0.0.2, 10.1.0.2] # multiple addresses are fine
+    endpoints:
+      - "192.168.1.1:57175"
+      - "nylon.example.org" # port defaults to 57175 (the nylon default port)
+    # Optional per-node obfuscation params. They apply only to this node's
+    # sender path (receivers ignore them) and are normally generated by
+    # `nylon genesis`.
+    # obf:
+    #   protocol: quic # informational template name (quic|dns|dtls|stun|sip|rtp|random)
+    #   i1: <b 0xc0ff><r 8><t><r 40> # CPS spec; i2-i5 are optional, empty ones are omitted
+
+  - id: eve
+    pubkey: 2mXTTD+FYdtJm/v1vSHz8qimvCucjW9vY+nLYacXJFE=
+    addresses: [10.0.0.3]
+    # no endpoints. eve can only connect outward to nodes that have endpoints
+
+  - id: public
+    pubkey: dJcUE1qnXCQ5x8pMhFb/MZab7YrBaaHcrgfbmQI0MW4=
+    addresses: [10.0.0.4]
+    endpoints:
+      - "123.123.123.123:57175" # multiple endpoints; nylon picks the best one dynamically
+      - "123.123.123.124:57175"
+
+# --- Clients ---
+# Passive WireGuard clients that don't run nylon. Only static prefixes allowed.
+clients:
+  - id: client1
+    pubkey: SBI+yvF30Ba4xo0GKTtKHSSfbXAnRNFTBwydJyJp6Rk=
+    addresses: [10.0.0.7]
+    prefixes:
+      - type: static
+        prefix: 192.168.1.0/24 # also add this to AllowedIPs in the WireGuard client config
+
+# --- Split Tunnel ---
+# Excluded prefixes are NOT routed through nylon (network-wide default).
+# Per-node overrides are in node.yaml (exclude_ips / unexclude_ips).
+#
+# How the layers combine (applied per-node):
+# 1. Start with all prefixes from the routing table
+# 2. Drop: prefixes this node itself originates (exact match only --
+#    learned more-specifics inside them still install)
+# 3. Subtract: central exclude_ips (below)
+# 4. Add back: node unexclude_ips
+# 5. Subtract: node exclude_ips
+#
+# Example: central excludes 10.0.0.0/8. Node "alice" sets
+# unexclude_ips: [10.1.0.0/16] -- re-includes 10.1.x.x
+# exclude_ips: [10.1.99.0/24] -- but not 10.1.99.x
+# Result for alice: 10.1.0.0/16 is routed through nylon, except 10.1.99.0/24.
+# All other 10.x.x.x traffic bypasses nylon.
+exclude_ips:
+  - 192.168.0.0/24
+
+# --- Dynamic Prefix Ranges ---
+# Receiver-side allowance for prefixes.d announcements: receivers accept an
+# announced prefix when it falls inside one of these ranges (prefixes already
+# listed under routers[] remain routable regardless). Each range must be a
+# valid, masked prefix (no host bits). Empty = fail-closed: only prefixes
+# known from this central config are routable.
+dynamic_prefix_ranges:
+  - 10.0.0.0/8
+
+# --- Obfuscation ---
+# Mesh-wide AmneziaWG 2.0 profile. Central placement keeps the S and H
+# parameters identical on every node by construction, which the wire format
+# requires. Omit the whole block for vanilla WireGuard-compatible behavior.
+# The values below are examples; generate a profile with `nylon genesis`.
+obf:
+  jc: 5
+  jmin: 250 # must not exceed jmax
+  jmax: 800
+  s1: 32
+  s2: 28
+  s3: 20
+  s4: 16
+  h1: # header range: min must not exceed max
+    min: 100
+    max: 5000000
+  h2: # header ranges must not overlap each other
+    min: 10000000
+    max: 200000000
+  h3:
+    min: 400000000
+    max: 800000000
+  h4:
+    min: 1000000000
+    max: 2100000000
+
+# --- Graph ---
+# Defines which nodes will peer with each other. Only nodes connected in the graph
+# will attempt to establish WireGuard tunnels.
+#
+# IMPORTANT: The graph controls direct peering only. Two nodes that are NOT
+# directly connected in the graph can still communicate. Their traffic is
+# forwarded through intermediate nodes that ARE connected.
+graph:
+  # Groups: a shorthand for sets of nodes (nodes within a group are NOT auto-connected)
+  - Group1 = alice, bob
+  - Group1, Group1           # connect every node in Group1 to every other node in Group1
+  - Group2 = Group1, client1 # groups can contain other groups
+  - client1, eve, alice      # all three fully interconnected
+
+# Updated automatically by `nylon seal`; used as a version number for config distribution.
+timestamp: 1740832962209309000
+```
+
+A `metric` override behaves differently per check type. On a `ping` entry the value is advertised unconditionally from startup and suppresses failure retraction, so the prefix stays announced even when the probe target is down; leave it unset if you want health-driven withdrawal. On an `http` entry the override replaces only the healthy request-duration metric, and failures still retract. See [Dynamic Prefixes](/reference/dynamic-prefixes) for the full behavior.
+
+The `obf` profile and the per-node `i1`-`i5` specs are normally produced by `nylon genesis`, which picks viable header ranges automatically. See [Obfuscation](/guides/obfuscation) for the wire-format background and [Genesis](/guides/genesis) for the generation workflow.
+
+---
+
+## Obfuscation Fields
+
+Two independent `obf` blocks exist. The mesh-wide profile sits at the top level of `central.yaml`; per-node params sit under each `routers[]` entry (and are also accepted under `clients[]`, although `nylon genesis` emits them for routers only).
+
+### central.yaml `obf` (mesh-wide profile)
+
+| Field   | Type                            | Default             | Constraints                                                                                                        |
+| ------- | ------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `jc`    | uint32                          | `0`                 | —                                                                                                                  |
+| `jmin`  | uint32                          | `0`                 | must not exceed `jmax`                                                                                             |
+| `jmax`  | uint32                          | `0`                 | —                                                                                                                  |
+| `s1`-`s4` | uint32                        | `0`                 | —                                                                                                                  |
+| `h1`-`h4` | map with `min`/`max` (uint32) | `min: 0`, `max: 0`  | `min` must not exceed `max` within a range; ranges must not overlap (the device rejects overlaps at UAPI apply time with `headers must not overlap`) |
+
+Each `h1`-`h4` range maps to the AmneziaWG UAPI `min-max` form. Omitting the entire `obf` block keeps vanilla WireGuard-compatible header values (`h1` through `h4` pinned to `1-1`, `2-2`, `3-3`, and `4-4`). Ranges that `nylon genesis` generates avoid WireGuard message type ids 1-4.
+
+### routers[].obf (per-node, sender-local)
+
+| Field      | Type   | Default             | Notes                                                                                                          |
+| ---------- | ------ | ------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `protocol` | string | omitted             | Informational AmneziaWG template name: `quic`, `dns`, `dtls`, `stun`, `sip`, `rtp`, or `random`                 |
+| `i1`-`i5`  | string | omitted when empty  | CPS packet specs such as `<b 0xc0ff><r 8><t><r 40>`; only non-empty specs are emitted                           |
+
+Receivers ignore `protocol` and `i1`-`i5`: these params shape only how this node's outgoing packets look, while the mesh-wide profile governs the receiving side.
+
+---
+
+## Dynamic Prefixes (prefixes.d)
+
+Setting `dynamic_prefixes_dir` in `node.yaml` (recommended: `/etc/nylon/prefixes.d`) enables a watcher that announces prefixes from JSON files in that directory:
+
+```json
+{
+  "version": 1,
+  "prefixes": [
+    { "type": "static", "prefix": "10.99.0.1/32", "metric": 0 }
+  ]
+}
+```
+
+The contract:
+
+- `version` must be `1`; `prefixes` entries use the same `type` values and keys as the central `prefixes` list (`static`, `ping`, `http`).
+- Adding or updating a file announces its prefixes; removing it withdraws them.
+- Invalid JSON or an unsupported version skips the whole file; a single invalid entry skips only that entry.
+- Files apply in lexicographic filename order; a duplicate prefix across files resolves to the entry from the earlier filename.
+- Use one writer per file, and write to a temp file followed by an atomic rename (the temp name must not end in `.json`).
+- On the receiving side, announcements are gated by central `dynamic_prefix_ranges`.
+
+See [Dynamic Prefixes](/reference/dynamic-prefixes) for the full contract and examples.
+
+---
+
+## Naming Rules
+
+Node IDs (`routers[].id`, `clients[].id`) must:
+- Match `^[0-9a-z._/-]+$`
+- Be at most 100 characters
+- Be unique across all routers and clients
+
+Group names used in `graph` are folded to lowercase, must not equal a node name, and must be unique. The strict node-ID pattern above is not applied to them.
+---
+url: /reference/dynamic-prefixes
+---
+# Dynamic Prefixes
+
+Dynamic prefixes let you add and remove advertised prefixes while a node is running. Instead of editing the central config and reloading, you drop JSON files into a directory the daemon watches, and nylon announces the prefixes into the mesh using the normal Babel routing machinery. Deleting a file retracts the announcement.
+
+The feature has two halves:
+
+- The **announcing node** watches its `dynamic_prefixes_dir` for `*.json` files and announces every valid prefix they describe, alongside the static prefixes from its central config.
+- Every **receiving node** accepts an announced dynamic prefix only if it falls inside its own central `dynamic_prefix_ranges` (or exactly matches a prefix it already knows). The default is fail-closed: with no ranges declared, receivers drop every dynamic announcement.
+
+## Configuration
+
+Two YAML keys control the feature. Both are optional; the feature is fully disabled unless you set the directory.
+
+| Key | Config level | Type | Default | Description |
+| --- | --- | --- | --- | --- |
+| `dynamic_prefixes_dir` | node | string | `""` (disabled) | Directory the daemon watches for `*.json` prefix files. The recommended location is `/etc/nylon/prefixes.d`. |
+| `dynamic_prefix_ranges` | central | list of CIDR prefixes | `[]` (fail-closed) | Receiver-side allowance: prefixes a node accepts from peers' dynamic announcements. Ranges must be valid and masked. |
+
+**node config**
+
+```yaml
+# Enables the watcher on this node only.
+dynamic_prefixes_dir: /etc/nylon/prefixes.d
+```
+
+**central config**
+
+```yaml
+# Allow dynamic announcements for pod CIDRs and the anycast VIP slice.
+dynamic_prefix_ranges:
+  - 10.42.0.0/16
+  - 10.60.0.0/24
+```
+
+Cross-node routing needs both halves: the announcer needs `dynamic_prefixes_dir` to announce, and every receiver needs a `dynamic_prefix_ranges` entry that covers the announced prefix. A receiver accepts an announced prefix when the prefix is **equal to one of its central prefixes** or **a subnet of one of the declared ranges**. Supernets of a declared range are rejected. The gate applies to route updates, ack-retracts, and seqno-requests alike.
+
+See the [config reference](/reference/config) for how these keys fit into the full node and central configs.
+
+## File contract
+
+The watched directory contains flat `*.json` files (subdirectories are ignored). Each file holds a schema-versioned list of prefix entries:
+
+**prefixes.d/10-vip.json**
+
+```json
+{
+  "version": 1,
+  "prefixes": [
+    {"type": "static", "prefix": "10.42.1.0/24", "metric": 0},
+    {"type": "ping", "prefix": "10.1.0.0/24", "addr": "10.1.0.8",
+     "delay": "10s", "max_failures": 3, "bind_if": "", "metric": 5},
+    {"type": "http", "prefix": "10.2.0.0/24", "url": "http://example.com/healthz",
+     "delay": "15s", "metric": 5}
+  ]
+}
+```
+
+The schema is a field-for-field mirror of the prefix health config (`StaticPrefixHealth`, `PingPrefixHealth`, `HTTPPrefixHealth`), so dynamic prefixes support the same health checks as static prefixes.
+
+| Field | Type | Applies to | Required | Default | Description |
+| --- | --- | --- | --- | --- | --- |
+| `version` | int | file | yes | — | Must be `1`. Any other value skips the whole file. |
+| `prefixes` | array | file | yes | — | List of prefix entries. |
+| `type` | string | entry | yes | — | Discriminator: `static`, `ping`, or `http`. |
+| `prefix` | string (CIDR) | entry | yes | — | The prefix to announce. Must be masked — host bits set are a per-entry error. |
+| `metric` | uint32 | all | no | `0` (static); health-derived (ping/http) | For `static`: the advertised metric. For `ping`/`http`: overrides the health-derived metric. |
+| `addr` | string (IP) | `ping` | yes for `ping` | — | Address to ping. |
+| `max_failures` | int | `ping` | no | `3` | Failed probe round withdraws the prefix. |
+| `delay` | Go duration string | `ping`, `http` | no | `15s` | Interval between probes. Also used as the HTTP request timeout for `http` checks. |
+| `bind_if` | string | `ping` | no | `""` (all interfaces) | Local interface to bind the ping to. |
+| `url` | string | `http` | yes for `http` | — | URL to GET. |
+
+Durations use Go syntax: `10s`, `1m30s`, `500ms`.
+
+:::caution
+The JSON path skips the validation applied to prefixes declared in the central config, which rejects a `delay` of zero or less and a `max_failures` of zero or less. In `prefixes.d` these values pass through unchecked: a `delay` of `0s` or a negative duration panics the monitor goroutine inside `time.NewTicker`, and a `max_failures` of `0` panics the ping loop with an integer divide-by-zero — either panic crashes the daemon. A negative `max_failures` does not panic, but every probe round fails (`zero attempts`) and the prefix can never become healthy. Writers must validate both values before writing a file.
+:::
+
+### Parsing rules
+
+Parsing is fail-closed at two levels:
+
+- **Whole file skipped**: malformed JSON, a top-level non-object, or an unsupported `version`. A file read error skips that file too. Other files still apply.
+- **Single entry skipped**: unparseable or unmasked `prefix`, an unknown `type`, a `ping` entry without a valid `addr`, an `http` entry without a `url`, or an invalid `delay`. Remaining entries in the same file still apply.
+
+Every skip is logged with the file name and entry index.
+
+## Runtime behavior
+
+- **Startup**: the daemon scans the directory, snapshots the pristine central config, and injects the parsed prefixes into its own node entry — all before the first routing reconcile, so the merged view is what the mesh sees first. A scan failure never blocks startup. Injection only happens if the node has an entry in the central config; a node absent from `routers`/`clients` announces nothing.
+- **Watching**: an fsnotify watcher fires on any change in the directory. After a 250 ms debounce (the timer resets on every event), the daemon fully rescans the directory and re-applies the pristine central config with the fresh dynamic set injected. If the directory is removed or the watcher cannot be created, the watcher stops and logs an error; the feature stays disabled until restart.
+- **Withdrawal**: deleting a file, emptying it, or breaking its JSON removes its prefixes from the merged set, and the existing Babel retraction machinery withdraws the announcements.
+- **Central config interplay**: injection happens inside `ApplyCentralConfig` after central-only validation and before the no-op check. The central config polls for updates every 10 s; each apply re-injects the dynamic set from the pristine snapshot, so central updates never clobber dynamic state. A steady state with unchanged files is a no-op.
+
+## Conflict rules
+
+| Situation | Behavior |
+| --- | --- |
+| Entry's prefix already exists in the central config for this node | Entry rejected with an error log — the central config wins. |
+| Same prefix in two `*.json` files, or twice in one file | The first entry in scan order wins (lexicographic filename order, top-to-bottom within a file); the later entry is rejected with a warning whose text says the duplicate is "across files", even within a single file. |
+| Malformed JSON or unsupported `version` | Whole file skipped with an error; other files still apply. |
+| Invalid single entry | Only that entry is skipped; the rest of the file applies. |
+
+Number your files by writer to make the ordering deterministic (see [Writers](#writers)).
+
+## Health checks
+
+Dynamic `ping` and `http` prefixes reuse the full prefix-health monitor machinery, not just static advertisement.
+
+| Check | Probe | Healthy metric | Failed probe |
+| --- | --- | --- | --- |
+| `static` | none | configured `metric` (default `0`) | never fails — always advertised |
+| `ping` | ICMP ping of `addr` every `delay`; up to `max_failures` attempts, each timing out after `delay`/`max_failures`, stopping early on success | ping RTT in microseconds (or `metric` override) | prefix retracted (infinite metric) |
+| `http` | HTTP GET of `url` every `delay`; request timeout equals `delay` | request duration in microseconds (or `metric` override) | prefix retracted (infinite metric) |
+
+Details worth knowing:
+
+- Both monitors start retracted (infinite metric) and join the mesh after the first successful probe — unless a `ping` entry sets `metric`: its override is advertised immediately from startup and never retracts. An `http` entry with `metric` still starts retracted; the override replaces only the healthy-path metric.
+- An `http` check fails on a transport error or any non-200 status code.
+- A failed probe round logs a warning and retracts the prefix through the normal Babel retraction path; a later successful round re-announces it.
+
+:::caution
+The `metric` override behaves differently per check type. On a `ping` entry, nylon advertises the fixed value unconditionally and ignores the live RTT-derived metric — including failure retraction, so the prefix stays announced even when the probe target is down. On an `http` entry, the override replaces only the healthy request-duration metric; a failed probe still retracts the prefix even with `metric` set. Leave `metric` unset on `ping` entries if you want health-driven withdrawal; an `http` entry retracts on failure either way.
+:::
+
+## Security model
+
+`prefixes.d` is an **unauthenticated local control surface**: anyone who can write a `*.json` file into the directory controls what the node announces. Nylon does not check file permissions itself, so harden the directory at the OS level:
+
+- Root-owned directory with `0755`, root-owned files with `0644`.
+- Only trusted writers (root, or a hostPath-mounted agent) can write to the directory.
+
+Writers must replace files atomically: write to a temp file, then rename it over the final name. The temp file name **must not end in `.json`** — the daemon globs `*.json`, so a partially written temp file with that suffix would be parsed mid-write. Rename-into-directory is also what reliably triggers the fsnotify watcher.
+
+## Writers
+
+Files follow a one-writer-per-file convention. Give each writer its own file name so ownership and lexicographic tie-breaking stay deterministic, for example `10-podcidr.json` for a k8s sidecar.
+
+### nylon-lb
+
+The `nylon-lb` LoadBalancer agent is the reference writer. For each `type=LoadBalancer` Service it writes `lb-<namespace>-<name>.json` with a static `/32` entry:
+
+**prefixes.d/lb-default-my-service.json**
+
+```json
+{"version":1,"prefixes":[{"type":"static","prefix":"10.60.0.100/32","metric":0}]}
+```
+
+It writes atomically (temp file, `0644`, rename), skips rewrites when the content is unchanged, and garbage-collects only files matching `lb-*.json` — it never touches files owned by other writers, such as `00-vip.json` or `10-podcidr.json`. Note that its pool must sit inside every receiver's `dynamic_prefix_ranges`, or the announcements are dropped. See the [nylon-lb guide](/guides/nylon-lb) for deployment.
+
+### Manual VIP announcement
+
+For a single anycast VIP without Kubernetes, use the reference systemd pattern: a `nylon-vip.service` unit that owns one file, for example `prefixes.d/00-vip.json`, and binds the address to a local interface. Because the unit is the only writer of that file, updates and withdrawals stay race-free.
+
+## Troubleshooting
+
+If a node announces a dynamic prefix that peers never route, the receiver side is the usual suspect: without a matching `dynamic_prefix_ranges` entry the announcement is silently dropped, and the receiver logs a dropped-unknown-prefix warning throttled to once per hour per prefix. Check the announcer's logs for file-parse errors, and see the [troubleshooting guide](/guides/troubleshooting) for log locations and inspection commands.
+---
+url: /reference/passive-nodes
+---
+# Passive Nodes
+
+Passive nodes (referred to as just `Clients` in the code) are standard WireGuard implementations that do not run the nylon daemon. They connect to the network via **Gateway Nodes**. In nylon, any node can serve as a gateway automatically, requiring no special configuration.
+
+## Architecture
+
+Unlike active routers that participate in the distance-vector protocol, passive nodes act as "stub" nodes. They are represented in the network by one or more gateway nodes that advertise their presence.
+
+```mermaid
+graph LR
+    PN((Passive Node)) -- "Active Tunnel" --> GA[Gateway A]
+    PN -. "Roaming Path" .-> GB[Gateway B]
+
+    GA <--> Mesh([Other nylon nodes])
+    GB <--> Mesh
+```
+
+### Connecting to a Gateway
+When a passive node connects to a gateway, the gateway identifies it using its WireGuard public key (defined in `central.yaml`). A gateway creates the client's WireGuard peer only when the two are graph-adjacent (a `graph` edge in `central.yaml`), and it begins advertising all of the addresses and prefixes associated with that passive node on the central config only after receiving at least one authenticated packet from the client.
+
+:::note
+
+There are no health checks for the prefixes advertised by the passive node.
+
+:::
+
+### Seamless Roaming
+Nylon supports seamless roaming for passive nodes. If a passive node switches its connection from Gateway `A` to Gateway `B`:
+1. Gateway `B` detects the new connection and immediately begins advertising the node's IPs.
+2. Gateway `A` detects that the passive node has stopped sending traffic and, about 6 s (`ClientDeadThreshold`) after the client's last packet, places the route into a "Passive Hold" state (see below), but only while it is the sole visible advertiser of the prefix and its own advertisement has not yet expired. If gateway `B`'s advertisement is already visible, `A` skips the hold and its advertisement lapses instead — `A` stops refreshing once the client is silent past `ClientDeadThreshold` and the competing advertisement is visible, and its advertisement is withdrawn roughly 8-10 seconds after the client's last packet to `A` (the last refresh sets a 3 s advertisement TTL, and the 1 s garbage collection removes it).
+3. Gateway `A` observes the new advertisement from Gateway `B`, and preempts its own "held" route.
+4. Gateway `A` stops advertising the node, allowing the network to converge on the path through Gateway `B`.
+
+This allows mobile devices to switch between multiple VPN profiles (connected to different gateways) without losing connectivity to the internal network.
+
+---
+
+## Passive Hold
+
+**Passive Hold** is an optimization designed to keep mobile devices and battery-constrained clients reachable even when they go silent.
+
+:::note[Problem: Silent Clients]
+
+Prior to Passive Hold, if a passive node stops sending packets (e.g., a mobile phone goes to sleep), the gateway does not know whether the client is still present or has disconnected. After a certain timeout, the gateway expires the route to that client and stops advertising it to the rest of the network.
+
+This means:
+1. If the client wakes up and tries to reconnect, it has to wait for route propagation again.
+2. In order to keep connections alive, the client would need to send frequent keepalives, which can drain battery.
+
+:::
+
+To solve this, when a passive node goes silent, the gateway enters a "Passive Hold" state for that node. The gateway continues to advertise the client's prefixes, but at a metric of `INFM / 2` (where `INFM` = `0xFFFFFFFE`, so the hold metric is `2,147,483,647`). This allows the route to remain active in the network, but ensures that any new connection from the client to another gateway will take precedence.
+
+Passive hold is driven by built-in defaults rather than configuration fields: `ClientKeepaliveInterval` is the advertisement TTL (3 s), `ClientDeadThreshold` is the silence after which a client counts as gone (6 s, twice `ClientKeepaliveInterval`), `ProbeDelay` is the passive scan cadence (1 s), and `GcDelay` is the garbage collection cadence (1 s).
+
+At the same time, if the gateway detects any new advertisement for that client from another gateway, it stops refreshing its own "held" route. The advertisement expires `ClientKeepaliveInterval` (3 s) after its last refresh and is removed by the garbage collector (1 s cadence), so the prefix is withdrawn within roughly 4 s rather than instantly. This allows for seamless roaming without the need for keepalives.
+
+---
+
+## Miscellaneous Notes
+
+Nylon does support advanced routing features for passive nodes, such as **anycast**. However, there are some important caveats to be aware of when using passive nodes.
+1. Anycast passive nodes will stop having their prefixes advertised when they go silent. This can lead to suboptimal routing or oscillations if the passive node sends data over a long interval. You should consider enabling keepalives for anycast nodes to ensure they remain active in the network. (Keepalives must arrive within `ClientDeadThreshold` (6 s, with scans every 1 s) to keep the advertisement refreshed. Use e.g. 5 s; staying below `ClientKeepaliveInterval` (3 s) is the conservative bound.)
+2. Passive nodes cannot advertise the same prefix as the gateway itself, or any other client which might be connected to the same gateway. This is because there is no easy way to determine which client is best.
+3. Due to passive hold, there will always be a gateway advertising the client's prefixes, even if the client is turned off. (Assuming the gateway is still active and the client has been heard since the gateway started: the hold bootstraps from a live advertisement, so a client that has not sent a packet since a gateway restart is simply not advertised.) This means that if a client is truly offline, the route will be effectively blackholed.
+
+The **Passive Hold** state is visible in the CLI and discovery surfaces: `nylon status` marks client neighbours with `[passive client]` and held advertisements with `passive-hold`, and the discovery endpoint reports `nylon_node_type=passive` for client nodes. Because `INFM / 2` is well below `INFM`, a held metric still renders numerically (`2147483647`) rather than as `INF`.
+---
+url: /gotchas
+---
+# Gotchas
+
+A curated list of traps that bite operators and config authors — surprising defaults, silent ignores, fail-closed paths, and values that break the daemon. Each entry names the behavior (with the exact field, flag, or error you will see) and what to do about it; the linked guide or reference page has the full detail.
+
+## Configuration
+
+- **`port` is mandatory in `node.yaml` — `57175` is a convention, not a default.** `port: 0` fails validation with `port must be greater than 0`. The resolver default (`57175`) applies only when an endpoint string carries no port: a bare hostname or IP in `routers[].endpoints` silently gets `57175`, so a mismatched forwarded port fails with no diagnostic. Scheme URLs are rejected explicitly, and a non-numeric port fails with `invalid port`. See [Configuration Reference](/reference/config).
+
+- **Sample keys are illustrative, not deployable.** The keys in the overview snippet and `example/` are public sample keypairs — the snippet's five keys decode and verify, which makes them copy-pasteable, but every node needs its own `nylon key` keypair, and the mesh-wide `obf` profile must match across all nodes. The shipped `example/sample-central.yaml` does not even pass validation: `nylon verify example/sample-central.yaml` exits 1 with `failed to decode public key (...): illegal base64 data at input byte 44`, and the `port` comment in `example/sample-node.yaml` (claiming `Default: 57175`) is convention, not a code default.
+
+- **YAML parsing is silent about most mistakes — and keys are worse.** Unknown fields are ignored (there is no strict decoding), so a typo'd field name silently drops the setting, including AWG 3.x-only keys inside `obf`. Floats truncate into integer fields (`tun_queues: 2.5` becomes `2`), while duration fields reject bare numbers (`cannot unmarshal uint64 ... time.Duration`). An explicit `key: ""` panics during YAML decode instead of failing validation, and any base64 key that decodes to fewer than 32 bytes panics the same way; longer values are silently truncated to 32 bytes. Omitting the key entirely is the one form caught cleanly (`private key must not be empty`). Two knobs that never apply: `mtu` is not range-validated (an explicit `0` reaches TUN creation unchanged; omitting it means `1420`), and `tun_txqueuelen` only takes effect with more than one TUN queue.
+
+- **`graph` and `verify` pitfalls.** A group-definition line (`Group = a, b, c`) creates no edges — write `Group, Group` to interconnect members or `X, Group` to pair X with each member. A missing or empty `graph` validates fine and produces no peering pairs. And `nylon verify` does not require every node to appear in the graph or check address uniqueness: a node omitted from `graph` verifies clean and ends up with zero peers, while a misspelled symbol is rejected (`invalid graph: <sym> is not a valid node/group`).
+
+- **Hooks are not shell commands.** `pre_up`, `post_up`, `pre_down`, and `post_down` entries are split on single spaces and executed directly — no shell, no quoting, no pipes or globs. Failures are logged and do not abort startup or shutdown.
+
+- **Reload does not mean "re-read my file".** Automatic config reload exists only when `central.yaml` has a `dist` block (repos are polled every 10 seconds); a manually edited local `central.yaml` is not re-read until `nylon reload` or a restart. `nylon reload --file` is accepted but completely ignored — the daemon always reloads its startup `-c` path — and a `REJECTED` apply exits 1 with an `Error:` line rather than printing `Result: REJECTED`. See [Troubleshooting](/guides/troubleshooting).
+
+- **Endpoint resolution falls back silently.** If the `_nylon._udp` SRV lookup for an endpoint hostname fails — or the SRV target has no A/AAAA record — nylon silently uses the hostname's own addresses, with no log line at default levels (resolution failures only log `failed to resolve endpoint` at Debug). A wrong or stale SRV record therefore changes the effective endpoint invisibly; note that the 15-second re-resolution sweep only covers graph neighbours' endpoints.
+
+## Obfuscation
+
+- **An omitted `obf` block means vanilla-pinned header ranges.** With no `obf` in `central.yaml`, nylon synthesizes `h1=1-1`, `h2=2-2`, `h3=3-3`, `h4=4-4` to stay byte-compatible with vanilla WireGuard — it does not use the upstream AmneziaWG all-unset default (message type 0, itself incompatible with vanilla). The profile must be identical across the mesh: nodes carrying different `s`/`h` values fail to classify each other's packets and drop them silently, and hand-written S/H deviations — including an H range that overlaps `1..4` — pass config validation and silently change wire behavior. Profile changes apply live and cost one rekey window: every config apply re-runs the device IPC with the new profile, so in-flight handshakes can fail until all nodes converge on the new layout — treat a profile change as a maintenance action. See [Traffic Obfuscation](/guides/obfuscation).
+
+- **Config validation is shallower than the device.** Range checks only enforce `min <= max` (and `jmin <= jmax`); overlapping header ranges are rejected by the device at apply time with `headers must not overlap`, surfaced as `failed to apply obf profile: ...` or `failed to configure wg device: ...` during daemon init or config sync. The deep invariants — padded-size collision classification and H-range viability — run only in `nylon-genesis`, so a hand-written profile with colliding sizes or an I length equal to a padded size can misclassify packets with no error anywhere.
+
+- **AWG 3.x-only knobs fail loudly in one place and silently in another.** The device UAPI rejects `header_protection_key`, `content_padding_addition`, `random_trailers`, `disable_cookies`, `rekey_after_time`, `rekey_timeout`, `reject_after_time`, `keepalive_timeout`, and `max_handshake_attempts` with `AWG 3.x-only` — but writing the same keys inside `central.yaml`'s `obf` block parses with no error and does nothing.
+
+- **I-pattern authoring is easy to get wrong silently.** An `i`-line with no `<...>` tags renders no packet and reports nothing; an unknown tag such as the kernel-only `<c>` fails at device configure time with `unknown tag <c>`, failing startup or reload; text outside tags is ignored. `<d>` and `<ds>` are rendered with no data source and contribute zero bytes (upstream AWG reuses values from earlier packets), so template shapes differ from upstream intent.
+
+## Dynamic prefixes
+
+- **Values that crash the daemon.** Central YAML health checks reject `delay <= 0` and `max_failures <= 0`, but the `prefixes.d` JSON path parses them unchecked and injection happens after validation. `delay: "0s"` (or a negative duration) panics inside `time.NewTicker`; `max_failures: 0` panics the ping goroutine with an integer divide-by-zero; both are unrecovered panics that abort the process. A negative `max_failures` does not panic, but every probe round fails (`zero attempts`) and the prefix can never become healthy. Validate before writing files. See [Dynamic Prefixes](/reference/dynamic-prefixes).
+
+- **File-level rules decide what survives.** Malformed JSON, a top-level non-object, or an unsupported `version` skips the whole file — `version` is mandatory, and a missing one decodes as `0` and skips with `unsupported version 0`. A bad prefix, unknown `type`, missing `addr`/`url`, or invalid `delay` skips only that entry; unknown JSON fields are ignored without warning. Duplicate prefixes are resolved by filename: the lexicographically earlier file wins (the warning says "across files" even for duplicates inside one file), so a temp file named `*.json` that sorts first can win a conflict or be parsed mid-write — write to a non-`.json` temp name and rename.
+
+- **A missing or unreadable `dynamic_prefixes_dir` disables the feature for the process lifetime.** Watcher creation failure only logs `cannot watch dynamic prefixes dir; feature disabled` — nothing retries, and the daemon never creates the directory. Fix the path and restart the daemon.
+
+- **The receiver gate is silent and runs on every node.** Every node on the propagation path drops announcements outside its own `dynamic_prefix_ranges` — route updates, ack-retracts, and seqno-requests alike — leaving only a `received packet for unknown prefix` warning throttled to once per hour per prefix. Ranges must be masked (host bits are rejected with `invalid dynamic prefix range %s`), and an empty list is fail-closed: put the covering entry on every receiver, not just the final one.
+
+- **Health-checked prefixes start retracted.** Both monitors store `INF` at construction and probe for the first time one `delay` after start (default `15s`), so a new file is not routable until a successful probe — except a `ping` entry with `metric`, whose override is advertised immediately and also disables failure retraction (the prefix stays announced while the target is down). An `http` entry with `metric` still retracts on a failed probe; its override replaces only the healthy-path metric. Ping infrastructure failures (bind-address or raw-socket errors) keep the last healthy RTT instead of retracting, and ping checks need root or `CAP_NET_RAW`.
+
+## Config distribution
+
+- **Repo URL forms are strict.** Only `file:`, `http`, and `https` are handled. A `file:` repo must use the opaque form `file:central.nybundle` — `file:/abs/path` and `file:///abs/path` fail with `failed to read file : ...` — and any other scheme leaves an empty body that later fails as `invalid bundle, too small`, wrapped in `failed to unbundle config from <repo>: ...`.
+
+- **Fetches have no HTTP client timeout.** Each 10-second poll spawns one goroutine per repo, so a hung repo server leaks a goroutine per poll and stalls that repo's updates. Bundle bodies are truncated at `MaxConfigSize` (1 MiB), but only for http(s) — a local `file:` repo is read whole, with no size limit.
+
+- **A mismatched signing key seals a bundle that only warns.** `nylon seal` proceeds when the private key does not match `dist.key`, logging `bundled public key differs from the signing key, check if this is intended!`. That warning is expected for the rotation transition bundle; otherwise it is a silent foot-gun — nodes that open the bundle with `dist.key` fail with `message authentication failed`.
+
+- **Update outcomes are logged at different levels and mean different things.** A rejected or restart-required update logs `failed to apply central config update` as an error and keeps the old config; an update that committed but failed runtime reconciliation logs `central config applied with incomplete runtime reconciliation; will retry` as a warning and is already the active config. Fetch, unbundle, and validation failures log `Error updating config`. See [Config Distribution Setup](/guides/config-distribution).
+
+## Passive clients
+
+- **Graph adjacency is required, not just configuration.** WireGuard peers are created only for graph neighbours, so a client pointing at a node with no graph edge is never added as a peer and its handshakes are dropped. Even with an edge, the gateway advertises the client's prefix only after it has seen an authenticated packet from the client.
+
+- **Keepalives must beat `ClientDeadThreshold` (6s).** With more than one advertiser the sole-advertiser hold is suppressed, and the advertisement lives only while traffic arrives within 6 seconds of a scan; a stock WireGuard persistent keepalive of `25s` is far too slow, and the last advertisement is gone roughly 8–10 seconds after the client's last packet. Use about `5s`, or stay below `ClientKeepaliveInterval` (3s) for the conservative bound. Any keepalive counts as client activity, and any other anycast advertiser of the prefix suppresses the hold too. See [Passive Nodes](/reference/passive-nodes).
+
+- **Duplicate WireGuard pubkeys are silently mis-identified.** There is no pubkey-uniqueness validation, and lookup returns the first match with routers searched before clients — a router and a client (or two clients) sharing a key can bind passive detection to the wrong node.
+
+- **Offline held clients are blackholed, not unreachable.** During a hold the gateway keeps a finite-metric route whose next hop is the client's WireGuard peer, so mesh traffic arrives at the gateway and is dropped when the client is offline — the prefix stays in the route table and looks routed. The held metric is forced to `INFM / 2` (`2147483647`) regardless of any static `metric` configured for the client.
+
+## Kubernetes LoadBalancer
+
+- **The shipped DaemonSet carries two traps.** It passes `--lb-class=nylon`: unclassed `type=LoadBalancer` Services stay `<pending>` for another controller, and only Services with `spec.loadBalancerClass=nylon` are claimed. It also does not wire `--node-name=$(NODE_NAME)`: without that flag the speaker falls back to the pod hostname, the single-announcer election never matches, and with `externalTrafficPolicy: Local` nothing is announced. See [Kubernetes LoadBalancer](/guides/nylon-lb).
+
+- **Pool specs fail at startup, and the errors are exact.** The spelling is `name=cidr` (`pool spec "bad" must be name=cidr (e.g. shared=10.110.0.0/24)`); `/31` and `/32` pools are rejected (`prefix length 31 leaves no usable host once the network and broadcast addresses are excluded`); only IPv4 pools are supported; an exclude outside every pool is fatal (`exclude "198.51.100.1" is outside every pool`). An `--exclude` applies to every pool whose CIDR contains the address, not to one chosen pool, and network/broadcast addresses pass the containment check but are never allocated.
+
+- **The GC boundary is the filename.** Every `lb-*.json` in the prefixes directory that nylon-lb did not just desire is deleted on the next reconcile — files owned by other tooling (`00-vip.json`, `10-podcidr.json`) are safe, but any user file matching `lb-*.json` is not.
+
+- **Fail-closed dynamics look like outages.** A Service-lister error makes the speaker treat every announce as stale: files are garbage-collected and all bound addresses enter the 60-second drain (recovery is automatic on a later pass). In single-announcer mode, announces are skipped while the local API view is more than 30 seconds stale (probed every 10 seconds), and a withdrawal removes the announce file immediately but keeps the `/32` bound for the 60-second drain.
+
+- **`nylon_lb_announce_writes_total` counts reconcile calls, not file writes.** It advances even when the announce file's bytes are unchanged — in steady state about once per announced Service per reconcile (roughly every 30 seconds) with zero actual filesystem writes.
+
+## Observability & metrics
+
+- **`/healthz` is liveness only.** It returns 200 while the process runs even if the event loop is wedged; only shutdown turns it into a 503. The event-loop probe is `/readyz` and `/metrics` (1-second deadline, 503 on failure) — during a graceful shutdown those two return 503 with `not ready` / `metrics unavailable`, which is expected rather than a stall. See [Observability](/guides/observability).
+
+- **Metric semantics that break naive queries.** `nylon_up` can never be `0` (it is rendered only after a successful snapshot), so scrape failures must be alerted with `up{job=...} == 0`. `nylon_endpoint_metric` reports `4294967295` (`INF`) for inactive endpoints, mixed with real microsecond values in the same label set, and its `endpoint` label is the configured endpoint string — possibly a hostname — not the resolved IP. A perf sample that fails to convert is silently skipped, so a `nylon_perf_*` series can vanish from `/metrics` with no log.
+
+- **`/discovery` targets reuse the querying node's port.** Every target is built with the port from the querying node's own `observability_addr`, so nodes with different ports break discovery fleet-wide. Nodes with no address in `central.yaml` are silently omitted, and an empty mesh returns 200 with `[]`.
+
+- **Debug and security.** `--dbg-perf` starts the performance web UI and `pprof` on `0.0.0.0:6060` — all interfaces. The observability server itself has no authentication or TLS, so bind it to a trusted interface or firewall it. A non-graceful Serve error on the observability listener cancels the daemon: an observability failure is a daemon failure.
+
+## Routing & convergence
+
+- **Selection is not plain lowest-metric.** A challenger must be more than ~9.1% better (`LinkSwitchDeadband = 1.1`), equal metrics keep the committed next hop, and a route committed less than `RouteSwitchHold` (5 seconds) ago is not displaced by a better candidate. Retracted routes (metric `INF`) bypass both damping rules, so recovery from a blackhole is immediate.
+
+- **A retracted prefix is held as an exact-prefix blackhole.** The route stays in the table with metric `INF` and a blackhole forwarding entry until all connected neighbours ack-retract or the route expires (`RouteExpiryTime = 25s`). During that window `nylon status` shows the blackhole and traffic is dropped rather than falling back to a less-specific route — a covering aggregate does not rescue it.
+
+- **Metric values are microseconds.** `HopCost` alone is 5, and a real 0.7 ms link is `700`. Until an endpoint has `MinimumConfidenceWindow = 15` samples (15 seconds at 1-second probes) it is scored pessimistically at 1 second (`1,000,000`); a measured ping of 0 maps to `100us`; `INF` is `4294967295`, with saturation at `INF - 1`.
+
+- **Timing you must wait out.** A link is declared dead only after `LinkDeadThreshold = 5s` of silence, because probes are fire-and-forget (every 1 second, with no per-probe timeout). Inactive-endpoint recovery probes run every 1.5 seconds, discovery probes every 10 seconds, and state recomputes on probe replies and on GC every 1 second. When a source has no feasible route, starvation recovery broadcasts seqno requests every 100 ms at hop count 64 (deduped for 3 seconds), so routes can flap for seconds while the sequence-number cycle resolves.
+
+- **Nylon is not Babel-on-the-wire.** It increases its own seqno by more than one on a seqno request (a documented RFC 8966 deviation, because it does not persist seqno state), and its control plane is a custom protobuf `Ny` message (protocol 8) — do not expect interoperability with other Babel implementations. Control messages coalesce into bundles up to `SafeMTU = 1200` and are sent high-priority; a single oversized message is still sent, fragmented.
+
+- **Two silent behaviors.** OS route installation fails open: if the exclude IPSet cannot be built, nylon logs a warning and installs the unfiltered prefix set, widening the system routing table instead of dropping routes. And route updates are accepted only from graph neighbours, for known prefixes and router-ids; everything else is dropped, with unknown prefixes warned at most once per hour per prefix — a node missing from the central view silently filters its own control traffic.
+
+## Building
+
+- **Make targets.** There is no `make install` and no `make run`: the targets are `build`, `nylon`, `nylon-genesis`, `nylon-lb`, the `test*` suites, `image-*`/`push-nylon-lb`, `notice`, `proto`, and `clean`. `make build` emits `bin/nylon`, `bin/nylon-genesis`, and `bin/nylon-lb` with version/commit stamped from git, and `CGO_ENABLED=0` is exported by default. `make test` and `make test-integration` pass `--race`; `make test-e2e` does not (the containers run the plain binary), so race coverage claims do not extend to e2e. The e2e suite's `TestMain` builds the `nylon-debug:latest` image before every run, so first runs are slower and a build failure exits 1 with `Failed to build image`.
+
+- **Build tags are load-bearing.** `sys_physical.go` is `//go:build !integration` and `sys_virtual.go` is `//go:build integration`, so `-tags=integration` swaps the sys layer. `go build ./...` compiles no tagged test helpers and not `interop/awgref`; the `awg_ref_interop` suite is manual-only: `go test -tags awg_ref_interop ./interop/awgref/ -v -count=1`.
+
+- **Release and version alignment.** Release assets are loose executables named `<binary>-<os>-<arch>` (for example `nylon-linux-amd64`), not tarballs, and Windows is compiled in CI but never released. `nylon-lb --version` prints only `nylon-lb version <Version>` (`dev` for unstamped builds) — the commit appears in the startup log record. See [Building & Testing](/guides/development).
