@@ -72,7 +72,7 @@ The socket is named after the daemon's real interface (`<iface>.sock` under `/va
 | `nylon reload` | Re-read the central config from disk without a restart; prints `Result: NOOP|APPLIED|RESTART_REQUIRED` (plus `Message:` when set), and on `REJECTED` exits 1 with an `Error:` line. The `--file` flag is accepted but ignored. |
 | `nylon verify <central-config>` | Validate configs without starting the daemon (`--node <node-config>` also checks a node config); prints `Config is valid` or `Error: <reason>`. |
 
-`status`, `probe`, and `trace` accept `-i/--interface` (default `nylon`); `status` and `probe` also accept `--json` for machine-readable output. `trace` accepts no other flags.
+`status`, `probe`, `trace`, and `reload` accept `-i/--interface` (default `nylon`); `status`, `probe`, and `reload` also accept `--json` for machine-readable output. `trace` accepts no other flags.
 
 ## Debug flags
 
