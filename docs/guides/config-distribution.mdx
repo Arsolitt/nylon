@@ -59,6 +59,8 @@ Despite being called a "public" key, the distribution key also acts as the share
      key: "<contents-of-dist.pub>"
    ```
 
+   The `dist` block in `node.yaml` is bootstrap-only: it is consulted only when `central.yaml` does not exist yet. Afterwards it is ignored, and updates flow solely from the `dist` block in `central.yaml`; a corrupt `central.yaml` is not replaced from `node.yaml`.
+
    #### Automatic Updates (`central.yaml`)
    Once bootstrapped, nodes poll the repositories defined in `central.yaml`:
 
@@ -69,10 +71,10 @@ Despite being called a "public" key, the distribution key also acts as the share
        - "https://your-server.com/central.nybundle"
    ```
 
-   Nylon polls for updates every 10 seconds and applies them.
+   Nylon polls for updates every 10 seconds, but applies a bundle only when its timestamp is strictly newer than the active config. `nylon seal` rewrites that timestamp to the sealing host's wall clock, so each seal is newer by construction; re-uploading an older bundle is ignored, and clock skew on the sealing host can block rollout.
 
 </Steps>
 
 ## Key rotation
 
-When `dist` is configured, `dist.key` must be set to a nonzero public key. To rotate it, put the new public key in `central.yaml` and sign that bundle with the old private key. After nodes apply the bundle, sign subsequent updates with the new private key.
+When `dist` is configured, `dist.key` must be set to a nonzero public key. To rotate it, put the new public key in `central.yaml` and sign that bundle with the old private key. That transition seal deliberately logs the warning `bundled public key differs from the signing key, check if this is intended!`, because the bundle is sealed with the old key (so old-key nodes can open it) while already carrying the new `dist.key`. After nodes apply the bundle, sign subsequent updates with the new private key; seals with the new key no longer warn.
