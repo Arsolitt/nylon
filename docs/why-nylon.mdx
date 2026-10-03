@@ -6,13 +6,13 @@ tableOfContents: false
 
 Nylon is a self-healing WireGuard mesh that routes around failures. If a link goes down, nylon reroutes traffic through the next-best path in seconds. No manual intervention, no central coordination servers.
 
-Under the hood, nylon implements the [Babel routing protocol (RFC 8966)](https://datatracker.ietf.org/doc/html/rfc8966) on top of a [modified wireguard-go](https://github.com/Arsolitt/nylon/tree/main/polyamide), using measured latency as the routing metric.
+Under the hood, nylon implements the machinery of the [Babel routing protocol (RFC 8966)](https://datatracker.ietf.org/doc/html/rfc8966) over a custom in-band protobuf control plane — not wire-interoperable with Babel daemons — on top of a [modified wireguard-go](https://github.com/Arsolitt/nylon/tree/main/polyamide), using measured latency as the routing metric for learned mesh links (some advertised prefixes carry static or health-check metrics), with damped switching (~10% deadband, 5 s hold).
 
 ### Main Features
 
 - **Multi-hop Routing**: Traffic flows through the lowest-latency path across your mesh. Unlike Tailscale, Nebula, or ZeroTier, nodes don't need to be directly reachable from each other. Nylon forwards through intermediate hops automatically.
 - **No Coordination Server**: No SaaS dependency, no single control-plane. Nodes exchange routes directly over the same WireGuard tunnel that carries your data.
-- **Single Daemon Binary, Single Port**: One statically-linked daemon binary, one UDP port (`57175`), one YAML config — that's all a node runs. Optional companion tools ship separately: `nylon-lb` (anycast LoadBalancer VIPs) and `nylon-genesis` (mesh config generation).
+- **Single Daemon Binary, Single Port**: One statically-linked daemon binary, one UDP port (set `port` in node.yaml — there is no code default; `57175` is the convention and the fallback for endpoints without a port), one YAML config per node (node.yaml), plus the shared central.yaml, which the daemon can bootstrap from node.yaml's `dist` block on first start. That's all a node runs. Optional companion tools: `nylon-genesis` as a raw binary in the same release (generates the mesh-wide `obf` profile and per-node I1-I5 obfuscation parameters) and `nylon-lb` as a container image only (anycast LoadBalancer VIPs).
 - **WireGuard Client Compatibility**: On meshes running the vanilla compatibility profile, stock WireGuard clients (iOS, Android, Windows) join with zero extra software, and mobile clients roam between gateways seamlessly. Obfuscated (AmneziaWG) profiles change the handshake format, so stock clients cannot connect to obfuscated nodes — see [Traffic Obfuscation](/guides/obfuscation).
 - **Native WireGuard Speeds**: Data-plane runs entirely in `wireguard-go` (polyamide), so forwarded traffic stays on the WireGuard data path with no extra proxy hop.
 
