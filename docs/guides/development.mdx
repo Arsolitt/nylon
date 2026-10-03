@@ -42,14 +42,14 @@ All test-only code sits behind build tags. The `interop/awgref` package (`awg_re
 
 | Tag | Gates |
 | --- | --- |
-| `router_test` | The core routing test suite: the 26 Babel scenario tests in `core/router_test.go` plus their `core/router_harness.go` scaffolding — the only two files carrying this tag. The `sys_route`, `nylon_tc`, `nylon_scheduler`, `future`, `observability`, `ipc_handler`, `nylon_apply`, `dynamic_prefixes`, `router_log`, and `nylon_wireguard` tests are untagged, as are all `polyamide/...` tests, and run under any `go test`. |
+| `router_test` | The core routing test suite: the 30 Babel scenario tests in `core/router_test.go` (including the `RouteSwitchHold`/deadband cases) plus their `core/router_harness.go` scaffolding — the only two files carrying this tag. The `sys_route`, `nylon_tc`, `nylon_scheduler`, `future`, `observability`, `ipc_handler`, `nylon_apply`, `system_apply`, `dynamic_prefixes`, `router_log`, and `nylon_wireguard` tests are untagged, as are all `polyamide/...` tests, and run under any `go test`. |
 | `integration` | The `./integration/...` suite: an in-process `VirtualHarness` built on `ChannelTUN` with configurable latency/jitter/loss links, checked for leaks with `goleak.VerifyNone`. |
 | `e2e` | The `./e2e/...` suite: full multi-node scenarios in Docker via testcontainers. |
 | `awg_ref_interop` | The `interop/awgref` interoperability suite, which validates nylon's [obfuscation](/guides/obfuscation) extensions against the reference AmneziaWG implementation. Not wired into any make target or CI job — run it manually with `go test -tags awg_ref_interop ./interop/awgref/ -v -count=1`. |
 
 ### The `nylon-debug` Image
 
-The e2e suite needs a test-node image with real networking tools. Before any e2e test runs, `TestMain` pre-builds a `nylon-debug:latest` image from the `debug` target of the root `Dockerfile`: Ubuntu plus `ping`, `iperf3`, `curl`, `iproute2`, `iptables`, `fping`, `mtr`, `wireguard-tools`, `net-tools`, `tcpdump`, `dnsutils`, `nc`, `tmux`, `asciinema`, and `python3`. Expect the first `make test-e2e` run to take longer while this image builds.
+The e2e suite needs a test-node image with real networking tools. Before any e2e test runs, `TestMain` pre-builds a `nylon-debug:latest` image from the `debug` target of the root `Dockerfile`: an unpinned `ubuntu:latest` base plus `iputils-ping`, `iperf3`, `curl`, `iproute2`, `iptables`, `jq`, `fping`, `mtr-tiny`, `wireguard-tools`, `net-tools`, `tcpdump`, `dnsutils`, `netcat-openbsd`, `tmux`, `asciinema`, and `python3`. Expect the first `make test-e2e` run to take longer while this image builds.
 
 The e2e harness also allocates its Docker networks dynamically: it picks a free `10.200`–`10.250.x.x/24` subnet at runtime so the suite never collides with networks you already have.
 
@@ -98,10 +98,12 @@ Boots multi-node topologies as Docker containers (the `nylon-debug` image from a
 | `TestHealthcheckHTTP` | An HTTP-checked service IP fails over from backup (static metric 1000) to primary (HTTP metric 10) when the server starts. |
 | `TestJSONLogging` | `--json` emits slog JSON records. |
 | `TestIPCRawSocketJSONHasNoErrnoTrailer` | A raw UAPI `get=nylon` returns pure protojson with no errno trailer. |
+| `TestTunDropReproduction1CPU` | A 1-CPU node pushes eight iperf3 streams through `nylon0`; its `tx_dropped` grows by at most 50 over 15 s while the run carries ≥ 1e8 bit/s. |
+| `TestTunDropFree4CPU` | Four CPUs and twelve streams: the same bound on `tx_dropped` growth and throughput floor. |
 
 ### Continuous Integration
 
-CI is `.github/workflows/ci.yml`, triggered on every push and PR to `main` (ignoring changes under `docs/**` and `README.md`, cancelling in-progress runs per ref) with seven jobs: `lint` (golangci-lint), `unit_test`, `integration`, and `e2e` — the same `make` targets you run locally, with e2e parallelism set to the machine's CPU count — plus `licenses` (regenerates `NOTICE`/`licenses/` and fails on any `git diff`), `release_config` (`goreleaser check`), and a push-only `cross_build` compile matrix that also compiles `windows/amd64` as a canary. Every job pins Go through `go-version-file: go.mod`.
+CI is `.github/workflows/ci.yml`, triggered on every push and PR to `main` (ignoring changes under `docs/**` and `README.md`, cancelling in-progress runs per ref) with seven jobs: `lint` (golangci-lint), `unit_test`, `integration`, and `e2e` — CI runs the same test commands as the local targets, directly through the pinned runner `go run gotest.tools/gotestsum@v1.13.0` rather than `make`, with e2e parallelism set to the runner's `$(nproc)` — plus `licenses` (regenerates `NOTICE`/`licenses/` and fails on any `git diff`), `release_config` (`goreleaser check`), and a push-only `cross_build` compile matrix that also compiles `windows/amd64` as a canary. Every job pins Go through `go-version-file: go.mod`.
 
 ## Container Images
 
@@ -136,7 +138,7 @@ The root `Dockerfile` (for the nylon daemon itself) has two relevant stages: the
 
 The `release.yml` workflow triggers on a `v*` tag and runs GoReleaser, which publishes:
 
-- Raw binary archives of **`nylon`** and **`nylon-genesis`** for Linux (`386`, `amd64`, `arm64`) and macOS (`amd64`, `arm64`; no `386`).
+- Raw binaries of **`nylon`** and **`nylon-genesis`** (loose executables named `nylon-linux-amd64` and so on, not archives) for Linux (`386`, `amd64`, `arm64`) and macOS (`amd64`, `arm64`; no `386`).
 - A license meta-archive `nylon-licenses_<version>.tar.gz` (`LICENSE`, `LICENSE.GPL-3.0`, `NOTICE`, `polyamide/LICENSE`, `licenses/`) and `checksums.txt`.
 - The **`nylon-lb`** container image `ghcr.io/arsolitt/nylon/nylon-lb` (Linux `amd64`/`arm64`), tagged with the release version; stable, non-prerelease releases also get the `latest` image tag, while `vX.Y.Z-rc.N` tags publish GitHub pre-releases.
 
