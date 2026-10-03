@@ -103,11 +103,11 @@ The handshake metric is `0` before the first successful handshake, so this expre
 
 ### Performance gauges
 
-Nylon exports its hot-loop performance counters on `/metrics` as `nylon_perf_*` metrics, plus three monotonic `nylon_tun_*_drops_total` counters. The windowed values are computed over a rolling 10-second window and exposed as gauges, because windowed rates are not monotonic. Metrics with a `quantile` label (`0.5`, `0.9`, `0.99`) report the p50, p90, and p99 over the window.
+Nylon exports its hot-loop performance counters on `/metrics` as `nylon_perf_*` metrics, plus three monotonic `nylon_tun_*_drops_total` counters. The windowed values are computed over a rolling 10-second window and exposed as gauges, because windowed values are not monotonic; the one exception is `nylon_perf_dispatch_latency_us`, which uses a 1-minute window. Metrics with a `quantile` label (`0.5`, `0.9`, `0.99`) report the p50, p90, and p99 over the window.
 
 | Metric | Type | Labels | Description |
 | --- | --- | --- | --- |
-| `nylon_perf_dispatch_latency_us` | Gauge | `quantile` | Main-loop dispatch latency in microseconds. |
+| `nylon_perf_dispatch_latency_us` | Gauge | `quantile` | Main-loop dispatch latency in microseconds; p50/p90/p99 over a rolling 1-minute window. |
 | `nylon_perf_send_batch_size` | Gauge | `quantile` | Packets per send batch. |
 | `nylon_perf_recv_batch_size` | Gauge | `quantile` | Packets per receive batch. |
 | `nylon_perf_tun_read_batch_size` | Gauge | `quantile` | Packets per TUN read call. |
@@ -121,6 +121,8 @@ Nylon exports its hot-loop performance counters on `/metrics` as `nylon_perf_*` 
 | `nylon_tun_staged_drops_total` | Counter | — | Packets evicted from a per-peer staged queue because they were too old. |
 | `nylon_tun_write_queue_drops_total` | Counter | — | Bounce packets dropped because the target TUN writer queue was full. |
 | `nylon_tun_kernel_tx_dropped_total` | Counter | — | Kernel `tx_dropped` counter of the TUN interface, sampled from `/sys/class/net/<iface>/statistics/tx_dropped`. |
+
+Despite their `_per_second` names, these gauges are not normalized rates: each value is the count accumulated over the rolling 10-second window. Divide by 10 for an approximate per-second value.
 
 Unlike the gauges above, the three `nylon_tun_*_drops_total` counters are monotonic totals rather than windowed values. `nylon_tun_kernel_tx_dropped_total` is a ten-second sysfs sample of `/sys/class/net/<iface>/statistics/tx_dropped`: the kernel counter is monotonic only for the lifetime of the interface, so it resets to zero when the interface is recreated, and the exported value is the last successful sample. If these counters grow, the TUN drain is the bottleneck, not the network: `staged` counts packets evicted from a bounded per-peer userspace queue (the reader outran a peer), `write_queue` counts bounce batches dropped before reaching a TUN writer, and `kernel` counts packets the kernel could not hand to the daemon at all.
 
