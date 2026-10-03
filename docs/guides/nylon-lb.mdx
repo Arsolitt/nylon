@@ -13,8 +13,8 @@ sidebar:
 
 One binary contains two components that you can enable and disable independently:
 
-- **Allocator** — runs once per cluster. It watches Services and EndpointSlices, picks the lowest free address from the Service's selected pool for each LoadBalancer Service, and writes it to `status.loadBalancer.ingress` with single-object compare-and-swap updates. The allocator runs under leader election with a Lease named `nylon-lb-allocator`; the CAS status writes keep a partitioned ex-leader from corrupting anything.
-- **Speaker** — runs on every node. For each Service the node should announce, it binds the allocated address to the loopback interface (Linux netlink) and writes an announce file into the prefixes directory. Speakers are never leader-elected: every node announcing the same `/32` is the design, and Babel treats the copies as anycast.
+- **Allocator** — runs once per cluster. It watches Services only, picks the lowest free address from the Service's selected pool for each LoadBalancer Service, and writes it to `status.loadBalancer.ingress` with single-object compare-and-swap updates. The allocator runs under leader election with a Lease named `nylon-lb-allocator`; the CAS status writes keep a partitioned ex-leader from corrupting anything.
+- **Speaker** — runs on every node. It watches Services and EndpointSlices, which is why `/readyz` waits for both informer caches to sync; for each Service the node should announce, it binds the allocated address to the loopback interface (Linux netlink) and writes an announce file into the prefixes directory. Speakers are never leader-elected: every node announcing the same `/32` is the design, and Babel treats the copies as anycast.
 
 ## Command-line flags
 
@@ -85,7 +85,7 @@ spec:
   externalTrafficPolicy: Local
 ```
 
-With `Local` and `single`, exactly one of the nodes holding a ready local endpoint announces the Service. Each speaker computes the winner from the sorted eligible node list itself, so no coordination is needed and no node can disagree about who wins for a given set of endpoints. Moving the ready endpoint to another node moves the announcement with it.
+With `Local` and `single`, exactly one of the nodes holding a ready local endpoint announces the Service. Each speaker computes the winner from the sorted eligible node list itself — FNV-1a 64 of `"ns/name"` modulo the list length — so no coordination is needed and no node can disagree about who wins for a given set of endpoints. Moving the ready endpoint to another node moves the announcement with it, but because the winner is an index into the eligible list, any change to that set (a node joining or leaving it) can reshuffle which node wins.
 
 The elected node withdraws its announcement when its own direct API view is more than 30 seconds stale — an unreachable API server means it can no longer be sure it is still the only owner. For a stateful path a bounded black-hole is preferable to two announcers, so the withdrawal is deliberately fail-closed; it is lifted as soon as a probe succeeds again.
 
@@ -172,10 +172,10 @@ All metrics are exposed at `/metrics` on `--health-addr` with the `nylon_lb_` pr
 | `nylon_lb_leader` | gauge | `node` | 1 while this replica holds the allocator Lease. |
 | `nylon_lb_allocated_ips` | gauge | — | Pool addresses currently allocated to owned LoadBalancer Services (`status.loadBalancer.ingress`) — the VIPs this controller has handed out. |
 | `nylon_lb_services` | gauge | — | LoadBalancer Services owned by this controller. |
-| `nylon_lb_announces` | gauge | — | Active announcements. |
+| `nylon_lb_announces` | gauge | — | Desired `/32` announcements for this node, recomputed each speaker reconcile (intended, not a count of successful binds or writes). |
 | `nylon_lb_allocations_total` | counter | — | Address allocations. |
 | `nylon_lb_releases_total` | counter | — | Ingress clearances on type change or pool-annotation failure. |
-| `nylon_lb_announce_writes_total` | counter | — | Announce-file writes. |
+| `nylon_lb_announce_writes_total` | counter | — | Successful announce-file sync calls, including unchanged no-op calls: it advances per desired announce per reconcile (~30 s resync) even when nothing on disk changes. |
 | `nylon_lb_errors_total` | counter | `kind` | Errors by kind: `bind`, `write`, `reconcile`, `list`, `glob`. |
 
 `nylon_lb_services` and `nylon_lb_allocated_ips` are cluster-wide: every replica derives them from the same Service informer cache and reports identical values, so aggregate them with `max`, never `sum`. Their difference is the number of managed Services still waiting for an address — a Service with a missing or unknown pool annotation, an exhausted pool, or a status write not yet observed.
