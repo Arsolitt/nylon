@@ -94,14 +94,11 @@ func (n *Nylon) BroadcastRequestSeqno(src state.Source, seqno uint16, hopCnt uin
 }
 
 // RouterEvent records a routing event at a level based on its severity:
-// major route changes are notable but expected (Info), inconsistent state or
-// a neighbour without any usable endpoint warn, and per-route bookkeeping
-// stays at Debug.
+// inconsistent state or a neighbour without any usable endpoint warn, while
+// route changes and per-route bookkeeping stay at Debug.
 func (n *Nylon) RouterEvent(event string, desc string, args ...any) {
 	args = append([]any{"event", event}, args...)
 	switch event {
-	case log.EventMajorRouteChange:
-		n.router.log.Info(desc, args...)
 	case log.EventInconsistentState, log.EventNoEndpointToNeigh:
 		n.router.log.Warn(desc, args...)
 	default:

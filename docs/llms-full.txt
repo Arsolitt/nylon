@@ -705,11 +705,11 @@ The router logs its decisions with an `event` attribute, at these levels:
 | --- | --- | --- |
 | `route_inserted`, `route_updated`, `route_retracted`, `route_expired` | Debug | Babel route lifecycle. |
 | `seqno_requested` | Debug | A sequence number was requested from a neighbour. |
-| `major_route_change` | Info | A significant change in the selected route set. |
+| `major_route_change` | Debug | A significant change in the selected route set. |
 | `inconsistent_state` | Warn | The router detected inconsistent state. |
 | `no_endpoint_to_neighbour` | Warn | A neighbour has no usable endpoint. |
 
-At the default `info` level you see topology changes and problems, but not individual route updates — raise the level to `debug` while investigating.
+At the default `info` level you see problems, but not route changes or individual route updates — raise the level to `debug` while investigating.
 
 ## Collect a snapshot for bug reports
 
