@@ -553,7 +553,7 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 
 	// enumerate through neighbours
 	for _, neigh := range s.Neighbours {
-		if neigh.BestEndpoint() == nil {
+		if neigh.BestEndpoint() == nil && s.WarnNoEndpoint(neigh.Id) {
 			r.RouterEvent(log.EventNoEndpointToNeigh, "no endpoint to neighbour", "neigh", neigh.Id)
 		}
 

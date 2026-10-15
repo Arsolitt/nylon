@@ -1,6 +1,9 @@
 package state
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestGetNeighbour(t *testing.T) {
 	n1 := &Neighbour{Id: "node1"}
@@ -17,5 +20,28 @@ func TestGetNeighbour(t *testing.T) {
 	}
 	if got := rs.GetNeighbour("node3"); got != nil {
 		t.Errorf("Expected nil for missing neighbour node3, got %+v", got)
+	}
+}
+
+func TestNoEndpointWarnRateLimit(t *testing.T) {
+	tunables := DefaultRouterTunables()
+	rs := &RouterState{RouterTunables: &tunables}
+
+	if !rs.WarnNoEndpoint("a") {
+		t.Error("first warning for a neighbour must be emitted")
+	}
+	if rs.WarnNoEndpoint("a") {
+		t.Error("immediate re-warn for the same neighbour must be suppressed")
+	}
+	if !rs.WarnNoEndpoint("b") {
+		t.Error("a different neighbour has its own budget")
+	}
+
+	rs.noEndpointWarns["a"] = time.Now().Add(-2 * rs.NoEndpointWarnInterval)
+	if !rs.WarnNoEndpoint("a") {
+		t.Error("warning must re-arm once the interval elapses")
+	}
+	if rs.WarnNoEndpoint("b") {
+		t.Error("an un-aged neighbour must stay suppressed")
 	}
 }

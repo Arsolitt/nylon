@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/encodeous/nylon/state"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -34,4 +35,18 @@ func TestCheckPrefixUnknownPrefixWarnRateLimit(t *testing.T) {
 	n.router.unknownPrefixWarns[unknown] = time.Now().Add(-2 * n.UnknownPrefixWarnInterval)
 	assert.False(t, n.checkPrefix(unknown))
 	assert.Equal(t, 3, strings.Count(buf.String(), "received packet for unknown prefix"))
+}
+
+func TestComputeRoutesNoEndpointWarnRateLimit(t *testing.T) {
+	var buf bytes.Buffer
+	n := testNylonWithPrefixes()
+	n.router.log = slog.New(slog.NewTextHandler(&buf, nil))
+	n.RouterState.Neighbours = []*state.Neighbour{{Id: "b"}, {Id: "c"}}
+
+	// repeated recomputes warn exactly once per endpoint-less neighbour;
+	// interval re-arm is covered by TestNoEndpointWarnRateLimit in state
+	for range 3 {
+		ComputeRoutes(n.RouterState, n)
+	}
+	assert.Equal(t, 2, strings.Count(buf.String(), "no endpoint to neighbour"))
 }

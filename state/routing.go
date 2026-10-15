@@ -48,6 +48,11 @@ type RouterState struct {
 	Neighbours      []*Neighbour
 	// Advertised is a map tracking the prefix and the time it will be advertised until
 	Advertised map[netip.Prefix]Advertisement
+
+	// noEndpointWarns tracks the last emitted no-endpoint warning per
+	// neighbour; written only from the dispatch goroutine, like the rest of
+	// router state.
+	noEndpointWarns map[NodeId]time.Time
 }
 
 func (s *RouterState) GetSeqno(prefix netip.Prefix) uint16 {
@@ -60,6 +65,21 @@ func (s *RouterState) GetSeqno(prefix netip.Prefix) uint16 {
 
 func (s *RouterState) SetSeqno(prefix netip.Prefix, seqno uint16) {
 	s.SelfSeqno[prefix] = seqno
+}
+
+// WarnNoEndpoint reports whether the no-endpoint warning should be emitted
+// for the neighbour: at most once per NoEndpointWarnInterval. ComputeRoutes
+// runs on every route update, so an endpoint-less neighbour is a chronic
+// condition rather than a novel one.
+func (s *RouterState) WarnNoEndpoint(id NodeId) bool {
+	if s.noEndpointWarns == nil {
+		s.noEndpointWarns = make(map[NodeId]time.Time)
+	}
+	if last, ok := s.noEndpointWarns[id]; !ok || time.Since(last) >= s.NoEndpointWarnInterval {
+		s.noEndpointWarns[id] = time.Now()
+		return true
+	}
+	return false
 }
 
 func (s *RouterState) StringRoutes() string {

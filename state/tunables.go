@@ -31,7 +31,11 @@ type RouterTunables struct {
 	// same unknown prefix; foreign gateways routinely re-advertise their
 	// zone-internal prefixes (design §4.6) and the rejection is expected.
 	UnknownPrefixWarnInterval time.Duration
-	LinkSwitchDeadband        float64 // We will switch to a new feasible route if: metric(new) * LinkSwitchDeadband <= metric(old)
+	// NoEndpointWarnInterval limits how often ComputeRoutes warns about the
+	// same endpoint-less neighbour; recompute runs on every route update, so
+	// the condition is chronic rather than novel.
+	NoEndpointWarnInterval time.Duration
+	LinkSwitchDeadband     float64 // We will switch to a new feasible route if: metric(new) * LinkSwitchDeadband <= metric(old)
 
 	// RouteSwitchHold is how long a committed route is kept before a better
 	// candidate may take over; 0 disables the hold-down.
@@ -94,6 +98,7 @@ func DefaultRouterTunables() RouterTunables {
 		LinkDeadThreshold:         5 * probeDelay,
 		RouteExpiryTime:           5 * routeUpdateDelay,
 		UnknownPrefixWarnInterval: time.Hour,
+		NoEndpointWarnInterval:    time.Hour,
 		LinkSwitchDeadband:        1.1,
 		RouteSwitchHold:           holdDown,
 
