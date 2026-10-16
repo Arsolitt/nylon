@@ -86,6 +86,7 @@ func (n *Nylon) sendEndpointProbe(node state.NodeId, ep *state.NylonEndpoint, ti
 		timeoutTimer = time.AfterFunc(timeout, func() {
 			n.PingBuf.Delete(token)
 			completeEndpoint(protocol.EndpointProbeStatus_ENDPOINT_PROBE_TIMEOUT, 0, nil)
+			n.Dispatch(func() error { ep.RecordProbe(false); return nil })
 		})
 	}
 
@@ -103,8 +104,8 @@ func (n *Nylon) sendEndpointProbe(node state.NodeId, ep *state.NylonEndpoint, ti
 	go func() {
 		err := n.SendNylon(ping, nep, peer)
 		if err != nil {
-			if timeoutTimer != nil {
-				timeoutTimer.Stop()
+			if timeoutTimer != nil && timeoutTimer.Stop() {
+				n.Dispatch(func() error { ep.RecordProbe(false); return nil })
 			}
 			n.PingBuf.Delete(token)
 			completeEndpoint(protocol.EndpointProbeStatus_ENDPOINT_PROBE_SEND_ERROR, 0, err)
@@ -213,6 +214,9 @@ func handleProbePong(n *Nylon, node state.NodeId, token uint64, ep conn.Endpoint
 				}
 				dpLink.Renew()
 				dpLink.UpdatePing(latency)
+				if nep := dpLink.AsNylonEndpoint(); nep != nil {
+					nep.RecordProbe(true)
+				}
 
 				// update wireguard endpoint
 				dpLink.WgEndpoint = ep
@@ -230,7 +234,7 @@ func (n *Nylon) probeLinks(active bool) error {
 	for _, neigh := range n.RouterState.Neighbours {
 		for _, ep := range neigh.Eps {
 			if ep.IsActive() == active {
-				err := n.Probe(neigh.Id, ep.AsNylonEndpoint())
+				_, err := n.sendEndpointProbe(neigh.Id, ep.AsNylonEndpoint(), n.ProbeTimeout)
 				if err != nil {
 					n.Log.Debug("probe failed", "error", err)
 				}

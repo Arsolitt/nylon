@@ -234,19 +234,22 @@ func buildNeighbours(n *Nylon, wgStats map[state.NyPublicKey]device.PeerStatus) 
 		neigh := n.RouterState.GetNeighbour(id)
 		eps := make([]*protocol.EndpointInfo, 0)
 		routes := make([]*protocol.NeighRoute, 0)
+		hsStale := false
 		if neigh != nil {
 			eps = n.buildEndpoints(neigh)
 			routes = buildNeighRoutes(neigh)
+			hsStale = neigh.HsStale
 		}
 		stat := wgStats[cfg.PubKey]
 		neighbours = append(neighbours, &protocol.NeighbourInfo{
-			PeerId:        string(id),
-			PublicKey:     keyString(cfg.PubKey),
-			PassiveClient: n.IsClient(id),
-			Endpoints:     eps,
-			Routes:        routes,
-			Advertised:    advertisementsForNode(n, id),
-			Wireguard:     wireGuardPeerStatsProto(stat),
+			PeerId:         string(id),
+			PublicKey:      keyString(cfg.PubKey),
+			PassiveClient:  n.IsClient(id),
+			Endpoints:      eps,
+			Routes:         routes,
+			Advertised:     advertisementsForNode(n, id),
+			Wireguard:      wireGuardPeerStatsProto(stat),
+			HandshakeStale: hsStale,
 		})
 	}
 	return neighbours
@@ -268,6 +271,8 @@ func (n *Nylon) buildEndpoints(neigh *state.Neighbour) []*protocol.EndpointInfo 
 			Metric:          ep.Metric(),
 			FilteredRttNs:   int64(nep.FilteredPing()),
 			StabilizedRttNs: int64(nep.StabilizedPing()),
+			ProbeSuccess:    nep.ProbeSuccess(),
+			ProbeTimeouts:   nep.ProbeTimeouts(),
 		})
 	}
 	slices.SortFunc(eps, func(a, b *protocol.EndpointInfo) int {

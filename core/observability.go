@@ -210,6 +210,14 @@ func writePrometheusMetrics(w io.Writer, status *protocol.StatusResponse) {
 			handshake = float64(wg.LatestHandshakeUnix / int64(time.Second))
 		}
 		metrics.Metric("nylon_wireguard_peer_latest_handshake_seconds", "Unix time of the latest WireGuard handshake.", "gauge", labels, handshake)
+		stale := float64(0)
+		if neigh.HandshakeStale {
+			stale = 1
+		}
+		metrics.Metric("nylon_peer_handshake_stale", "Whether a peer's WireGuard handshake is stale.", "gauge", labels, stale)
+		if wg.LatestHandshakeUnix > 0 {
+			metrics.Metric("nylon_peer_handshake_staleness_seconds", "Seconds since the latest WireGuard handshake.", "gauge", labels, time.Since(time.Unix(0, wg.LatestHandshakeUnix)).Seconds())
+		}
 		for _, endpoint := range neigh.Endpoints {
 			epLabels := map[string]string{"peer": neigh.PeerId, "endpoint": endpoint.Address}
 			active := float64(0)
@@ -219,6 +227,8 @@ func writePrometheusMetrics(w io.Writer, status *protocol.StatusResponse) {
 			metrics.Metric("nylon_endpoint_active", "Whether a peer endpoint is active.", "gauge", epLabels, active)
 			metrics.Metric("nylon_endpoint_metric", "Current Babel endpoint metric.", "gauge", epLabels, float64(endpoint.Metric))
 			metrics.Metric("nylon_endpoint_rtt_seconds", "Filtered endpoint round-trip time.", "gauge", epLabels, float64(endpoint.FilteredRttNs)/float64(time.Second))
+			metrics.Metric("nylon_endpoint_probe_success", "EWMA success ratio of endpoint liveness probes.", "gauge", epLabels, endpoint.ProbeSuccess)
+			metrics.Metric("nylon_endpoint_probe_timeouts_total", "Total timed-out endpoint liveness probes.", "counter", epLabels, float64(endpoint.ProbeTimeouts))
 		}
 	}
 	for _, route := range status.GetRoutes().GetSelected() {

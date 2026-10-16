@@ -21,5 +21,6 @@ const (
 	EventMajorRouteChange  = "major_route_change"
 	EventInconsistentState = "inconsistent_state"
 	EventNoEndpointToNeigh = "no_endpoint_to_neighbour"
+	EventHandshakeStale    = "handshake_stale"
 	EventSeqnoRequested    = "seqno_requested"
 )

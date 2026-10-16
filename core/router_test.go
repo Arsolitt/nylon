@@ -1599,6 +1599,46 @@ func TestRouter_SwitchesWhenChallengerExceedsDeadband(t *testing.T) {
 	assert.Equal(t, uint32(81), rs.Routes[pPrefix].Metric)
 }
 
+// TestRouter_HandshakeStaleNeighbourExcluded: a neighbour whose WireGuard
+// handshake went stale costs INF, so the prefix moves to the transit peer
+// despite it having the worse metric; once the handshake recovers and the
+// switch hold expires, the direct neighbour is selected again.
+func TestRouter_HandshakeStaleNeighbourExcluded(t *testing.T) {
+	tunables := ConfigureConstants()
+	tunables.RouteSwitchHold = time.Minute
+	h := &RouterHarness{}
+	pPrefix := nodeToPrefix("P")
+	rs := &state.RouterState{
+		RouterTunables: tunables,
+		Id:             "A",
+		SelfSeqno:      make(map[netip.Prefix]uint16),
+		Routes:         make(map[netip.Prefix]state.SelRoute),
+		Sources:        make(map[state.Source]state.FD),
+		Neighbours:     MakeNeighbours("C", "B"),
+		Advertised:     map[netip.Prefix]state.Advertisement{nodeToPrefix("A"): {NodeId: state.NodeId("A"), Expiry: maxTime}},
+	}
+
+	_ = AddLink(rs, NewMockEndpoint("B", 1))
+	_ = AddLink(rs, NewMockEndpoint("C", 1))
+
+	h.NeighUpdate(rs, "B", "B", pPrefix, 0, 80)
+	h.NeighUpdate(rs, "C", "C", pPrefix, 0, 100)
+	ComputeRoutes(rs, h)
+	assert.Equal(t, "B", string(rs.Routes[pPrefix].Nh))
+	h.GetActions()
+
+	rs.GetNeighbour("B").HsStale = true
+	ComputeRoutes(rs, h)
+	assert.Equal(t, "C", string(rs.Routes[pPrefix].Nh),
+		"a neighbour with a stale handshake must be excluded from selection")
+
+	rs.GetNeighbour("B").HsStale = false
+	rs.RouteSelectedAt[pPrefix] = time.Now().Add(-time.Hour)
+	ComputeRoutes(rs, h)
+	assert.Equal(t, "B", string(rs.Routes[pPrefix].Nh),
+		"a recovered neighbour must be selected again once the hold expires")
+}
+
 // TestRouter_HoldDownBlocksSwitchUntilExpiry: with a hold-down, a much better
 // challenger waits until the committed route has been in place for
 // RouteSwitchHold; once the hold expires the switch happens, and the new

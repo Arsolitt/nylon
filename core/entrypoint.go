@@ -134,6 +134,9 @@ func Bootstrap(centralPath, nodePath, logPath string, level slog.Level, opts sta
 	if err = state.NodeConfigValidator(centralCfg, nodeCfg); err != nil {
 		fatal("invalid node config", err)
 	}
+	if nodeCfg.Tunables != nil {
+		state.ApplyTunablesOverrides(&tunables, nodeCfg.Tunables)
+	}
 
 	logger, closer, err := logging.New(logging.Config{
 		Component: "nylon",
@@ -162,7 +165,7 @@ func Bootstrap(centralPath, nodePath, logPath string, level slog.Level, opts sta
 	)
 	logger.Debug("effective tunables", "tunables", tunables)
 
-	n, err := NewNylon(*centralCfg, *nodeCfg, logger, centralPath, nil, opts, nil)
+	n, err := NewNylon(*centralCfg, *nodeCfg, logger, centralPath, nil, opts, &tunables)
 	if err != nil {
 		fatal("failed to initialize nylon", err)
 	}

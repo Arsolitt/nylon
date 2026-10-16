@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/netip"
@@ -52,16 +53,16 @@ func (s Signal) Wait() {
 }
 
 type VirtualLink struct {
-	Edge       state.Pair[bindtest.ChannelEndpoint2, bindtest.ChannelEndpoint2]
-	Latency    time.Duration
-	Jitter     time.Duration
-	PacketLoss float64
+	Edge    state.Pair[bindtest.ChannelEndpoint2, bindtest.ChannelEndpoint2]
+	Latency time.Duration
+	Jitter  time.Duration
+
+	packetLoss atomic.Uint64
 }
 
 func (v *VirtualLink) simulate(pkt []byte, len int, from, to bindtest.ChannelEndpoint2, i *InMemoryNetwork) {
 	//fmt.Printf("begin send: %s -> %s\n", from.DstToString(), to.DstToString())
-	if rand.Float64() < v.PacketLoss {
-		// drop
+	if rand.Float64() < v.loss() {
 		//fmt.Printf("dropped send: %s -> %s\n", from.DstToString(), to.DstToString())
 		return
 	}
@@ -97,9 +98,17 @@ func (v *VirtualLink) WithLatency(lat, jitter time.Duration) *VirtualLink {
 	return v
 }
 
+func (v *VirtualLink) loss() float64 {
+	return math.Float64frombits(v.packetLoss.Load())
+}
+
 func (v *VirtualLink) WithPacketLoss(loss float64) *VirtualLink {
-	v.PacketLoss = loss
+	v.SetPacketLoss(loss)
 	return v
+}
+
+func (v *VirtualLink) SetPacketLoss(loss float64) {
+	v.packetLoss.Store(math.Float64bits(loss))
 }
 
 type VirtualHarness struct {

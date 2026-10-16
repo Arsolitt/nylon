@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"time"
 )
 
 var namePattern, _ = regexp.Compile("^[0-9a-z._/-]+$")
@@ -47,6 +48,9 @@ func NodeConfigValidator(central *CentralCfg, node *LocalCfg) error {
 	if node.TunTxQueueLen != nil && (*node.TunTxQueueLen < 0 || *node.TunTxQueueLen > 1<<20) {
 		return fmt.Errorf("tun_txqueuelen must be between 0 and %d, got %d", 1<<20, *node.TunTxQueueLen)
 	}
+	if err := validateTunablesOverrides(node.Tunables); err != nil {
+		return err
+	}
 	if node.ObservabilityAddr != "" {
 		if _, _, err := net.SplitHostPort(node.ObservabilityAddr); err != nil {
 			return fmt.Errorf("observability address must be a valid host:port: %v", err)
@@ -83,6 +87,52 @@ func NodeConfigValidator(central *CentralCfg, node *LocalCfg) error {
 		if node.NoTun && (len(centralNode.Addresses) != 0 || len(centralNode.Prefixes) != 0) {
 			return fmt.Errorf("no_tun node %s cannot advertise addresses or prefixes", node.Id)
 		}
+	}
+	return nil
+}
+
+func validateTunablesOverrides(o *TunablesOverrides) error {
+	if o == nil {
+		return nil
+	}
+	positive := map[string]*time.Duration{
+		"probe_delay":                   o.ProbeDelay,
+		"probe_recovery_delay":          o.ProbeRecoveryDelay,
+		"probe_discovery_delay":         o.ProbeDiscoveryDelay,
+		"gc_delay":                      o.GcDelay,
+		"link_dead_threshold":           o.LinkDeadThreshold,
+		"route_expiry_time":             o.RouteExpiryTime,
+		"no_endpoint_warn_interval":     o.NoEndpointWarnInterval,
+		"handshake_stale_debounce":      o.HandshakeStaleDebounce,
+		"handshake_stale_warn_interval": o.HandshakeStaleWarnInterval,
+	}
+	for name, d := range positive {
+		if d != nil && *d <= 0 {
+			return fmt.Errorf("%s must be greater than 0, got %s", name, *d)
+		}
+	}
+	if o.ProbeTimeout != nil && (*o.ProbeTimeout < 0 || *o.ProbeTimeout > 10*time.Second) {
+		return fmt.Errorf("probe_timeout must be between 0 and 10s, got %s", *o.ProbeTimeout)
+	}
+	if o.LossPenaltyGain != nil && (*o.LossPenaltyGain < 0 || *o.LossPenaltyGain > 10) {
+		return fmt.Errorf("loss_penalty_gain must be between 0 and 10, got %g", *o.LossPenaltyGain)
+	}
+	if o.LossDemotionThreshold != nil && (*o.LossDemotionThreshold < 0 || *o.LossDemotionThreshold >= 1) {
+		return fmt.Errorf("loss_demotion_threshold must be in [0, 1), got %g", *o.LossDemotionThreshold)
+	}
+	if o.LinkSwitchDeadband != nil && *o.LinkSwitchDeadband < 1 {
+		return fmt.Errorf("link_switch_deadband must be at least 1, got %g", *o.LinkSwitchDeadband)
+	}
+	if o.RouteSwitchHold != nil && *o.RouteSwitchHold < 0 {
+		return fmt.Errorf("route_switch_hold must be at least 0, got %s", *o.RouteSwitchHold)
+	}
+	if o.HandshakeStaleWarn != nil && o.HandshakeStaleDemote != nil && *o.HandshakeStaleWarn > *o.HandshakeStaleDemote {
+		return fmt.Errorf("handshake_stale_warn (%s) must not exceed handshake_stale_demote (%s)", *o.HandshakeStaleWarn, *o.HandshakeStaleDemote)
+	}
+	def := DefaultRouterTunables()
+	ApplyTunablesOverrides(&def, o)
+	if def.LinkDeadThreshold <= def.ProbeDelay {
+		return fmt.Errorf("effective link_dead_threshold (%s) must be greater than probe_delay (%s)", def.LinkDeadThreshold, def.ProbeDelay)
 	}
 	return nil
 }

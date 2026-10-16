@@ -11,6 +11,8 @@ import (
 	"github.com/encodeous/nylon/polyamide/device"
 )
 
+const ewmaAlpha = 0.0836
+
 type Endpoint interface {
 	UpdatePing(ping time.Duration)
 	Metric() uint32
@@ -27,6 +29,9 @@ type NylonEndpoint struct {
 	dirty         bool
 	prevMedian    time.Duration
 	lastHeardBack time.Time
+	probeSuccess  float64
+	probeSamples  uint32
+	probeTimeouts uint64
 	expRTT        float64
 	remoteInit    bool
 	WgEndpoint    conn.Endpoint
@@ -71,6 +76,11 @@ func (u *NylonEndpoint) isActiveUnlocked() bool {
 	return time.Since(u.lastHeardBack) <= u.t.LinkDeadThreshold
 }
 
+func (u *NylonEndpoint) lossDeadUnlocked() bool {
+	return u.t.ProbeTimeout > 0 && u.t.LossDemotionThreshold > 0 &&
+		u.probeSamples >= uint32(u.t.MinimumConfidenceWindow) && u.probeSuccess < u.t.LossDemotionThreshold
+}
+
 func (u *NylonEndpoint) IsActive() bool {
 	u.RLock()
 	defer u.RUnlock()
@@ -84,8 +94,25 @@ func (u *NylonEndpoint) Renew() {
 		u.history = u.history[:0]
 		u.expRTT = math.Inf(1)
 		u.dirty = true
+		u.probeSuccess = 1
+		u.probeSamples = 0
 	}
 	u.lastHeardBack = time.Now()
+}
+
+func (u *NylonEndpoint) RecordProbe(success bool) {
+	if u.t.ProbeTimeout <= 0 {
+		return
+	}
+	u.Lock()
+	defer u.Unlock()
+	u.probeSamples++
+	if success {
+		u.probeSuccess = ewmaAlpha + (1-ewmaAlpha)*u.probeSuccess
+	} else {
+		u.probeSuccess = (1 - ewmaAlpha) * u.probeSuccess
+		u.probeTimeouts++
+	}
 }
 
 func (u *NylonEndpoint) IsAlive() bool {
@@ -94,12 +121,13 @@ func (u *NylonEndpoint) IsAlive() bool {
 
 func NewEndpoint(address string, remoteInit bool, wgEndpoint conn.Endpoint, t *RouterTunables) *NylonEndpoint {
 	return &NylonEndpoint{
-		t:          t,
-		remoteInit: remoteInit,
-		WgEndpoint: wgEndpoint,
-		Address:    address,
-		history:    make([]time.Duration, 0),
-		expRTT:     math.Inf(1),
+		t:            t,
+		remoteInit:   remoteInit,
+		WgEndpoint:   wgEndpoint,
+		Address:      address,
+		history:      make([]time.Duration, 0),
+		expRTT:       math.Inf(1),
+		probeSuccess: 1,
 	}
 }
 
@@ -153,11 +181,10 @@ func (u *NylonEndpoint) UpdatePing(ping time.Duration) {
 	}
 
 	f := float64(ping)
-	alpha := 0.0836
 	if u.expRTT == math.Inf(1) {
 		u.expRTT = f
 	}
-	u.expRTT = alpha*f + (1-alpha)*u.expRTT
+	u.expRTT = ewmaAlpha*f + (1-ewmaAlpha)*u.expRTT
 	u.history = append(u.history, time.Duration(int64(u.expRTT)))
 	if len(u.history) > u.t.WindowSamples {
 		u.history = u.history[1:]
@@ -166,11 +193,31 @@ func (u *NylonEndpoint) UpdatePing(ping time.Duration) {
 }
 
 func (u *NylonEndpoint) Metric() uint32 {
-	// if link is dead, return INF
-	if !u.IsActive() {
+	u.RLock()
+	lossDead := u.lossDeadUnlocked()
+	samples, success := u.probeSamples, u.probeSuccess
+	u.RUnlock()
+	if !u.IsActive() || lossDead {
 		return INF
 	}
-	return DurationToMetric(u.StabilizedPing())
+	base := DurationToMetric(u.StabilizedPing())
+	if samples == 0 || u.t.LossPenaltyGain <= 0 {
+		return base
+	}
+	factor := min(1+u.t.LossPenaltyGain*(1-success), u.t.LinkSwitchDeadband)
+	return uint32(min(float64(base)*factor, float64(INF)-1))
+}
+
+func (u *NylonEndpoint) ProbeSuccess() float64 {
+	u.RLock()
+	defer u.RUnlock()
+	return u.probeSuccess
+}
+
+func (u *NylonEndpoint) ProbeTimeouts() uint64 {
+	u.RLock()
+	defer u.RUnlock()
+	return u.probeTimeouts
 }
 
 func (u *NylonEndpoint) IsRemote() bool {

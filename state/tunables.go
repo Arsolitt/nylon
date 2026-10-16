@@ -37,6 +37,19 @@ type RouterTunables struct {
 	NoEndpointWarnInterval time.Duration
 	LinkSwitchDeadband     float64 // We will switch to a new feasible route if: metric(new) * LinkSwitchDeadband <= metric(old)
 
+	// Loss-aware liveness: ProbeTimeout 0 keeps v0.7.1 fire-and-forget
+	// probing (no arming, no accounting); demotion additionally requires
+	// MinimumConfidenceWindow probe samples.
+	ProbeTimeout          time.Duration
+	LossPenaltyGain       float64
+	LossDemotionThreshold float64
+
+	// Handshake staleness: Warn/Demote 0 disables that stage.
+	HandshakeStaleWarn         time.Duration
+	HandshakeStaleDemote       time.Duration
+	HandshakeStaleDebounce     time.Duration
+	HandshakeStaleWarnInterval time.Duration
+
 	// RouteSwitchHold is how long a committed route is kept before a better
 	// candidate may take over; 0 disables the hold-down.
 	RouteSwitchHold time.Duration
@@ -102,6 +115,15 @@ func DefaultRouterTunables() RouterTunables {
 		LinkSwitchDeadband:        1.1,
 		RouteSwitchHold:           holdDown,
 
+		ProbeTimeout:          2 * time.Second,
+		LossPenaltyGain:       0.3,
+		LossDemotionThreshold: 0.4,
+
+		HandshakeStaleWarn:         135 * time.Second,
+		HandshakeStaleDemote:       150 * time.Second,
+		HandshakeStaleDebounce:     15 * time.Second,
+		HandshakeStaleWarnInterval: time.Hour,
+
 		ClientKeepaliveInterval: 3 * probeDelay,
 		ClientDeadThreshold:     6 * probeDelay, // 2 * ClientKeepaliveInterval
 
@@ -119,4 +141,61 @@ func DefaultRouterTunables() RouterTunables {
 
 func DefaultNylonOptions() NylonOptions {
 	return NylonOptions{}
+}
+
+func ApplyTunablesOverrides(t *RouterTunables, o *TunablesOverrides) {
+	if o == nil {
+		return
+	}
+	if o.ProbeDelay != nil {
+		t.ProbeDelay = *o.ProbeDelay
+	}
+	if o.ProbeRecoveryDelay != nil {
+		t.ProbeRecoveryDelay = *o.ProbeRecoveryDelay
+	}
+	if o.ProbeDiscoveryDelay != nil {
+		t.ProbeDiscoveryDelay = *o.ProbeDiscoveryDelay
+	}
+	if o.GcDelay != nil {
+		t.GcDelay = *o.GcDelay
+	}
+	if o.LinkDeadThreshold != nil {
+		t.LinkDeadThreshold = *o.LinkDeadThreshold
+	}
+	if o.ProbeTimeout != nil {
+		t.ProbeTimeout = *o.ProbeTimeout
+	}
+	if o.RouteExpiryTime != nil {
+		t.RouteExpiryTime = *o.RouteExpiryTime
+	}
+	if o.RouteSwitchHold != nil {
+		t.RouteSwitchHold = *o.RouteSwitchHold
+	}
+	if o.NoEndpointWarnInterval != nil {
+		t.NoEndpointWarnInterval = *o.NoEndpointWarnInterval
+	}
+	if o.HandshakeStaleWarn != nil {
+		t.HandshakeStaleWarn = *o.HandshakeStaleWarn
+	}
+	if o.HandshakeStaleDemote != nil {
+		t.HandshakeStaleDemote = *o.HandshakeStaleDemote
+	}
+	if o.HandshakeStaleDebounce != nil {
+		t.HandshakeStaleDebounce = *o.HandshakeStaleDebounce
+	}
+	if o.HandshakeStaleWarnInterval != nil {
+		t.HandshakeStaleWarnInterval = *o.HandshakeStaleWarnInterval
+	}
+	if o.LossPenaltyGain != nil {
+		t.LossPenaltyGain = *o.LossPenaltyGain
+	}
+	if o.LossDemotionThreshold != nil {
+		t.LossDemotionThreshold = *o.LossDemotionThreshold
+	}
+	if o.LinkSwitchDeadband != nil {
+		t.LinkSwitchDeadband = *o.LinkSwitchDeadband
+	}
+	if o.HopCost != nil {
+		t.HopCost = *o.HopCost
+	}
 }

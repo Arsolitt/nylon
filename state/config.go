@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/goccy/go-yaml"
 	"go4.org/netipx"
@@ -97,6 +98,28 @@ type CentralCfg struct {
 	Obf                 *ObfProfile    `yaml:"obf,omitempty"`                   // mesh-wide shared AWG 2.0 profile; nil = vanilla-compat
 }
 
+// TunablesOverrides carries optional router tunable overrides from the local
+// node config; nil fields keep the DefaultRouterTunables value.
+type TunablesOverrides struct {
+	ProbeDelay                 *time.Duration `yaml:"probe_delay,omitempty"`
+	ProbeRecoveryDelay         *time.Duration `yaml:"probe_recovery_delay,omitempty"`
+	ProbeDiscoveryDelay        *time.Duration `yaml:"probe_discovery_delay,omitempty"`
+	GcDelay                    *time.Duration `yaml:"gc_delay,omitempty"`
+	LinkDeadThreshold          *time.Duration `yaml:"link_dead_threshold,omitempty"`
+	ProbeTimeout               *time.Duration `yaml:"probe_timeout,omitempty"`
+	RouteExpiryTime            *time.Duration `yaml:"route_expiry_time,omitempty"`
+	RouteSwitchHold            *time.Duration `yaml:"route_switch_hold,omitempty"`
+	NoEndpointWarnInterval     *time.Duration `yaml:"no_endpoint_warn_interval,omitempty"`
+	HandshakeStaleWarn         *time.Duration `yaml:"handshake_stale_warn,omitempty"`
+	HandshakeStaleDemote       *time.Duration `yaml:"handshake_stale_demote,omitempty"`
+	HandshakeStaleDebounce     *time.Duration `yaml:"handshake_stale_debounce,omitempty"`
+	HandshakeStaleWarnInterval *time.Duration `yaml:"handshake_stale_warn_interval,omitempty"`
+	LossPenaltyGain            *float64       `yaml:"loss_penalty_gain,omitempty"`
+	LossDemotionThreshold      *float64       `yaml:"loss_demotion_threshold,omitempty"`
+	LinkSwitchDeadband         *float64       `yaml:"link_switch_deadband,omitempty"`
+	HopCost                    *uint32        `yaml:"hop_cost,omitempty"`
+}
+
 // LocalCfg represents local node-level configuration
 type LocalCfg struct {
 	// Node Private Key
@@ -122,6 +145,7 @@ type LocalCfg struct {
 	TunTxQueueLen      *int                  `yaml:"tun_txqueuelen,omitempty"`       // TUN tx queue length; nil = 10000; 0 = keep the kernel default
 	TunBackpressure    *bool                 `yaml:"tun_backpressure,omitempty"`     // request IFF_BACKPRESSURE; nil = false (kernel support required)
 	DynamicPrefixesDir string                `yaml:"dynamic_prefixes_dir,omitempty"` // directory of dynamic prefix JSON files (design §4); empty = disabled
+	Tunables           *TunablesOverrides    `yaml:"router_tunables,omitempty"`      // router tunables overrides; nil = defaults
 }
 
 func (c *CentralCfg) Clone() (*CentralCfg, error) {

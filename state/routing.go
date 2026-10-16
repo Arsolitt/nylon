@@ -53,6 +53,10 @@ type RouterState struct {
 	// neighbour; written only from the dispatch goroutine, like the rest of
 	// router state.
 	noEndpointWarns map[NodeId]time.Time
+	// hsStaleWarns tracks the last emitted handshake-stale warning per
+	// neighbour; written only from the dispatch goroutine, like the rest of
+	// router state.
+	hsStaleWarns map[NodeId]time.Time
 }
 
 func (s *RouterState) GetSeqno(prefix netip.Prefix) uint16 {
@@ -82,6 +86,21 @@ func (s *RouterState) WarnNoEndpoint(id NodeId) bool {
 	return false
 }
 
+// WarnHandshakeStale reports whether the handshake-stale warning should be
+// emitted for the neighbour: at most once per HandshakeStaleWarnInterval.
+// The GC pass re-checks every neighbour each tick, so staleness is a chronic
+// condition rather than a novel one.
+func (s *RouterState) WarnHandshakeStale(id NodeId) bool {
+	if s.hsStaleWarns == nil {
+		s.hsStaleWarns = make(map[NodeId]time.Time)
+	}
+	if last, ok := s.hsStaleWarns[id]; !ok || time.Since(last) >= s.HandshakeStaleWarnInterval {
+		s.hsStaleWarns[id] = time.Now()
+		return true
+	}
+	return false
+}
+
 func (s *RouterState) StringRoutes() string {
 	buf := make([]string, 0)
 	for prefix, route := range s.Routes {
@@ -95,6 +114,10 @@ type Neighbour struct {
 	Id     NodeId
 	Routes map[netip.Prefix]NeighRoute
 	Eps    []Endpoint
+	// HsStale excludes the neighbour from selection while the WireGuard
+	// handshake is stale; HsStaleSince is the zero time while not stale.
+	HsStale      bool
+	HsStaleSince time.Time
 }
 
 type FD struct {

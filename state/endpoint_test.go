@@ -270,3 +270,86 @@ func TestParseEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func newProbeTestEndpoint(minimumConfidence int) *NylonEndpoint {
+	tunables := DefaultRouterTunables()
+	tunables.MinimumConfidenceWindow = minimumConfidence
+	dep := NewEndpoint("127.0.0.1:0", false, nil, &tunables)
+	dep.Renew()
+	return dep
+}
+
+func TestProbeLossDemotion(t *testing.T) {
+	dep := newProbeTestEndpoint(5)
+	for range 11 {
+		dep.RecordProbe(false)
+	}
+	assert.True(t, dep.IsActive())
+	assert.Equal(t, uint64(11), dep.ProbeTimeouts())
+	assert.Equal(t, INF, dep.Metric())
+}
+
+func TestProbeLossDemotionNeedsConfidence(t *testing.T) {
+	dep := newProbeTestEndpoint(15)
+	for range 5 {
+		dep.RecordProbe(false)
+	}
+	assert.NotEqual(t, INF, dep.Metric())
+}
+
+func TestProbeLossPenaltyCappedAtDeadband(t *testing.T) {
+	dep := newProbeTestEndpoint(5)
+	for range 15 {
+		dep.UpdatePing(10 * time.Millisecond)
+	}
+	base := dep.Metric()
+	for range 8 {
+		dep.RecordProbe(false)
+	}
+	metric := dep.Metric()
+	assert.Greater(t, metric, base)
+	assert.LessOrEqual(t, float64(metric), float64(base)*1.1)
+}
+
+func TestProbeSuccessNoPenaltyWhenDisabled(t *testing.T) {
+	tunables := DefaultRouterTunables()
+	tunables.MinimumConfidenceWindow = 5
+	tunables.ProbeTimeout = 0
+	dep := NewEndpoint("127.0.0.1:0", false, nil, &tunables)
+	dep.Renew()
+	for range 15 {
+		dep.UpdatePing(10 * time.Millisecond)
+	}
+	base := dep.Metric()
+	for range 20 {
+		dep.RecordProbe(false)
+	}
+	assert.Equal(t, base, dep.Metric())
+	assert.Equal(t, uint64(0), dep.ProbeTimeouts())
+	assert.Equal(t, float64(1), dep.ProbeSuccess())
+}
+
+func TestRenewWipesProbeStateOnSilenceRevival(t *testing.T) {
+	dep := newProbeTestEndpoint(5)
+	for range 11 {
+		dep.RecordProbe(false)
+	}
+	assert.Equal(t, INF, dep.Metric())
+	dep.Lock()
+	dep.lastHeardBack = time.Now().Add(-2 * dep.t.LinkDeadThreshold)
+	dep.Unlock()
+	dep.Renew()
+	assert.True(t, dep.IsActive())
+	assert.Equal(t, float64(1), dep.ProbeSuccess())
+	assert.NotEqual(t, INF, dep.Metric())
+}
+
+func TestPingRenewalKeepsLossDemotion(t *testing.T) {
+	dep := newProbeTestEndpoint(5)
+	for range 11 {
+		dep.RecordProbe(false)
+	}
+	assert.Equal(t, INF, dep.Metric())
+	dep.Renew()
+	assert.Equal(t, INF, dep.Metric())
+}

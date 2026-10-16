@@ -383,8 +383,12 @@ func HandleNeighbourUpdate(s *state.RouterState, r Router, neighId state.NodeId,
 
 // neighLinkCost returns the cost of the link to neigh: the best endpoint's
 // metric plus the loop-prevention hop cost, or state.INF when the neighbour
-// has no active endpoint.
+// has no active endpoint or a stale WireGuard handshake (own prefixes and
+// transit both die at the keypair wall).
 func neighLinkCost(s *state.RouterState, neigh *state.Neighbour) uint32 {
+	if neigh.HsStale {
+		return state.INF
+	}
 	bestEp := neigh.BestEndpoint()
 	if bestEp == nil {
 		return state.INF
@@ -410,7 +414,7 @@ func isHeldRoute(s *state.RouterState, route state.SelRoute) bool {
 	}
 	connectedNeighs := 0
 	for _, neigh := range s.Neighbours {
-		if neigh.BestEndpoint() != nil {
+		if ep := neigh.BestEndpoint(); ep != nil && ep.Metric() != state.INF {
 			connectedNeighs++
 		}
 	}

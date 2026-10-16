@@ -64,6 +64,8 @@ message EndpointInfo {
   uint32 metric = 5;
   int64 filtered_rtt_ns = 7;
   int64 stabilized_rtt_ns = 8;
+  double probe_success = 9;
+  uint64 probe_timeouts = 10;
 }
 
 message WireGuardPeerStats {
@@ -82,6 +84,7 @@ message NeighbourInfo {
   repeated NeighRoute routes = 5;
   repeated Advertisement advertised = 6;
   WireGuardPeerStats wireguard = 7;
+  bool handshake_stale = 8;
 }
 
 message RouteTableEntry {
