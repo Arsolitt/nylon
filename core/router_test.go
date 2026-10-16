@@ -1724,3 +1724,38 @@ func TestRouter_RetractedRouteRecoversWithoutHold(t *testing.T) {
 		"recovery from a black-hole must not wait out the hold-down")
 	assert.Equal(t, uint32(501), rs.Routes[pPrefix].Metric)
 }
+
+func TestRouter_UnfeasibleUpdateWithoutRouteRequestsSeqno(t *testing.T) {
+	tunables := ConfigureConstants()
+	// The feasibility distance for C's prefix was learned while the direct
+	// link still carried it, and the prefix has since lost its route (the
+	// retracted entry was released). C's transit advertisement is worse than
+	// that distance, hence unfeasible; ignoring it silently leaves the prefix
+	// unrouted until C happens to advance its seqno, so the router must ask
+	// for a fresh one instead.
+
+	h := &RouterHarness{}
+	cPrefix := nodeToPrefix("C")
+	rs := &state.RouterState{
+		RouterTunables: tunables,
+		Id:             "A",
+		SelfSeqno:      make(map[netip.Prefix]uint16),
+		Routes:         make(map[netip.Prefix]state.SelRoute),
+		Sources:        make(map[state.Source]state.FD),
+		Neighbours:     MakeNeighbours("B", "C"),
+		Advertised:     map[netip.Prefix]state.Advertisement{nodeToPrefix("A"): {NodeId: state.NodeId("A"), Expiry: maxTime}},
+	}
+	_ = AddLink(rs, NewMockEndpoint("B", 5))
+	_ = AddLink(rs, NewMockEndpoint("C", 20))
+
+	rs.Sources[state.Source{NodeId: "C", Prefix: cPrefix}] = state.FD{Seqno: 0, Metric: 10}
+
+	h.NeighUpdate(rs, "C", "C", cPrefix, 0, 12)
+	a := h.GetActions()
+	a.AssertContains(t, RequestSeqno("C", state.Source{NodeId: "C", Prefix: cPrefix}, 1, 64))
+
+	// A feasible update needs no request.
+	h.NeighUpdate(rs, "C", "C", cPrefix, 0, 8)
+	a = h.GetActions()
+	a.AssertNotContains(t, RequestSeqno("C", state.Source{NodeId: "C", Prefix: cPrefix}, 1, 64))
+}

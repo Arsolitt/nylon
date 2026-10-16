@@ -79,6 +79,28 @@ func checkFeasibility(router *state.RouterState, advRoute state.PubRoute) bool {
 	return false
 }
 
+// unfeasibleIsCandidate reports whether an unfeasible update from neigh would
+// be selected were it feasible: the node has no route for the prefix at all,
+// or the candidate beats the selected route. RFC 8966 asks for a seqno request
+// in that case (Section 3.8.2.1) — an ignored update on its own leaves the
+// prefix unrouted until the source router happens to advance its seqno.
+func unfeasibleIsCandidate(s *state.RouterState, n *state.Neighbour, neighId state.NodeId, adv state.PubRoute) bool {
+	selRoute, hasSelected := s.Routes[adv.Prefix]
+	if !hasSelected {
+		return true
+	}
+	dummy := state.SelRoute{
+		PubRoute: adv,
+		Nh:       neighId,
+	}
+	if bestEp := n.BestEndpoint(); bestEp != nil {
+		dummy.Metric = AddMetric(dummy.Metric, AddMetric(bestEp.Metric(), s.HopCost))
+	} else {
+		dummy.Metric = state.INF
+	}
+	return IsStrictlyBetter(selRoute, dummy)
+}
+
 func FullTableUpdate(s *state.RouterState, r Router) {
 	// send a full table update to all neighbours
 	for _, route := range s.Routes {
@@ -299,6 +321,12 @@ func HandleNeighbourUpdate(s *state.RouterState, r Router, neighId state.NodeId,
 		//   *  if the update is unfeasible, it MAY be ignored;
 
 		if !checkFeasibility(s, adv) {
+			// Ignoring an unfeasible update leaves the prefix unrouted until the
+			// source router happens to advance its seqno, so ask for a fresher
+			// one whenever the update would be selected if it were feasible.
+			if unfeasibleIsCandidate(s, n, neighId, adv) {
+				r.RequestSeqno(neighId, adv.Source, s.Sources[adv.Source].Seqno+1, s.SeqnoRequestHopCount)
+			}
 			return // this route is not feasible, ignored
 		}
 
@@ -329,18 +357,6 @@ func HandleNeighbourUpdate(s *state.RouterState, r Router, neighId state.NodeId,
 		selRoute, hasSelected := s.Routes[adv.Prefix]
 		isSelected := hasSelected && selRoute.Nh == neighId && selRoute.Source == adv.Source
 		if !checkFeasibility(s, adv) {
-			dummy := state.SelRoute{
-				PubRoute: adv,
-				Nh:       neighId,
-				ExpireAt: time.Time{},
-			}
-			bestEp := n.BestEndpoint()
-			if bestEp != nil {
-				dummy.Metric = AddMetric(dummy.Metric, AddMetric(bestEp.Metric(), s.HopCost))
-			} else {
-				dummy.Metric = state.INF
-			}
-			isMoreOptimal := hasSelected && IsStrictlyBetter(selRoute, dummy)
 			if isSelected {
 				// 3.8.2.2.  Dealing with Unfeasible Updates
 				//   In order to keep routes from spuriously expiring because they have
@@ -350,7 +366,7 @@ func HandleNeighbourUpdate(s *state.RouterState, r Router, neighId state.NodeId,
 				//   Section 3.8.2.1.
 				r.RequestSeqno(neighId, adv.Source, s.Sources[adv.Source].Seqno+1, s.SeqnoRequestHopCount)
 				return // ignore the unfeasible update, we are conservative with retractions here
-			} else if isMoreOptimal {
+			} else if unfeasibleIsCandidate(s, n, neighId, adv) {
 				//   Additionally, since metric computation does not necessarily coincide
 				//   with the delay in propagating updates, a node might receive an
 				//   unfeasible update from a currently unselected neighbour that would
