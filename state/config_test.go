@@ -245,6 +245,7 @@ func TestTunablesOverridesRejected(t *testing.T) {
 		"router_tunables:\n  link_switch_deadband: 0.9\n",
 		"router_tunables:\n  route_switch_hold: -1s\n",
 		"router_tunables:\n  handshake_stale_warn: 151s\n  handshake_stale_demote: 150s\n",
+		"router_tunables:\n  handshake_stale_warn: 160s\n",
 		"router_tunables:\n  link_dead_threshold: 1ms\n",
 	}
 	for _, src := range cases {
@@ -270,4 +271,10 @@ func TestTunablesOverridesHappyPath(t *testing.T) {
 	assert.Equal(t, 5*time.Second, def.ProbeTimeout)
 	assert.Equal(t, 0.25, def.LossDemotionThreshold)
 	assert.Equal(t, DefaultRouterTunables().LossPenaltyGain, def.LossPenaltyGain)
+	var cfg2 LocalCfg
+	src2 := "router_tunables:\n  handshake_stale_warn: 160s\n  handshake_stale_demote: 0s\n"
+	assert.NoError(t, yaml.Unmarshal([]byte(src2), &cfg2))
+	node2 := LocalCfg{Id: "node", Port: 1, Key: NyPrivateKey{1}}
+	node2.Tunables = cfg2.Tunables
+	assert.NoError(t, NodeConfigValidator(nil, &node2))
 }

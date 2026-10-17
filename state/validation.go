@@ -126,11 +126,11 @@ func validateTunablesOverrides(o *TunablesOverrides) error {
 	if o.RouteSwitchHold != nil && *o.RouteSwitchHold < 0 {
 		return fmt.Errorf("route_switch_hold must be at least 0, got %s", *o.RouteSwitchHold)
 	}
-	if o.HandshakeStaleWarn != nil && o.HandshakeStaleDemote != nil && *o.HandshakeStaleWarn > *o.HandshakeStaleDemote {
-		return fmt.Errorf("handshake_stale_warn (%s) must not exceed handshake_stale_demote (%s)", *o.HandshakeStaleWarn, *o.HandshakeStaleDemote)
-	}
 	def := DefaultRouterTunables()
 	ApplyTunablesOverrides(&def, o)
+	if def.HandshakeStaleWarn > 0 && def.HandshakeStaleDemote > 0 && def.HandshakeStaleWarn > def.HandshakeStaleDemote {
+		return fmt.Errorf("effective handshake_stale_warn (%s) must not exceed handshake_stale_demote (%s)", def.HandshakeStaleWarn, def.HandshakeStaleDemote)
+	}
 	if def.LinkDeadThreshold <= def.ProbeDelay {
 		return fmt.Errorf("effective link_dead_threshold (%s) must be greater than probe_delay (%s)", def.LinkDeadThreshold, def.ProbeDelay)
 	}
