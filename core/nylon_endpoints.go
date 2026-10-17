@@ -42,6 +42,17 @@ func (n *Nylon) Probe(node state.NodeId, ep *state.NylonEndpoint) error {
 	return err
 }
 
+// probeBufTTL keeps the leak-safety TTL of a probe token ahead of the
+// probe timer: the AfterFunc deletes the token at exactly `timeout`, so the
+// cache TTL only needs to outlive it. Fire-and-forget probes (timeout 0)
+// keep the 5s default.
+func probeBufTTL(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return ttlcache.DefaultTTL
+	}
+	return timeout + time.Second
+}
+
 func (n *Nylon) sendEndpointProbe(node state.NodeId, ep *state.NylonEndpoint, timeout time.Duration) (Future[*protocol.EndpointProbeResult], error) {
 	address := ep.Address
 	resolved := ""
@@ -99,7 +110,7 @@ func (n *Nylon) sendEndpointProbe(node state.NodeId, ep *state.NylonEndpoint, ti
 			}
 			completeEndpoint(status, latency, nil)
 		},
-	}, ttlcache.DefaultTTL)
+	}, probeBufTTL(timeout))
 
 	go func() {
 		err := n.SendNylon(ping, nep, peer)
