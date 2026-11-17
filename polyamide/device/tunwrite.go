@@ -9,10 +9,14 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"sync/atomic"
 
 	"github.com/encodeous/nylon/perf"
 	"github.com/encodeous/nylon/polyamide/conn"
 )
+
+// maxTunWriteBatch is the largest frame vector a single TUN write call carries.
+const maxTunWriteBatch = conn.IdealBatchSize
 
 // tunWriteQueue hands bounce batches to a single TUN writer goroutine. A batch
 // is drained by exactly one writer, which preserves the order of the elements
@@ -20,11 +24,19 @@ import (
 type tunWriteQueue struct {
 	c    chan []*TCElement
 	stop chan struct{}
+	// queued counts frames accepted into c and not yet written. The channel
+	// caps batches, but a batch holds up to one ideal batch of frames, so the
+	// buffer is budgeted in frames to keep the bound independent of the
+	// producer batch size.
+	queued atomic.Int64
 }
 
 func newTunWriteQueue() *tunWriteQueue {
+	// The channel capacity bounds batches; queued is the frame bound, and it is
+	// the one that normally binds first because c is never filled with full
+	// ideal-size batches in practice.
 	return &tunWriteQueue{
-		c:    make(chan []*TCElement, QueueWriteSize),
+		c:    make(chan []*TCElement, QueueWriteFrames),
 		stop: make(chan struct{}),
 	}
 }
@@ -68,11 +80,20 @@ func (device *Device) enqueueBounceWrite(tcs *TCState, elems []*TCElement) {
 			device.recycleBounce(batch)
 			continue
 		}
+		n := int64(len(batch))
+		if wq.queued.Add(n) > int64(QueueWriteFrames) {
+			wq.queued.Add(-n)
+			perf.TunWriteQueueDropsTotal.Add(uint64(len(batch)))
+			device.recycleBounce(batch)
+			continue
+		}
 		select {
 		case wq.c <- batch: // ownership moves to the writer
 		case <-wq.stop:
+			wq.queued.Add(-n)
 			device.recycleBounce(batch)
 		default:
+			wq.queued.Add(-n)
 			perf.TunWriteQueueDropsTotal.Add(uint64(len(batch)))
 			device.recycleBounce(batch)
 		}
@@ -89,12 +110,30 @@ func (device *Device) RoutineTUNWriter(q int, wq *tunWriteQueue) {
 
 	device.Log.Verbosef("Routine: TUN writer %d - started", q)
 
-	bufs := make([][]byte, 0, conn.IdealBatchSize)
+	elems := make([]*TCElement, 0, maxTunWriteBatch)
+	bufs := make([][]byte, 0, maxTunWriteBatch)
 	for {
 		select {
 		case batch := <-wq.c:
-			bufs = device.writeBounceBatch(q, batch, bufs)
-			device.recycleBounce(batch)
+			elems = append(elems[:0], batch...)
+			// A producer hands over about one frame at a time, so take every
+			// batch that is already queued: one write call then carries a full
+			// flow run, which is what lets the offload path coalesce frames
+			// into GSO packets instead of one syscall per frame.
+		drain:
+			for len(elems) < maxTunWriteBatch {
+				select {
+				case more := <-wq.c:
+					elems = append(elems, more...)
+				default:
+					break drain
+				}
+			}
+			bufs = device.writeBounceBatch(q, elems, bufs)
+			wq.queued.Add(-int64(len(elems)))
+			device.recycleBounce(elems)
+			clear(elems)
+			elems = elems[:0]
 		case <-wq.stop:
 			return
 		}
@@ -103,8 +142,12 @@ func (device *Device) RoutineTUNWriter(q int, wq *tunWriteQueue) {
 
 // writeBounceBatch writes batch to the TUN, coalescing consecutive elements
 // that share a frame offset into one call, and reuses the bufs scratch. A TUN
-// write is one frame per syscall, so writev would merge frames into a single
-// bogus one; only the offload-aware Writer batches.
+// write is one frame per syscall and writev would merge the frames into a
+// single bogus packet, so batching is only possible through the offload path:
+// with IFF_VNET_HDR the Linux writer runs userspace GRO over the vector and
+// emits one GSO frame per coalesced flow run. That pays off only when a call
+// carries several frames of one flow, which is why the caller drains queued
+// batches before writing.
 func (device *Device) writeBounceBatch(q int, batch []*TCElement, bufs [][]byte) [][]byte {
 	for len(batch) > 0 {
 		offset := int(batch[0].Padding) + MessageTransportHeaderSize
@@ -151,6 +194,7 @@ func (device *Device) drainWriteQueue(wq *tunWriteQueue) {
 	for {
 		select {
 		case batch := <-wq.c:
+			wq.queued.Add(-int64(len(batch)))
 			device.recycleBounce(batch)
 		default:
 			return

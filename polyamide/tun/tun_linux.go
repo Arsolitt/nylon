@@ -17,6 +17,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/encodeous/nylon/perf"
 	"github.com/encodeous/nylon/polyamide/conn"
 	"github.com/encodeous/nylon/polyamide/rwcancel"
 	"golang.org/x/sys/unix"
@@ -441,7 +442,9 @@ func (tun *NativeTun) WriteQueue(q int, bufs [][]byte, offset int) (int, error) 
 			queue.toWrite = append(queue.toWrite, i)
 		}
 	}
+	perf.TunWriteFramesTotal.Add(uint64(len(bufs)))
 	for _, bufsI := range queue.toWrite {
+		perf.TunWriteSyscallsTotal.Add(1)
 		n, err := queue.file.Write(bufs[bufsI][offset:])
 		if errors.Is(err, syscall.EBADFD) {
 			return total, os.ErrClosed
