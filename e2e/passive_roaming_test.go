@@ -209,7 +209,8 @@ func TestPassiveRoaming(t *testing.T) {
 
 	execClient("ip link add dev wg0 type wireguard")
 	execClient("ip address add dev wg0 10.0.0.4/32")
-	execClient(fmt.Sprintf("echo %s > /tmp/wg_priv && wg set wg0 private-key /tmp/wg_priv && rm /tmp/wg_priv", string(privKeyStr)))
+	// Ubuntu 26.04 confines /usr/bin/wg with AppArmor to /etc/wireguard for key files.
+	execClient(fmt.Sprintf("install -d -m 700 /etc/wireguard && echo %s > /etc/wireguard/wg_priv && wg set wg0 private-key /etc/wireguard/wg_priv && rm /etc/wireguard/wg_priv", string(privKeyStr)))
 	execClient("ip link set up dev wg0")
 
 	execClient(fmt.Sprintf("wg set wg0 peer %s endpoint %s:51820 allowed-ips 0.0.0.0/0 persistent-keepalive 5", string(node3PubStr), ip3))
