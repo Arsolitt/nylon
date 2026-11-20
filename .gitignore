@@ -40,4 +40,5 @@ vendor
 
 workdir
 
-banks
+banks/
+.omp/
