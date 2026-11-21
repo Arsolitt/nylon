@@ -35,7 +35,7 @@ type RouterTunables struct {
 	// same endpoint-less neighbour; recompute runs on every route update, so
 	// the condition is chronic rather than novel.
 	NoEndpointWarnInterval time.Duration
-	LinkSwitchDeadband     float64 // We will switch to a new feasible route if: metric(new) * LinkSwitchDeadband <= metric(old)
+	LinkSwitchDeadband     float64 // We will switch to a new feasible route if: metric(new) * LinkSwitchDeadband <= metric(old). The 1.10 default covers the observed 2.8-11.5% challenger spread; surviving ±15% metric jitter would need an instantaneous ratio of ~1.32, which no sane deadband delivers, hence the temporal RouteSwitchHold gate. Do not raise the margin to fix flapping.
 
 	// Loss-aware liveness: ProbeTimeout 0 keeps v0.7.1 fire-and-forget
 	// probing (no arming, no accounting); demotion additionally requires
@@ -50,8 +50,10 @@ type RouterTunables struct {
 	HandshakeStaleDebounce     time.Duration
 	HandshakeStaleWarnInterval time.Duration
 
-	// RouteSwitchHold is how long a committed route is kept before a better
-	// candidate may take over; 0 disables the hold-down.
+	// RouteSwitchHold is the sustained-superiority window a challenger must
+	// span before a metric-based switch, and the grace window the committed
+	// next hop survives a brief route-level loss (advertisement INF or gone
+	// while the link stays up); 0 disables both.
 	RouteSwitchHold time.Duration
 
 	// client configuration

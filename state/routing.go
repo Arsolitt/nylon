@@ -52,8 +52,10 @@ type RouterState struct {
 	// prefix and the start of its uninterrupted eligibility streak.
 	// Maintained by ComputeRoutes; read by the sustained-gain gate.
 	RouteChallenger map[netip.Prefix]RouteChallenger
-	Sources         map[Source]FD
-	Neighbours      []*Neighbour
+	// RouteSwitchCounts counts committed next-hop changes per prefix.
+	RouteSwitchCounts map[netip.Prefix]uint64
+	Sources           map[Source]FD
+	Neighbours        []*Neighbour
 	// Advertised is a map tracking the prefix and the time it will be advertised until
 	Advertised map[netip.Prefix]Advertisement
 

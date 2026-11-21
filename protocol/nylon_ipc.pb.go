@@ -502,6 +502,7 @@ type SelRoute struct {
 	Nh            string                 `protobuf:"bytes,2,opt,name=nh,proto3" json:"nh,omitempty"`
 	ExpireAtUnix  int64                  `protobuf:"varint,3,opt,name=expire_at_unix,json=expireAtUnix,proto3" json:"expire_at_unix,omitempty"`
 	RetractedBy   []string               `protobuf:"bytes,4,rep,name=retracted_by,json=retractedBy,proto3" json:"retracted_by,omitempty"`
+	Switches      uint64                 `protobuf:"varint,5,opt,name=switches,proto3" json:"switches,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -562,6 +563,13 @@ func (x *SelRoute) GetRetractedBy() []string {
 		return x.RetractedBy
 	}
 	return nil
+}
+
+func (x *SelRoute) GetSwitches() uint64 {
+	if x != nil {
+		return x.Switches
+	}
+	return 0
 }
 
 type Advertisement struct {
@@ -1884,12 +1892,13 @@ const file_protocol_nylon_ipc_proto_rawDesc = "" +
 	"\n" +
 	"NeighRoute\x12,\n" +
 	"\tpub_route\x18\x01 \x01(\v2\x0f.proto.PubRouteR\bpubRoute\x12$\n" +
-	"\x0eexpire_at_unix\x18\x02 \x01(\x03R\fexpireAtUnix\"\x91\x01\n" +
+	"\x0eexpire_at_unix\x18\x02 \x01(\x03R\fexpireAtUnix\"\xad\x01\n" +
 	"\bSelRoute\x12,\n" +
 	"\tpub_route\x18\x01 \x01(\v2\x0f.proto.PubRouteR\bpubRoute\x12\x0e\n" +
 	"\x02nh\x18\x02 \x01(\tR\x02nh\x12$\n" +
 	"\x0eexpire_at_unix\x18\x03 \x01(\x03R\fexpireAtUnix\x12!\n" +
-	"\fretracted_by\x18\x04 \x03(\tR\vretractedBy\"\x9c\x01\n" +
+	"\fretracted_by\x18\x04 \x03(\tR\vretractedBy\x12\x1a\n" +
+	"\bswitches\x18\x05 \x01(\x04R\bswitches\"\x9c\x01\n" +
 	"\rAdvertisement\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x16\n" +
 	"\x06prefix\x18\x02 \x01(\tR\x06prefix\x12\x16\n" +

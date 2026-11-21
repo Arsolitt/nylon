@@ -73,6 +73,8 @@ func TestRouter_NextHopSurvivesBriefInf(t *testing.T) {
 	assert.Equal(t, "B", string(rs.Routes[pPrefix].Nh),
 		"the returning incumbent must keep the route")
 	assert.Empty(t, rs.RouteLostAt, "a recovered incumbent must clear its loss timestamp")
+	assert.Equal(t, uint64(0), rs.RouteSwitchCounts[pPrefix],
+		"a survived blip must not count as a switch")
 }
 
 // TestRouter_FailsOverWhenPathDies: when the incumbent's advertisement stays
@@ -106,6 +108,8 @@ func TestRouter_FailsOverWhenPathDies(t *testing.T) {
 	ComputeRoutes(rs, h)
 	assert.Equal(t, "C", string(rs.Routes[pPrefix].Nh),
 		"the returning incumbent gets ordinary margin treatment; the deadband protects the new incumbent")
+	assert.Equal(t, uint64(1), rs.RouteSwitchCounts[pPrefix],
+		"the failover is the only committed switch")
 }
 
 // TestRouter_SwitchesOnLargeGain: a challenger that is genuinely better
@@ -133,6 +137,8 @@ func TestRouter_SwitchesOnLargeGain(t *testing.T) {
 	ComputeRoutes(rs, h)
 	assert.Equal(t, "C", string(rs.Routes[pPrefix].Nh),
 		"a sustained superior challenger must take over")
+	assert.Equal(t, uint64(1), rs.RouteSwitchCounts[pPrefix],
+		"the sustained takeover is the only committed switch")
 }
 
 // TestRouter_NextHopSurvivesMetricJitter: with three gateways at the
@@ -235,4 +241,6 @@ func TestRouter_NextHopSurvivesMetricJitter(t *testing.T) {
 	}
 	assert.Equal(t, uint32(1+jitter("B", 50)), rs.Routes[pPrefix].Metric,
 		"the incumbent metric tracks the latest advertisement through the whole run")
+	assert.Equal(t, uint64(0), rs.RouteSwitchCounts[pPrefix],
+		"survived jitter must not count as switches")
 }

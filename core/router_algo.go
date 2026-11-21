@@ -450,6 +450,9 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 	if s.RouteChallenger == nil {
 		s.RouteChallenger = make(map[netip.Prefix]state.RouteChallenger)
 	}
+	if s.RouteSwitchCounts == nil {
+		s.RouteSwitchCounts = make(map[netip.Prefix]uint64)
+	}
 
 	// 3.5.4.  Hold Time
 	//
@@ -770,6 +773,9 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 		}
 		delete(s.RouteLostAt, prefix)
 		s.RouteSelectedAt[prefix] = now
+		if prev, ok := s.Routes[prefix]; ok && prev.Nh != route.Nh {
+			s.RouteSwitchCounts[prefix]++
+		}
 	}
 	for prefix := range s.RouteSelectedAt {
 		if _, ok := newTable[prefix]; !ok {

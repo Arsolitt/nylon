@@ -298,8 +298,8 @@ func buildNeighRoutes(neigh *state.Neighbour) []*protocol.NeighRoute {
 func buildRouteTables(n *Nylon) *protocol.RouteTables {
 	tables := &protocol.RouteTables{}
 	forwarding := n.router.Tables.Load()
-	for _, route := range n.RouterState.Routes {
-		tables.Selected = append(tables.Selected, selRouteProto(route))
+	for prefix, route := range n.RouterState.Routes {
+		tables.Selected = append(tables.Selected, selRouteProto(route, n.RouterState.RouteSwitchCounts[prefix]))
 	}
 	slices.SortFunc(tables.Selected, func(a, b *protocol.SelRoute) int {
 		return comparePubRoute(a.PubRoute, b.PubRoute)
@@ -408,7 +408,7 @@ func neighRouteProto(route state.NeighRoute) *protocol.NeighRoute {
 	}
 }
 
-func selRouteProto(route state.SelRoute) *protocol.SelRoute {
+func selRouteProto(route state.SelRoute, switches uint64) *protocol.SelRoute {
 	retractedBy := make([]string, 0, len(route.RetractedBy))
 	for _, id := range route.RetractedBy {
 		retractedBy = append(retractedBy, string(id))
@@ -419,6 +419,7 @@ func selRouteProto(route state.SelRoute) *protocol.SelRoute {
 		Nh:           string(route.Nh),
 		ExpireAtUnix: route.ExpireAt.Unix(),
 		RetractedBy:  retractedBy,
+		Switches:     switches,
 	}
 }
 

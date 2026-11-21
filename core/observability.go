@@ -239,5 +239,10 @@ func writePrometheusMetrics(w io.Writer, status *protocol.StatusResponse) {
 			"next_hop": route.GetNh(),
 		}
 		metrics.Metric("nylon_route_metric", "Metric of a selected Babel route.", "gauge", labels, float64(pub.GetFd().GetMetric()))
+		metrics.Metric("nylon_route_switch_total",
+			"Committed next-hop changes for a selected Babel route.",
+			"counter",
+			map[string]string{"prefix": pub.GetSource().GetPrefix()},
+			float64(route.GetSwitches()))
 	}
 }

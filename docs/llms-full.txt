@@ -618,6 +618,7 @@ All metric names start with `nylon_`.
 | `nylon_endpoint_metric` | Gauge | `peer`, `endpoint` | Current Babel endpoint metric. |
 | `nylon_endpoint_rtt_seconds` | Gauge | `peer`, `endpoint` | Filtered endpoint round-trip time in seconds. |
 | `nylon_route_metric` | Gauge | `prefix`, `router`, `next_hop` | Metric of a selected Babel route. |
+| `nylon_route_switch_total` | Counter | `prefix` | Committed next-hop changes for a selected Babel route. |
 
 For example, alert when a node cannot be scraped or when a peer has not completed a handshake in the last five minutes:
 

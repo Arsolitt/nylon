@@ -46,6 +46,7 @@ message SelRoute {
   string nh = 2;
   int64 expire_at_unix = 3;
   repeated string retracted_by = 4;
+  uint64 switches = 5;
 }
 
 message Advertisement {
