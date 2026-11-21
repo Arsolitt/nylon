@@ -20,6 +20,10 @@ type recordingTun struct {
 	seqs   []uint32 // 4-byte payload of each delivered frame
 	calls  []int    // frames per Write call
 	events chan tun.Event
+
+	// writeGate, when non-nil, blocks every Write call until it is closed. It
+	// is set before the writer goroutines start, so it is read without a lock.
+	writeGate <-chan struct{}
 }
 
 func newRecordingTun() *recordingTun { return &recordingTun{events: make(chan tun.Event, 1)} }
@@ -31,6 +35,9 @@ func (t *recordingTun) Read(_ [][]byte, _ []int, _ int) (int, error) {
 }
 
 func (t *recordingTun) Write(bufs [][]byte, offset int) (int, error) {
+	if t.writeGate != nil {
+		<-t.writeGate
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.calls = append(t.calls, len(bufs))
@@ -139,7 +146,9 @@ func TestBounceQueueFramesBounded(t *testing.T) {
 	tcs := NewTCState()
 
 	const perBatch = 64
-	const batches = 64 // 4096 frames offered, 16x the frame budget
+	// Offer 16x the frame budget so the admission policy is actually
+	// exercised: a budget-sized offer would fit without a single drop.
+	batches := 16 * QueueWriteFrames / perBatch
 	before := perf.TunWriteQueueDropsTotal.Load()
 	next := uint32(0)
 	for range batches {
@@ -152,10 +161,8 @@ func TestBounceQueueFramesBounded(t *testing.T) {
 	for {
 		select {
 		case batch := <-dev.tun.writers[0].c:
-			for _, e := range batch {
-				delivered = append(delivered, binary.BigEndian.Uint32(e.Packet))
-				dev.PutMessageBuffer(e.Buffer)
-				dev.PutTCElement(e)
+			for _, frame := range batch {
+				delivered = append(delivered, binary.BigEndian.Uint32(frame.buf[frame.offset:]))
 			}
 		default:
 			goto drained
@@ -180,6 +187,41 @@ drained:
 		t.Fatalf("last accepted frame is %d, want %d: the dropped frames must be the newest", last, len(delivered)-1)
 	}
 	t.Logf("accepted %d frames of %d, dropped %d", len(delivered), batches*perBatch, dropped)
+}
+
+// TestBounceQueueFramesRightSized pins that a queued bounce frame is a
+// right-sized copy of its packet, not a reference to a full 64 KiB message
+// buffer: the queue's memory is its frame count times its frame size.
+func TestBounceQueueFramesRightSized(t *testing.T) {
+	dev, _ := newBounceDevice(t)
+	tcs := NewTCState()
+
+	const (
+		payload = 4
+		seq     = 7
+	)
+	dev.enqueueBounceWrite(tcs, bounceElems(dev, seq, 1))
+
+	var frames []tunWriteFrame
+	select {
+	case frames = <-dev.tun.writers[0].c:
+	default:
+		t.Fatal("no batch was queued")
+	}
+	if len(frames) != 1 {
+		t.Fatalf("queued %d frames, want 1", len(frames))
+	}
+	frame := frames[0]
+	if got, want := len(frame.buf), frame.offset+payload; got != want {
+		t.Fatalf("queued frame buffer is %d bytes, want %d (offset %d + %d-byte payload)",
+			got, want, frame.offset, payload)
+	}
+	if limit := MaxMessageSize / 4; len(frame.buf) >= limit {
+		t.Fatalf("queued frame pins %d bytes, want less than %d", len(frame.buf), limit)
+	}
+	if got := binary.BigEndian.Uint32(frame.buf[frame.offset:]); got != seq {
+		t.Fatalf("queued frame carries sequence %d, want %d", got, seq)
+	}
 }
 
 // newBounceDeviceQueues builds a Device with queues TUN writer queues and no
@@ -306,6 +348,16 @@ func TestBounceBurstNoDuplicates(t *testing.T) {
 	dev, rec := newBounceDeviceQueues(t, queues)
 	tcs := NewTCState()
 
+	// A real TUN write is a syscall, so the writer cannot keep up with the
+	// producer. Hold the writers inside their first write call, flood past the
+	// frame budget so the drop path really runs, then release them. Without
+	// the hold, the fake writer outruns the producer, the queue never fills
+	// and no drop is exercised at all.
+	gate := make(chan struct{})
+	rec.writeGate = gate
+	release := sync.OnceFunc(func() { close(gate) })
+	defer release()
+
 	peers := make([]*Peer, queues)
 	for i := range peers {
 		peers[i] = &Peer{writeIndex: i}
@@ -337,6 +389,7 @@ func TestBounceBurstNoDuplicates(t *testing.T) {
 		}
 		next += perBatch
 	}
+	release()
 	total := uint64(batches * perBatch)
 
 	deadline := time.Now().Add(10 * time.Second)

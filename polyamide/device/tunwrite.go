@@ -8,7 +8,6 @@ package device
 import (
 	"errors"
 	"os"
-	"slices"
 	"sync/atomic"
 
 	"github.com/encodeous/nylon/perf"
@@ -18,32 +17,46 @@ import (
 // maxTunWriteBatch is the largest frame vector a single TUN write call carries.
 const maxTunWriteBatch = conn.IdealBatchSize
 
-// tunWriteQueue hands bounce batches to a single TUN writer goroutine. A batch
-// is drained by exactly one writer, which preserves the order of the elements
+// init publishes the per-platform frame budget, so the drop counters can be
+// read against their limit on the metrics endpoint.
+func init() {
+	perf.TunWriteQueueCapacityFrames.Store(uint64(QueueWriteFrames))
+}
+
+// tunWriteFrame is one bounce frame copied into a right-sized buffer, so a
+// queued frame costs its own length instead of a full 64 KiB message buffer.
+type tunWriteFrame struct {
+	buf    []byte // [padding][transport header][packet], exactly what the TUN write consumes
+	offset int    // first packet byte inside buf
+}
+
+// tunWriteQueue hands bounce frames to a single TUN writer goroutine. A batch
+// is drained by exactly one writer, which preserves the order of the frames
 // handed to it.
 type tunWriteQueue struct {
-	c    chan []*TCElement
+	c    chan []tunWriteFrame
 	stop chan struct{}
 	// queued counts frames accepted into c and not yet written. The channel
-	// caps batches, but a batch holds up to one ideal batch of frames, so the
-	// buffer is budgeted in frames to keep the bound independent of the
-	// producer batch size.
+	// caps accepted groups, but a group can carry any number of frames, so the
+	// buffer is budgeted in frames: the bound must not depend on the producer
+	// batch size.
 	queued atomic.Int64
 }
 
 func newTunWriteQueue() *tunWriteQueue {
-	// The channel capacity bounds batches; queued is the frame bound, and it is
-	// the one that normally binds first because c is never filled with full
-	// ideal-size batches in practice.
+	// The channel capacity bounds accepted groups; queued is the frame bound,
+	// and it is the one that normally binds first because a group carries
+	// several frames.
 	return &tunWriteQueue{
-		c:    make(chan []*TCElement, QueueWriteFrames),
+		c:    make(chan []tunWriteFrame, QueueWriteFrames),
 		stop: make(chan struct{}),
 	}
 }
 
 // enqueueBounceWrite hands bounce elements to the per-queue writers, preserving
-// per-peer order. Elements dropped because a writer queue is full are recycled
-// immediately and counted.
+// per-peer order. Each element is copied into a right-sized frame and recycled
+// before the handoff, so a queued frame never pins a message buffer. Frames
+// dropped because a writer queue is full are counted.
 func (device *Device) enqueueBounceWrite(tcs *TCState, elems []*TCElement) {
 	if len(elems) == 0 {
 		return
@@ -72,30 +85,39 @@ func (device *Device) enqueueBounceWrite(tcs *TCState, elems []*TCElement) {
 		if len(group) == 0 {
 			continue
 		}
-		// The caller reuses its scratch, so the batch is a copy.
-		batch := slices.Clone(group)
-		groups[idx] = group[:0]
 		wq := device.tun.writers[idx]
 		if wq == nil {
-			device.recycleBounce(batch)
+			device.recycleBounce(group)
+			groups[idx] = group[:0]
 			continue
 		}
-		n := int64(len(batch))
+		n := int64(len(group))
 		if wq.queued.Add(n) > int64(QueueWriteFrames) {
 			wq.queued.Add(-n)
-			perf.TunWriteQueueDropsTotal.Add(uint64(len(batch)))
-			device.recycleBounce(batch)
+			perf.TunWriteQueueDropsTotal.Add(uint64(len(group)))
+			device.recycleBounce(group)
+			groups[idx] = group[:0]
 			continue
 		}
+		// The frame slice is private to the writer, so the pooled message
+		// buffers go back before the handoff.
+		frames := make([]tunWriteFrame, 0, len(group))
+		for _, elem := range group {
+			offset := int(elem.Padding) + MessageTransportHeaderSize
+			size := offset + len(elem.Packet)
+			buf := make([]byte, size)
+			copy(buf, elem.Buffer[:size])
+			frames = append(frames, tunWriteFrame{buf: buf, offset: offset})
+		}
+		device.recycleBounce(group)
+		groups[idx] = group[:0]
 		select {
-		case wq.c <- batch: // ownership moves to the writer
+		case wq.c <- frames: // ownership moves to the writer
 		case <-wq.stop:
 			wq.queued.Add(-n)
-			device.recycleBounce(batch)
 		default:
 			wq.queued.Add(-n)
-			perf.TunWriteQueueDropsTotal.Add(uint64(len(batch)))
-			device.recycleBounce(batch)
+			perf.TunWriteQueueDropsTotal.Add(uint64(len(frames)))
 		}
 	}
 }
@@ -110,7 +132,7 @@ func (device *Device) RoutineTUNWriter(q int, wq *tunWriteQueue) {
 
 	device.Log.Verbosef("Routine: TUN writer %d - started", q)
 
-	elems := make([]*TCElement, 0, maxTunWriteBatch)
+	elems := make([]tunWriteFrame, 0, maxTunWriteBatch)
 	bufs := make([][]byte, 0, maxTunWriteBatch)
 	for {
 		select {
@@ -131,7 +153,6 @@ func (device *Device) RoutineTUNWriter(q int, wq *tunWriteQueue) {
 			}
 			bufs = device.writeBounceBatch(q, elems, bufs)
 			wq.queued.Add(-int64(len(elems)))
-			device.recycleBounce(elems)
 			clear(elems)
 			elems = elems[:0]
 		case <-wq.stop:
@@ -140,21 +161,22 @@ func (device *Device) RoutineTUNWriter(q int, wq *tunWriteQueue) {
 	}
 }
 
-// writeBounceBatch writes batch to the TUN, coalescing consecutive elements
-// that share a frame offset into one call, and reuses the bufs scratch. A TUN
-// write is one frame per syscall and writev would merge the frames into a
-// single bogus packet, so batching is only possible through the offload path:
-// with IFF_VNET_HDR the Linux writer runs userspace GRO over the vector and
-// emits one GSO frame per coalesced flow run. That pays off only when a call
-// carries several frames of one flow, which is why the caller drains queued
-// batches before writing.
-func (device *Device) writeBounceBatch(q int, batch []*TCElement, bufs [][]byte) [][]byte {
+// writeBounceBatch writes batch to the TUN, coalescing consecutive frames that
+// share a frame offset into one call, and reuses the bufs scratch. A TUN write
+// is one frame per syscall and writev would merge the frames into a single
+// bogus packet, so batching is only possible through the offload path: with
+// IFF_VNET_HDR the Linux writer runs userspace GRO over the vector and emits
+// one GSO frame per coalesced flow run. That pays off only when a call carries
+// several frames of one flow, which is why the caller drains queued batches
+// before writing.
+func (device *Device) writeBounceBatch(q int, batch []tunWriteFrame, bufs [][]byte) [][]byte {
 	for len(batch) > 0 {
-		offset := int(batch[0].Padding) + MessageTransportHeaderSize
-		// here, we need to use elem.Buffer instead of elem.Packet since we will get io.ErrShortBuffer if offset < 4
+		offset := batch[0].offset
+		// here, we need to pass the full buf instead of buf[offset:] since the
+		// TUN writer applies offset again and we will get io.ErrShortBuffer
 		n := 0
-		for n < len(batch) && int(batch[n].Padding)+MessageTransportHeaderSize == offset {
-			bufs = append(bufs, batch[n].Buffer[:offset+len(batch[n].Packet)])
+		for n < len(batch) && batch[n].offset == offset {
+			bufs = append(bufs, batch[n].buf)
 			n++
 		}
 
@@ -179,6 +201,7 @@ func (device *Device) writeBounceBatch(q int, batch []*TCElement, bufs [][]byte)
 }
 
 // recycleBounce returns a batch's buffers and elements to the device pools.
+// Frames accepted by a writer queue are right-sized copies instead.
 func (device *Device) recycleBounce(batch []*TCElement) {
 	for _, elem := range batch {
 		if elem == nil {
@@ -189,13 +212,13 @@ func (device *Device) recycleBounce(batch []*TCElement) {
 	}
 }
 
-// drainWriteQueue recycles everything still queued for a stopped writer.
+// drainWriteQueue releases the frame accounting for a stopped writer. The
+// queued frames are copies and are left to the garbage collector.
 func (device *Device) drainWriteQueue(wq *tunWriteQueue) {
 	for {
 		select {
 		case batch := <-wq.c:
 			wq.queued.Add(-int64(len(batch)))
-			device.recycleBounce(batch)
 		default:
 			return
 		}

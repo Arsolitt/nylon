@@ -112,24 +112,26 @@ Nylon exports its hot-loop performance counters on `/metrics` as `nylon_perf_*` 
 | `nylon_perf_recv_batch_size` | Gauge | `quantile` | Packets per receive batch. |
 | `nylon_perf_tun_read_batch_size` | Gauge | `quantile` | Packets per TUN read call. |
 | `nylon_perf_tun_write_batch_size` | Gauge | `quantile` | Frames per bounce write call (up to one ideal batch). |
-| `nylon_perf_sends_per_second` | Gauge | — | WireGuard sends per second. |
-| `nylon_perf_recvs_per_second` | Gauge | — | WireGuard receives per second. |
-| `nylon_perf_sent_packets_per_second` | Gauge | — | Packets sent per second. |
-| `nylon_perf_recv_packets_per_second` | Gauge | — | Packets received per second. |
-| `nylon_perf_sent_bytes_per_second` | Gauge | — | Bytes sent per second. |
-| `nylon_perf_recv_bytes_per_second` | Gauge | — | Bytes received per second. |
+| `nylon_perf_sends_per_second` | Gauge | — | WireGuard sends per second, averaged over the rolling 10 s window. |
+| `nylon_perf_recvs_per_second` | Gauge | — | WireGuard receives per second, averaged over the rolling 10 s window. |
+| `nylon_perf_sent_packets_per_second` | Gauge | — | Packets sent per second, averaged over the rolling 10 s window. |
+| `nylon_perf_recv_packets_per_second` | Gauge | — | Packets received per second, averaged over the rolling 10 s window. |
+| `nylon_perf_sent_bytes_per_second` | Gauge | — | Bytes sent per second, averaged over the rolling 10 s window. |
+| `nylon_perf_recv_bytes_per_second` | Gauge | — | Bytes received per second, averaged over the rolling 10 s window. |
+| `nylon_perf_rate_window_seconds` | Gauge | — | Averaging window length in seconds behind the `_per_second` rate gauges; currently 10. |
 | `nylon_tun_staged_drops_total` | Counter | — | Packets evicted from a per-peer staged queue because they were too old. |
 | `nylon_tun_write_queue_drops_total` | Counter | — | Bounce packets dropped because the target TUN writer queue was full. |
+| `nylon_tun_write_queue_capacity_frames` | Gauge | — | Bounce frames a single TUN writer queue buffers before dropping; currently 4096. |
 | `nylon_tun_kernel_tx_dropped_total` | Counter | — | Kernel `tx_dropped` counter of the TUN interface, sampled from `/sys/class/net/<iface>/statistics/tx_dropped`. |
 | `nylon_tun_read_frames_total` | Counter | — | Frames read from the TUN device. |
 | `nylon_tun_write_frames_total` | Counter | — | Frames handed to the Linux TUN write path. |
 | `nylon_tun_write_syscalls_total` | Counter | — | `write()` syscalls issued to deliver them; frames divided by syscalls is the offload coalescing factor. |
 
-Despite their `_per_second` names, these gauges are not normalized rates: each value is the count accumulated over the rolling 10-second window. Divide by 10 for an approximate per-second value.
+The `_per_second` gauges are normalized rates: each underlying counter is a rolling 10-second sum divided by 10, so the exported value is a true per-second average over that window. The window length is exported as `nylon_perf_rate_window_seconds`, and the raw undivided window sums remain available on the debug server's `/debug/metrics` page as `nylon:Sends/10s`, `nylon:Recvs/10s`, `nylon:SentPacket/10s`, `nylon:RecvPacket/10s`, `nylon:SentBytes/10s`, and `nylon:RecvBytes/10s`.
 
-Unlike the gauges above, the `nylon_tun_*` totals are monotonic rather than windowed values. `nylon_tun_kernel_tx_dropped_total` is a ten-second sysfs sample of `/sys/class/net/<iface>/statistics/tx_dropped`: the kernel counter is monotonic only for the lifetime of the interface, so it resets to zero when the interface is recreated, and the exported value is the last successful sample. If these counters grow, the TUN drain is the bottleneck, not the network: `staged` counts packets evicted from a bounded per-peer userspace queue (the reader outran a peer), `write_queue` counts bounce frames dropped because a TUN writer queue's frame budget was full, and `kernel` counts packets the kernel could not hand to the daemon at all. `nylon_tun_write_frames_total` and `nylon_tun_write_syscalls_total` describe the write path itself: the frames-to-syscalls ratio stays near 1 when frames cannot be coalesced and rises above 1 once same-flow frames share one write call.
+Unlike the gauges above, the `nylon_tun_*` totals are monotonic rather than windowed values. `nylon_tun_kernel_tx_dropped_total` is a ten-second sysfs sample of `/sys/class/net/<iface>/statistics/tx_dropped`: the kernel counter is monotonic only for the lifetime of the interface, so it resets to zero when the interface is recreated, and the exported value is the last successful sample. If these counters grow, the TUN drain is the bottleneck, not the network: `staged` counts packets evicted from a bounded per-peer userspace queue (the reader outran a peer), `write_queue` counts bounce frames dropped because a TUN writer queue's frame budget was full (each writer queue buffers up to 4096 frames, stored as right-sized copies of about the frame length — roughly 6 MB per queue — rather than full-size message buffers), and `kernel` counts packets the kernel could not hand to the daemon at all. `nylon_tun_write_frames_total` and `nylon_tun_write_syscalls_total` describe the write path itself: the frames-to-syscalls ratio stays near 1 when frames cannot be coalesced and rises above 1 once same-flow frames share one write call.
 
-These metrics are always available on `/metrics`; `--dbg-perf` is only required for the standalone debug server on port `6060`, which serves the performance web UI and `pprof` endpoints. The debug server's `/debug/metrics` page additionally lists the TUN totals as `tun:stagedDrops`, `tun:writeQueueDrops`, `tun:kernelTxDropped`, `tun:writeFrames`, and `tun:writeSyscalls`.
+These metrics are always available on `/metrics`; `--dbg-perf` is only required for the standalone debug server on port `6060`, which serves the performance web UI and `pprof` endpoints. The debug server's `/debug/metrics` page additionally lists the TUN counters as `tun:stagedDrops`, `tun:writeQueueDrops`, `tun:kernelTxDropped`, `tun:writeFrames`, and `tun:writeSyscalls`, plus the `tun:writeQueueCapacity` frame budget.
 
 ## Logging
 
