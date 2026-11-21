@@ -447,6 +447,9 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 	if s.RouteLostAt == nil {
 		s.RouteLostAt = make(map[netip.Prefix]time.Time)
 	}
+	if s.RouteChallenger == nil {
+		s.RouteChallenger = make(map[netip.Prefix]state.RouteChallenger)
+	}
 
 	// 3.5.4.  Hold Time
 	//
@@ -590,6 +593,8 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 	//   holes if the metric being used is not left-distributive
 	//   (Section 3.5.2).
 
+	challengers := make(map[netip.Prefix]state.SelRoute)
+
 	// enumerate through neighbours
 	for _, neigh := range s.Neighbours {
 		if neigh.BestEndpoint() == nil && s.WarnNoEndpoint(neigh.Id) {
@@ -651,13 +656,44 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 					}
 				}
 				if ShouldSwitch(oldRoute, newRoute, s.RouterTunables) {
-					if prevRoute, ok := s.Routes[prefix]; ok && sameRoute(oldRoute, prevRoute) &&
-						routeSwitchHeld(s, prefix, oldRoute, now) {
-						continue // hold-down: keep the committed next hop
+					best, ok := challengers[prefix]
+					if !ok || newRoute.Metric < best.Metric ||
+						(newRoute.Metric == best.Metric && newRoute.Nh < best.Nh) {
+						challengers[prefix] = newRoute
 					}
-					newTable[prefix] = newRoute
 				}
 			}
+		}
+	}
+
+	// Resolve the collected challengers: a metric-based switch requires a
+	// deadband pass plus an uninterrupted superiority streak spanning
+	// RouteSwitchHold plus an expired commit-age hold. A prefix without a
+	// previously committed finite neighbour incumbent (first selection,
+	// failover, black-hole recovery, passive-hold handoff) switches
+	// immediately, exactly like pre-change behavior.
+	for prefix, best := range challengers {
+		cur, ok := newTable[prefix]
+		prevRoute, hadPrev := s.Routes[prefix]
+		committed := hadPrev && sameRoute(cur, prevRoute) && prevRoute.Metric != state.INF
+		if !ok || cur.Metric == state.INF || s.GetNeighbour(cur.Nh) == nil || !committed {
+			newTable[prefix] = best
+			delete(s.RouteChallenger, prefix)
+			continue
+		}
+		tracked, tok := s.RouteChallenger[prefix]
+		streakAged := s.RouteSwitchHold <= 0 ||
+			(tok && tracked.Nh == best.Nh && now.Sub(tracked.Since) >= s.RouteSwitchHold)
+		if streakAged && !routeSwitchHeld(s, prefix, cur, now) {
+			newTable[prefix] = best
+			delete(s.RouteChallenger, prefix)
+		} else if !tok || tracked.Nh != best.Nh {
+			s.RouteChallenger[prefix] = state.RouteChallenger{Nh: best.Nh, Since: now}
+		}
+	}
+	for prefix := range s.RouteChallenger {
+		if _, ok := challengers[prefix]; !ok {
+			delete(s.RouteChallenger, prefix) // streak broken this recompute
 		}
 	}
 

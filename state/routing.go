@@ -48,6 +48,10 @@ type RouterState struct {
 	// failed route-level re-seed (advertisement INF or gone) while its link
 	// stayed up. Maintained by ComputeRoutes; read by the loss grace.
 	RouteLostAt map[netip.Prefix]time.Time
+	// RouteChallenger tracks the best deadband-eligible challenger for a
+	// prefix and the start of its uninterrupted eligibility streak.
+	// Maintained by ComputeRoutes; read by the sustained-gain gate.
+	RouteChallenger map[netip.Prefix]RouteChallenger
 	Sources         map[Source]FD
 	Neighbours      []*Neighbour
 	// Advertised is a map tracking the prefix and the time it will be advertised until
@@ -61,6 +65,13 @@ type RouterState struct {
 	// neighbour; written only from the dispatch goroutine, like the rest of
 	// router state.
 	hsStaleWarns map[NodeId]time.Time
+}
+
+// RouteChallenger names the neighbour currently challenging the committed
+// next hop for a prefix and when its uninterrupted eligibility streak began.
+type RouteChallenger struct {
+	Nh    NodeId
+	Since time.Time
 }
 
 func (s *RouterState) GetSeqno(prefix netip.Prefix) uint16 {

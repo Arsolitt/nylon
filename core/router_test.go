@@ -1634,6 +1634,7 @@ func TestRouter_HandshakeStaleNeighbourExcluded(t *testing.T) {
 
 	rs.GetNeighbour("B").HsStale = false
 	rs.RouteSelectedAt[pPrefix] = time.Now().Add(-time.Hour)
+	rs.RouteChallenger[pPrefix] = state.RouteChallenger{Nh: "B", Since: time.Now().Add(-time.Hour)}
 	ComputeRoutes(rs, h)
 	assert.Equal(t, "B", string(rs.Routes[pPrefix].Nh),
 		"a recovered neighbour must be selected again once the hold expires")
@@ -1676,6 +1677,7 @@ func TestRouter_HoldDownBlocksSwitchUntilExpiry(t *testing.T) {
 	assert.Equal(t, selectedAt, rs.RouteSelectedAt[pPrefix], "a held switch must not restart the hold")
 
 	rs.RouteSelectedAt[pPrefix] = time.Now().Add(-time.Hour)
+	rs.RouteChallenger[pPrefix] = state.RouteChallenger{Nh: "C", Since: time.Now().Add(-time.Hour)}
 	ComputeRoutes(rs, h)
 	assert.Equal(t, "C", string(rs.Routes[pPrefix].Nh), "an expired hold-down lets the better route through")
 	assert.WithinDuration(t, time.Now(), rs.RouteSelectedAt[pPrefix], time.Second,
