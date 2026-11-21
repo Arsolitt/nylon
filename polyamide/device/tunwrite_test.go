@@ -3,6 +3,7 @@ package device
 import (
 	"encoding/binary"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -73,15 +74,7 @@ func (t *recordingTun) delivered() []uint32 {
 // goroutine. PopulatePools reads BatchSize, so the fake TUN is installed first.
 func newBounceDevice(t *testing.T) (*Device, *recordingTun) {
 	t.Helper()
-	rec := newRecordingTun()
-	dev := &Device{}
-	dev.Log = NewLogger(LogLevelError, "test: ")
-	dev.net.bind = &fakeBindSized{size: conn.IdealBatchSize}
-	dev.tun.device = rec
-	dev.tun.queues = 1
-	dev.tun.writers = []*tunWriteQueue{newTunWriteQueue()}
-	dev.PopulatePools()
-	return dev, rec
+	return newBounceDeviceQueues(t, 1)
 }
 
 // bounceElems allocates n bounce elements carrying the 4-byte sequence in
@@ -187,4 +180,189 @@ drained:
 		t.Fatalf("last accepted frame is %d, want %d: the dropped frames must be the newest", last, len(delivered)-1)
 	}
 	t.Logf("accepted %d frames of %d, dropped %d", len(delivered), batches*perBatch, dropped)
+}
+
+// newBounceDeviceQueues builds a Device with queues TUN writer queues and no
+// writer goroutines. PopulatePools reads BatchSize, so the fake TUN is
+// installed first.
+func newBounceDeviceQueues(t *testing.T, queues int) (*Device, *recordingTun) {
+	t.Helper()
+	rec := newRecordingTun()
+	dev := &Device{}
+	dev.Log = NewLogger(LogLevelError, "test: ")
+	dev.net.bind = &fakeBindSized{size: conn.IdealBatchSize}
+	dev.tun.device = rec
+	dev.tun.queues = queues
+	dev.tun.writers = make([]*tunWriteQueue, queues)
+	for i := range dev.tun.writers {
+		dev.tun.writers[i] = newTunWriteQueue()
+	}
+	dev.PopulatePools()
+	return dev, rec
+}
+
+// bounceElemsPadded allocates n bounce elements for one source peer, cycling
+// the given paddings. The 4-byte sequence is written at the frame offset the
+// writer will hand to the TUN, so it identifies the frame after coalescing
+// splits the batch by padding.
+func bounceElemsPadded(dev *Device, first uint32, n int, paddings []uint32, from *Peer) []*TCElement {
+	elems := make([]*TCElement, 0, n)
+	for i := range n {
+		padding := paddings[i%len(paddings)]
+		offset := int(padding) + MessageTransportHeaderSize
+		e := dev.GetTCElement()
+		e.Buffer = dev.GetMessageBuffer()
+		e.Padding = padding
+		e.Packet = e.Buffer[offset : offset+4]
+		binary.BigEndian.PutUint32(e.Packet, first+uint32(i))
+		e.FromPeer = from
+		elems = append(elems, e)
+	}
+	return elems
+}
+
+func waitQueueDrained(t *testing.T, wq *tunWriteQueue) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for wq.queued.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("writer queue did not drain, %d frames still queued", wq.queued.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestBounceWriteMultisetPreserved streams more batches than a writer queue
+// holds, with mixed paddings and two queue indices, while the writers run. It
+// pins the invariant that every enqueued frame reaches the TUN exactly once:
+// the delivered frame multiset equals the enqueued one, so a lost frame covered
+// by a duplicate cannot pass, and the queue admission policy drops nothing.
+func TestBounceWriteMultisetPreserved(t *testing.T) {
+	const queues = 2
+	dev, rec := newBounceDeviceQueues(t, queues)
+	tcs := NewTCState()
+
+	peers := make([]*Peer, queues)
+	for i := range peers {
+		peers[i] = &Peer{writeIndex: i}
+	}
+
+	for q := range queues {
+		dev.tun.wg.Add(1)
+		go dev.RoutineTUNWriter(q, dev.tun.writers[q])
+	}
+	defer func() {
+		for _, wq := range dev.tun.writers {
+			close(wq.stop)
+		}
+		dev.tun.wg.Wait()
+	}()
+
+	const perBatch = 3
+	paddings := []uint32{0, 3, 0}
+	batches := QueueWriteFrames + QueueWriteFrames/4
+	want := make([]uint32, 0, batches*perBatch)
+	dropsBefore := perf.TunWriteQueueDropsTotal.Load()
+	next := uint32(0)
+	for i := range batches {
+		q := i % queues
+		// Drain the queue before the next handoff so admission never drops:
+		// this test is about duplication, not the drop policy.
+		waitQueueDrained(t, dev.tun.writers[q])
+		dev.enqueueBounceWrite(tcs, bounceElemsPadded(dev, next, perBatch, paddings, peers[q]))
+		for j := range perBatch {
+			want = append(want, next+uint32(j))
+		}
+		next += perBatch
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for rec.frameCount() < len(want) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := rec.frameCount(); got != len(want) {
+		t.Fatalf("writer delivered %d/%d frames", got, len(want))
+	}
+	if drops := perf.TunWriteQueueDropsTotal.Load() - dropsBefore; drops != 0 {
+		t.Fatalf("queue dropped %d frames while the writers kept up", drops)
+	}
+
+	got := rec.delivered()
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("delivered frame multiset differs from enqueued: got %d frames, want %d", len(got), len(want))
+	}
+}
+
+// TestBounceBurstNoDuplicates floods two writer queues past their frame budget
+// without draining, so the writers run their batch-drain loop and the drops
+// that the admission policy counts happen while the writers are mid-batch. It
+// pins two invariants that a paused-then-drained producer cannot reach: no
+// frame is delivered twice, and every enqueued frame is either delivered or
+// counted as a drop.
+func TestBounceBurstNoDuplicates(t *testing.T) {
+	const queues = 2
+	dev, rec := newBounceDeviceQueues(t, queues)
+	tcs := NewTCState()
+
+	peers := make([]*Peer, queues)
+	for i := range peers {
+		peers[i] = &Peer{writeIndex: i}
+	}
+	for q := range queues {
+		dev.tun.wg.Add(1)
+		go dev.RoutineTUNWriter(q, dev.tun.writers[q])
+	}
+	defer func() {
+		for _, wq := range dev.tun.writers {
+			close(wq.stop)
+		}
+		dev.tun.wg.Wait()
+	}()
+
+	const (
+		perBatch = 3
+		batches  = 4 * QueueWriteFrames
+	)
+	paddings := []uint32{0, 3}
+	enqueued := make(map[uint32]struct{}, batches*perBatch)
+	dropsBefore := perf.TunWriteQueueDropsTotal.Load()
+	next := uint32(0)
+	for i := range batches {
+		q := i % queues
+		dev.enqueueBounceWrite(tcs, bounceElemsPadded(dev, next, perBatch, paddings, peers[q]))
+		for j := range perBatch {
+			enqueued[next+uint32(j)] = struct{}{}
+		}
+		next += perBatch
+	}
+	total := uint64(batches * perBatch)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		drops := perf.TunWriteQueueDropsTotal.Load() - dropsBefore
+		if uint64(rec.frameCount())+drops == total {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("delivered %d + dropped %d of %d frames after 10s",
+				rec.frameCount(), drops, total)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	seen := make(map[uint32]int, len(enqueued))
+	delivered := rec.delivered()
+	t.Logf("delivered %d frames, dropped %d of %d", len(delivered),
+		perf.TunWriteQueueDropsTotal.Load()-dropsBefore, total)
+	for _, seq := range delivered {
+		if _, ok := enqueued[seq]; !ok {
+			t.Fatalf("delivered frame %d was never enqueued", seq)
+		}
+		seen[seq]++
+		if seen[seq] > 1 {
+			t.Fatalf("frame %d delivered %d times", seq, seen[seq])
+		}
+	}
 }
