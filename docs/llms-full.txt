@@ -651,7 +651,7 @@ Nylon exports its hot-loop performance counters on `/metrics` as `nylon_perf_*` 
 | `nylon_perf_rate_window_seconds` | Gauge | — | Averaging window length in seconds behind the `_per_second` rate gauges; currently 10. |
 | `nylon_tun_staged_drops_total` | Counter | — | Packets evicted from a per-peer staged queue because they were too old. |
 | `nylon_tun_write_queue_drops_total` | Counter | — | Bounce packets dropped because the target TUN writer queue was full. |
-| `nylon_tun_write_queue_capacity_frames` | Gauge | — | Bounce frames a single TUN writer queue buffers before dropping; currently 4096. |
+| `nylon_tun_write_queue_capacity_frames` | Gauge | — | Bounce frames a single TUN writer queue buffers before dropping, as exported by the running build: 4096 on Linux, macOS and the BSDs, lower on the mobile and Windows builds. |
 | `nylon_tun_kernel_tx_dropped_total` | Counter | — | Kernel `tx_dropped` counter of the TUN interface, sampled from `/sys/class/net/<iface>/statistics/tx_dropped`. |
 | `nylon_tun_read_frames_total` | Counter | — | Frames read from the TUN device. |
 | `nylon_tun_write_frames_total` | Counter | — | Frames handed to the Linux TUN write path. |
