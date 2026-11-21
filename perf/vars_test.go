@@ -100,6 +100,7 @@ func TestSnapshotMatchesPrometheusNames(t *testing.T) {
 		"nylon_tun_staged_drops_total",
 		"nylon_tun_write_queue_drops_total",
 		"nylon_tun_kernel_tx_dropped_total",
+		"nylon_tun_read_frames_total",
 		"nylon_tun_write_frames_total",
 		"nylon_tun_write_syscalls_total",
 	}

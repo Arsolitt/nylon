@@ -121,6 +121,7 @@ Nylon exports its hot-loop performance counters on `/metrics` as `nylon_perf_*` 
 | `nylon_tun_staged_drops_total` | Counter | — | Packets evicted from a per-peer staged queue because they were too old. |
 | `nylon_tun_write_queue_drops_total` | Counter | — | Bounce packets dropped because the target TUN writer queue was full. |
 | `nylon_tun_kernel_tx_dropped_total` | Counter | — | Kernel `tx_dropped` counter of the TUN interface, sampled from `/sys/class/net/<iface>/statistics/tx_dropped`. |
+| `nylon_tun_read_frames_total` | Counter | — | Frames read from the TUN device. |
 | `nylon_tun_write_frames_total` | Counter | — | Frames handed to the Linux TUN write path. |
 | `nylon_tun_write_syscalls_total` | Counter | — | `write()` syscalls issued to deliver them; frames divided by syscalls is the offload coalescing factor. |
 

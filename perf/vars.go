@@ -30,6 +30,7 @@ var (
 	TunStagedDropsTotal     atomic.Uint64 // reader -> per-peer staged handoff, drop-oldest evictions (packets)
 	TunWriteQueueDropsTotal atomic.Uint64 // bounce -> TUN writer handoff, queue full (packets)
 	TunKernelTxDroppedTotal atomic.Uint64 // /sys/class/net/<iface>/statistics/tx_dropped, last sample
+	TunReadFramesTotal      atomic.Uint64 // frames read from the Linux TUN read path
 	TunWriteFramesTotal     atomic.Uint64 // frames handed to the Linux TUN write path
 	TunWriteSyscallsTotal   atomic.Uint64 // write() syscalls issued to deliver them
 )
@@ -95,6 +96,7 @@ var perfTotals = []struct {
 	{"nylon_tun_staged_drops_total", "Packets evicted from a per-peer staged queue because they were too old.", &TunStagedDropsTotal},
 	{"nylon_tun_write_queue_drops_total", "Bounce packets dropped because the target TUN writer queue was full.", &TunWriteQueueDropsTotal},
 	{"nylon_tun_kernel_tx_dropped_total", "Kernel tx_dropped counter of the TUN interface (last sample, resets with the interface).", &TunKernelTxDroppedTotal},
+	{"nylon_tun_read_frames_total", "Frames read from the TUN device.", &TunReadFramesTotal},
 	{"nylon_tun_write_frames_total", "Frames handed to the Linux TUN write path.", &TunWriteFramesTotal},
 	{"nylon_tun_write_syscalls_total", "write() syscalls issued to deliver them; the frames/syscalls ratio is the offload coalescing factor.", &TunWriteSyscallsTotal},
 }
@@ -165,6 +167,7 @@ func init() {
 	expvar.Publish("tun:stagedDrops", totalVar{&TunStagedDropsTotal})
 	expvar.Publish("tun:writeQueueDrops", totalVar{&TunWriteQueueDropsTotal})
 	expvar.Publish("tun:kernelTxDropped", totalVar{&TunKernelTxDroppedTotal})
+	expvar.Publish("tun:readFrames", totalVar{&TunReadFramesTotal})
 	expvar.Publish("tun:writeFrames", totalVar{&TunWriteFramesTotal})
 	expvar.Publish("tun:writeSyscalls", totalVar{&TunWriteSyscallsTotal})
 }

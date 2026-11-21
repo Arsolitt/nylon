@@ -357,6 +357,7 @@ func (device *Device) RoutineReadFromTUN(q int) {
 		// implementation; sampling it would skew the histogram.
 		if count > 0 {
 			perf.TunReadBatchSize.Add(float64(count))
+			perf.TunReadFramesTotal.Add(uint64(count))
 		}
 
 		for i := 0; i < count; i++ {
