@@ -444,6 +444,9 @@ func isHeldRoute(s *state.RouterState, route state.SelRoute) bool {
 func ComputeRoutes(s *state.RouterState, r Router) {
 	newTable := make(map[netip.Prefix]state.SelRoute)
 	now := time.Now()
+	if s.RouteLostAt == nil {
+		s.RouteLostAt = make(map[netip.Prefix]time.Time)
+	}
 
 	// 3.5.4.  Hold Time
 	//
@@ -507,22 +510,38 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 		}
 		cost := neighLinkCost(s, neigh)
 		adv, ok := neigh.Routes[prefix]
-		if !ok || adv.Metric == state.INF || cost == state.INF {
+		if ok && adv.Metric != state.INF {
+			total := AddMetric(cost, adv.Metric)
+			if total == state.INF || !checkFeasibility(s, adv.PubRoute) {
+				delete(s.RouteLostAt, prefix) // unfeasible: RFC 8966 immediate unselect
+				continue
+			}
+			newTable[prefix] = state.SelRoute{
+				PubRoute: state.PubRoute{
+					Source: adv.Source,
+					FD:     state.FD{Seqno: adv.Seqno, Metric: total},
+				},
+				Nh:          route.Nh,
+				ExpireAt:    adv.ExpireAt,
+				RetractedBy: []state.NodeId{},
+			}
+			delete(s.RouteLostAt, prefix)
 			continue
 		}
-		total := AddMetric(cost, adv.Metric)
-		if total == state.INF || !checkFeasibility(s, adv.PubRoute) {
+		// route-level loss: advertisement INF or gone while the link stays up
+		if cost == state.INF || s.RouteSwitchHold <= 0 {
+			delete(s.RouteLostAt, prefix) // link dead or grace disabled: fail over now
 			continue
 		}
-		newTable[prefix] = state.SelRoute{
-			PubRoute: state.PubRoute{
-				Source: adv.Source,
-				FD:     state.FD{Seqno: adv.Seqno, Metric: total},
-			},
-			Nh:          route.Nh,
-			ExpireAt:    adv.ExpireAt,
-			RetractedBy: []state.NodeId{},
+		lostAt, had := s.RouteLostAt[prefix]
+		if !had {
+			lostAt = now
+			s.RouteLostAt[prefix] = now
 		}
+		if now.Sub(lostAt) >= s.RouteSwitchHold {
+			continue // grace expired: fail over now (competitor commits via !exists)
+		}
+		newTable[prefix] = route // seed last committed entry verbatim: stale finite metric, same Nh
 	}
 
 	// add our own routes to the route table, so that we can advertise them
@@ -705,18 +724,21 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 	for prefix, route := range newTable {
 		if s.GetNeighbour(route.Nh) == nil {
 			delete(s.RouteSelectedAt, prefix)
+			delete(s.RouteLostAt, prefix)
 			continue
 		}
-		if prev, ok := s.Routes[prefix]; ok && sameRoute(prev, route) {
+		if prev, ok := s.Routes[prefix]; ok && sameRoute(prev, route) && prev.Metric != state.INF {
 			if _, tracked := s.RouteSelectedAt[prefix]; tracked {
 				continue
 			}
 		}
+		delete(s.RouteLostAt, prefix)
 		s.RouteSelectedAt[prefix] = now
 	}
 	for prefix := range s.RouteSelectedAt {
 		if _, ok := newTable[prefix]; !ok {
 			delete(s.RouteSelectedAt, prefix)
+			delete(s.RouteLostAt, prefix)
 		}
 	}
 

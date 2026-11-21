@@ -44,6 +44,10 @@ type RouterState struct {
 	// installed; only routes whose next hop is a neighbour are tracked. It is
 	// maintained by ComputeRoutes and read by the route-switch hold-down.
 	RouteSelectedAt map[netip.Prefix]time.Time
+	// RouteLostAt records when the committed finite route for a prefix first
+	// failed route-level re-seed (advertisement INF or gone) while its link
+	// stayed up. Maintained by ComputeRoutes; read by the loss grace.
+	RouteLostAt map[netip.Prefix]time.Time
 	Sources         map[Source]FD
 	Neighbours      []*Neighbour
 	// Advertised is a map tracking the prefix and the time it will be advertised until
