@@ -123,6 +123,9 @@ func validateTunablesOverrides(o *TunablesOverrides) error {
 	if o.LinkSwitchDeadband != nil && *o.LinkSwitchDeadband < 1 {
 		return fmt.Errorf("link_switch_deadband must be at least 1, got %g", *o.LinkSwitchDeadband)
 	}
+	if o.RouteSwitchMinImprovement != nil && *o.RouteSwitchMinImprovement > 10_000_000 {
+		return fmt.Errorf("route_switch_min_improvement must be at most 10000000 (10s of metric), got %d", *o.RouteSwitchMinImprovement)
+	}
 	if o.RouteSwitchHold != nil && *o.RouteSwitchHold < 0 {
 		return fmt.Errorf("route_switch_hold must be at least 0, got %s", *o.RouteSwitchHold)
 	}

@@ -118,6 +118,7 @@ type TunablesOverrides struct {
 	LossDemotionThreshold      *float64       `yaml:"loss_demotion_threshold,omitempty"`
 	LinkSwitchDeadband         *float64       `yaml:"link_switch_deadband,omitempty"`
 	HopCost                    *uint32        `yaml:"hop_cost,omitempty"`
+	RouteSwitchMinImprovement  *uint32        `yaml:"route_switch_min_improvement,omitempty"`
 }
 
 // LocalCfg represents local node-level configuration

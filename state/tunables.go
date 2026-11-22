@@ -5,7 +5,7 @@ import "time"
 // RouterTunables contains all timing and algorithm parameters for the router.
 // These are set once at startup and should not be mutated after the Nylon instance starts.
 type RouterTunables struct {
-	HopCost               uint32 // add a 5 microsecond hop cost to prevent loops on ultra-fast networks.
+	HopCost               uint32 // per-hop cost in microseconds added to every neighbour link; a multi-hop path must beat a direct one by more than the measured per-hop jitter, not by loop-prevention epsilon (was 5 µs).
 	LargeChangeThreshold  uint32 // 100 milliseconds change
 	SeqnoRequestHopCount  uint8
 	RouteUpdateDelay      time.Duration
@@ -35,7 +35,17 @@ type RouterTunables struct {
 	// same endpoint-less neighbour; recompute runs on every route update, so
 	// the condition is chronic rather than novel.
 	NoEndpointWarnInterval time.Duration
-	LinkSwitchDeadband     float64 // We will switch to a new feasible route if: metric(new) * LinkSwitchDeadband <= metric(old). The 1.10 default covers the observed 2.8-11.5% challenger spread; surviving ±15% metric jitter would need an instantaneous ratio of ~1.32, which no sane deadband delivers, hence the temporal RouteSwitchHold gate. Do not raise the margin to fix flapping.
+	LinkSwitchDeadband     float64 // We will switch to a new feasible route if: metric(new) * LinkSwitchDeadband <= metric(old). The 1.10 default covers the observed 2.8-11.5% challenger spread; surviving ±15% metric jitter would need an instantaneous ratio of ~1.32, which no sane deadband delivers, hence the temporal RouteSwitchHold gate. Do not raise the margin to fix flapping. The ±500 µs noise band is carried by RouteSwitchMinImprovement, not by a wider margin.
+	// RouteSwitchMinImprovement is the absolute metric gain, in microseconds,
+	// a challenger must hold beyond the relative deadband before a committed
+	// next hop may change; 0 disables it. Default 500 µs: the same-link
+	// metric drift measured on a production anycast mesh (one gateway
+	// node) reached 362-503 µs within minutes on healthy links (probe
+	// success 1.0, RTT ~1.4-1.8 ms), while the 1.1 relative deadband at a
+	// ~1.8 ms base admits a switch at ~180 µs — inside the noise; every
+	// measured switch (deltas 213/290/388 µs) reset long-lived TCP flows to
+	// the VIP 0.17-1 s later.
+	RouteSwitchMinImprovement uint32
 
 	// Loss-aware liveness: ProbeTimeout 0 keeps v0.7.1 fire-and-forget
 	// probing (no arming, no accounting); demotion additionally requires
@@ -92,7 +102,7 @@ func DefaultRouterTunables() RouterTunables {
 	// convergence.
 	holdDown := 5 * probeDelay
 	return RouterTunables{
-		HopCost:               5,
+		HopCost:               200,
 		LargeChangeThreshold:  100 * 1000,
 		SeqnoRequestHopCount:  64,
 		RouteUpdateDelay:      routeUpdateDelay,
@@ -115,6 +125,7 @@ func DefaultRouterTunables() RouterTunables {
 		UnknownPrefixWarnInterval: time.Hour,
 		NoEndpointWarnInterval:    time.Hour,
 		LinkSwitchDeadband:        1.1,
+		RouteSwitchMinImprovement: 500,
 		RouteSwitchHold:           holdDown,
 
 		ProbeTimeout:          2 * time.Second,
@@ -196,6 +207,9 @@ func ApplyTunablesOverrides(t *RouterTunables, o *TunablesOverrides) {
 	}
 	if o.LinkSwitchDeadband != nil {
 		t.LinkSwitchDeadband = *o.LinkSwitchDeadband
+	}
+	if o.RouteSwitchMinImprovement != nil {
+		t.RouteSwitchMinImprovement = *o.RouteSwitchMinImprovement
 	}
 	if o.HopCost != nil {
 		t.HopCost = *o.HopCost

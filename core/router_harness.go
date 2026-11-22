@@ -24,6 +24,10 @@ func ConfigureConstants() *state.RouterTunables {
 	// (5*ProbeDelay) would hold every re-selection down; the hold-down has
 	// dedicated tests that set it explicitly.
 	t.RouteSwitchHold = 0
+	// These tests select routes microseconds apart, so the product floor
+	// (500 µs) would block every re-selection; the absolute floor has
+	// dedicated tests that set it explicitly.
+	t.RouteSwitchMinImprovement = 0
 	return &t
 }
 

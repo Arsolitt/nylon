@@ -871,11 +871,25 @@ func SolveStarvation(router *state.RouterState, r Router) {
 	//   requests are expected to actually reach the source.)
 }
 
+// ShouldSwitch reports whether newRoute may displace curRoute: the challenger
+// must clear the relative deadband and, when both metrics are finite, beat the
+// incumbent by at least RouteSwitchMinImprovement microseconds. The absolute
+// floor exists because the measured same-link drift on a production mesh
+// is ±213-503 µs within minutes while the 1.1 deadband at a ~1.8 ms base
+// admits a switch at ~180 µs — inside the noise; every admitted switch
+// moved long-lived VIP flows to another gateway and reset them one second
+// later. An infinite incumbent or challenger skips the floor: failover and
+// black-hole recovery stay immediate.
 func ShouldSwitch(curRoute state.SelRoute, newRoute state.SelRoute, tunable *state.RouterTunables) bool {
-	// TODO: Investigate stable routing heuristics
 	curMetric := float64(curRoute.Metric)
 	newMetric := float64(newRoute.Metric)
-	return newMetric*tunable.LinkSwitchDeadband <= curMetric
+	if newMetric*tunable.LinkSwitchDeadband > curMetric {
+		return false
+	}
+	if curRoute.Metric == state.INF || newRoute.Metric == state.INF {
+		return true
+	}
+	return int64(curRoute.Metric)-int64(newRoute.Metric) >= int64(tunable.RouteSwitchMinImprovement)
 }
 
 func IsStrictlyBetter(curRoute state.SelRoute, newRoute state.SelRoute) bool {

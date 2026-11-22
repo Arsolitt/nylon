@@ -193,6 +193,7 @@ router_tunables:
   loss_demotion_threshold: 0.5
   link_switch_deadband: 1.25
   hop_cost: 7
+  route_switch_min_improvement: 600
 `
 	assert.NoError(t, yaml.Unmarshal([]byte(src), &cfg))
 	tr := cfg.Tunables
@@ -214,6 +215,7 @@ router_tunables:
 		assert.Equal(t, 0.5, *tr.LossDemotionThreshold)
 		assert.Equal(t, 1.25, *tr.LinkSwitchDeadband)
 		assert.Equal(t, uint32(7), *tr.HopCost)
+		assert.Equal(t, uint32(600), *tr.RouteSwitchMinImprovement)
 	}
 }
 
@@ -243,6 +245,7 @@ func TestTunablesOverridesRejected(t *testing.T) {
 		"router_tunables:\n  loss_demotion_threshold: 1\n",
 		"router_tunables:\n  loss_demotion_threshold: -0.1\n",
 		"router_tunables:\n  link_switch_deadband: 0.9\n",
+		"router_tunables:\n  route_switch_min_improvement: 10000001\n",
 		"router_tunables:\n  route_switch_hold: -1s\n",
 		"router_tunables:\n  handshake_stale_warn: 151s\n  handshake_stale_demote: 150s\n",
 		"router_tunables:\n  handshake_stale_warn: 160s\n",
@@ -271,6 +274,8 @@ func TestTunablesOverridesHappyPath(t *testing.T) {
 	assert.Equal(t, 5*time.Second, def.ProbeTimeout)
 	assert.Equal(t, 0.25, def.LossDemotionThreshold)
 	assert.Equal(t, DefaultRouterTunables().LossPenaltyGain, def.LossPenaltyGain)
+	assert.Equal(t, uint32(500), DefaultRouterTunables().RouteSwitchMinImprovement)
+	assert.Equal(t, uint32(200), DefaultRouterTunables().HopCost)
 	var cfg2 LocalCfg
 	src2 := "router_tunables:\n  handshake_stale_warn: 160s\n  handshake_stale_demote: 0s\n"
 	assert.NoError(t, yaml.Unmarshal([]byte(src2), &cfg2))
