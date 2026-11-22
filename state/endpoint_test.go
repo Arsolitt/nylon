@@ -3,6 +3,7 @@ package state
 import (
 	"math"
 	"math/rand/v2"
+	"strconv"
 	"testing"
 	"time"
 
@@ -297,20 +298,6 @@ func TestProbeLossDemotionNeedsConfidence(t *testing.T) {
 	assert.NotEqual(t, INF, dep.Metric())
 }
 
-func TestProbeLossPenaltyCappedAtDeadband(t *testing.T) {
-	dep := newProbeTestEndpoint(5)
-	for range 15 {
-		dep.UpdatePing(10 * time.Millisecond)
-	}
-	base := dep.Metric()
-	for range 8 {
-		dep.RecordProbe(false)
-	}
-	metric := dep.Metric()
-	assert.Greater(t, metric, base)
-	assert.LessOrEqual(t, float64(metric), float64(base)*1.1)
-}
-
 func TestProbeSuccessNoPenaltyWhenDisabled(t *testing.T) {
 	tunables := DefaultRouterTunables()
 	tunables.MinimumConfidenceWindow = 5
@@ -362,12 +349,13 @@ func TestProbeLossEstimate(t *testing.T) {
 		dep.RecordProbe(true)
 	}
 	assert.Zero(t, dep.probeLoss, "successful probes keep the estimate at zero")
-	for lost := 1; lost <= 6; lost++ {
+	for lost, want := range []uint32{10840, 11687, 12542, 13403, 14272, 15149} {
 		dep.RecordProbe(false)
-		assert.InDelta(t, 1-math.Pow(1-alpha, float64(lost)), dep.probeLoss, 1e-12,
-			"%d consecutive timed-out probes", lost)
-		assert.InDelta(t, math.Pow(1-ewmaAlpha, float64(lost)), dep.ProbeSuccess(), 1e-12,
+		assert.InDelta(t, 1-math.Pow(1-alpha, float64(lost+1)), dep.probeLoss, 1e-12,
+			"%d consecutive timed-out probes", lost+1)
+		assert.InDelta(t, math.Pow(1-ewmaAlpha, float64(lost+1)), dep.ProbeSuccess(), 1e-12,
 			"the demotion EWMA keeps its own time constant")
+		assert.Equal(t, want, dep.Metric(), "%d consecutive timed-out probes", lost+1)
 	}
 	dep.Lock()
 	dep.lastHeardBack = time.Now().Add(-2 * dep.t.LinkDeadThreshold)
@@ -375,6 +363,92 @@ func TestProbeLossEstimate(t *testing.T) {
 	dep.Renew()
 	assert.Zero(t, dep.probeLoss, "a revival after silence starts the estimate over")
 	assert.Equal(t, uint32(0), dep.probeSamples)
+}
+
+func confidentEndpoint(t *testing.T, lost float64) *NylonEndpoint {
+	t.Helper()
+	dep := newProbeTestEndpoint(5)
+	for range 15 {
+		dep.UpdatePing(10 * time.Millisecond)
+		dep.RecordProbe(true)
+	}
+	dep.probeLoss = lost
+	return dep
+}
+
+func TestEndpointMetric_LossCurve(t *testing.T) {
+	cases := []struct {
+		loss   float64
+		factor float64
+		metric uint32
+	}{
+		{0, 1, 10000}, {0.01, 1.10, 11010}, {0.02, 1.20, 12040}, {0.05, 1.53, 15263},
+		{0.10, 2.11, 21111}, {0.20, 3.50, 35000}, {0.30, 5.29, 52857}, {0.39, 7.39, 73934},
+	}
+	prev := uint32(0)
+	for _, tc := range cases {
+		t.Run(strconv.FormatFloat(tc.loss, 'f', -1, 64), func(t *testing.T) {
+			dep := confidentEndpoint(t, tc.loss)
+			metric := dep.Metric()
+			assert.Equal(t, tc.metric, metric)
+			assert.InDelta(t, tc.factor, float64(metric)/10000, 0.006)
+			assert.GreaterOrEqual(t, metric, prev, "the curve is monotonic in loss")
+			assert.LessOrEqual(t, metric, uint32(10000*10), "never above base × cap")
+			assert.Less(t, metric, INF, "below the demotion threshold the metric stays finite")
+			prev = metric
+		})
+	}
+}
+
+func TestEndpointMetric_LossCap(t *testing.T) {
+	for _, deadband := range []float64{1.1, 1.5} {
+		tunables := DefaultRouterTunables()
+		tunables.LinkSwitchDeadband = deadband
+		tunables.MinimumConfidenceWindow = 5
+		tunables.LossMetricGain = 100
+		dep := NewEndpoint("127.0.0.1:0", false, nil, &tunables)
+		dep.Renew()
+		for range 15 {
+			dep.UpdatePing(10 * time.Millisecond)
+			dep.RecordProbe(true)
+		}
+		for loss, want := range map[float64]uint32{0.05: 62631, 0.39: 100000, 0.59: 100000, 1: 100000} {
+			dep.probeLoss = loss
+			assert.Equal(t, want, dep.Metric(), "deadband %v, loss %v", deadband, loss)
+		}
+		tunables.LossMetricGain = 10
+		tunables.LossMetricCap = 2.5
+		for loss, want := range map[float64]uint32{0.05: 15263, 0.30: 25000} {
+			dep.probeLoss = loss
+			assert.Equal(t, want, dep.Metric(), "deadband %v, loss %v", deadband, loss)
+		}
+	}
+}
+
+func TestEndpointMetric_NoiseGate(t *testing.T) {
+	dep := newProbeTestEndpoint(15)
+	for range 15 {
+		dep.UpdatePing(10 * time.Millisecond)
+	}
+	base := dep.Metric()
+	dep.probeLoss = 0.30
+	for samples := range 15 {
+		dep.probeSamples = uint32(samples)
+		assert.Equal(t, base, dep.Metric(), "%d samples: the loss factor is 1", samples)
+	}
+	dep.probeSamples = 15
+	assert.Equal(t, uint32(52857), dep.Metric(), "the factor applies from the MinimumConfidenceWindow-th sample")
+}
+
+func TestEndpointMetric_SubBucketBase(t *testing.T) {
+	dep := newProbeTestEndpoint(5)
+	for range 15 {
+		dep.UpdatePing(60 * time.Microsecond)
+		dep.RecordProbe(true)
+	}
+	assert.Equal(t, uint32(0), dep.Metric())
+	dep.probeLoss = 0.20
+	assert.Equal(t, uint32(875), dep.Metric(), "loss on a zero-metric link is charged on one bucket")
 }
 
 func TestDurationToMetric_Quantisation(t *testing.T) {

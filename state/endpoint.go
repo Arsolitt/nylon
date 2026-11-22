@@ -206,17 +206,34 @@ func (u *NylonEndpoint) UpdatePing(ping time.Duration) {
 func (u *NylonEndpoint) Metric() uint32 {
 	u.RLock()
 	lossDead := u.lossDeadUnlocked()
-	samples, loss := u.probeSamples, u.probeLoss
+	confident := u.probeSamples >= uint32(u.t.MinimumConfidenceWindow)
+	loss := u.probeLoss
 	u.RUnlock()
 	if !u.IsActive() || lossDead {
 		return INF
 	}
 	base := DurationToMetric(u.StabilizedPing())
-	if samples == 0 || u.t.LossPenaltyGain <= 0 {
+	if !confident {
 		return base
 	}
-	factor := min(1+u.t.LossPenaltyGain*loss, u.t.LinkSwitchDeadband)
+	factor := lossMetricFactor(loss, u.t.LossMetricGain, u.t.LossMetricCap)
+	if factor <= 1 {
+		return base
+	}
+	if base < uint32(metricQuantum) {
+		base = uint32(metricQuantum)
+	}
 	return uint32(min(float64(base)*factor, float64(INF)-1))
+}
+
+func lossMetricFactor(loss, gain, cap float64) float64 {
+	switch {
+	case loss <= 0 || gain <= 0:
+		return 1
+	case loss >= 1:
+		return cap
+	}
+	return min(1+gain*loss/(1-loss), cap)
 }
 
 func (u *NylonEndpoint) ProbeSuccess() float64 {

@@ -114,7 +114,8 @@ type TunablesOverrides struct {
 	HandshakeStaleDemote       *time.Duration `yaml:"handshake_stale_demote,omitempty"`
 	HandshakeStaleDebounce     *time.Duration `yaml:"handshake_stale_debounce,omitempty"`
 	HandshakeStaleWarnInterval *time.Duration `yaml:"handshake_stale_warn_interval,omitempty"`
-	LossPenaltyGain            *float64       `yaml:"loss_penalty_gain,omitempty"`
+	LossMetricGain             *float64       `yaml:"loss_metric_gain,omitempty"`
+	LossMetricCap              *float64       `yaml:"loss_metric_cap,omitempty"`
 	LossDemotionThreshold      *float64       `yaml:"loss_demotion_threshold,omitempty"`
 	LinkSwitchDeadband         *float64       `yaml:"link_switch_deadband,omitempty"`
 	HopCost                    *uint32        `yaml:"hop_cost,omitempty"`

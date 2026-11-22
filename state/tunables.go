@@ -50,8 +50,16 @@ type RouterTunables struct {
 	// Loss-aware liveness: ProbeTimeout 0 keeps v0.7.1 fire-and-forget
 	// probing (no arming, no accounting); demotion additionally requires
 	// MinimumConfidenceWindow probe samples.
-	ProbeTimeout          time.Duration
-	LossPenaltyGain       float64
+	ProbeTimeout time.Duration
+
+	// LossMetricGain is the gain of the loss factor 1 + LossMetricGain*p/(1-p)
+	// that multiplies an endpoint's quantised RTT metric, p being the
+	// sustained probe-loss estimate; 0 disables it. LossMetricCap bounds the
+	// factor. A clean path of equal latency displaces a lossy one once the
+	// factor reaches LinkSwitchDeadband: at gain 10 that is 4.8% sustained
+	// loss under a 1.5 deadband and 1% under the 1.1 default.
+	LossMetricGain        float64
+	LossMetricCap         float64
 	LossDemotionThreshold float64
 
 	// Handshake staleness: Warn/Demote 0 disables that stage.
@@ -129,7 +137,8 @@ func DefaultRouterTunables() RouterTunables {
 		RouteSwitchHold:           holdDown,
 
 		ProbeTimeout:          2 * time.Second,
-		LossPenaltyGain:       0.3,
+		LossMetricGain:        10,
+		LossMetricCap:         10,
 		LossDemotionThreshold: 0.4,
 
 		HandshakeStaleWarn:         135 * time.Second,
@@ -199,8 +208,11 @@ func ApplyTunablesOverrides(t *RouterTunables, o *TunablesOverrides) {
 	if o.HandshakeStaleWarnInterval != nil {
 		t.HandshakeStaleWarnInterval = *o.HandshakeStaleWarnInterval
 	}
-	if o.LossPenaltyGain != nil {
-		t.LossPenaltyGain = *o.LossPenaltyGain
+	if o.LossMetricGain != nil {
+		t.LossMetricGain = *o.LossMetricGain
+	}
+	if o.LossMetricCap != nil {
+		t.LossMetricCap = *o.LossMetricCap
 	}
 	if o.LossDemotionThreshold != nil {
 		t.LossDemotionThreshold = *o.LossDemotionThreshold

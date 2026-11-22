@@ -114,8 +114,11 @@ func validateTunablesOverrides(o *TunablesOverrides) error {
 	if o.ProbeTimeout != nil && (*o.ProbeTimeout < 0 || *o.ProbeTimeout > 10*time.Second) {
 		return fmt.Errorf("probe_timeout must be between 0 and 10s, got %s", *o.ProbeTimeout)
 	}
-	if o.LossPenaltyGain != nil && (*o.LossPenaltyGain < 0 || *o.LossPenaltyGain > 10) {
-		return fmt.Errorf("loss_penalty_gain must be between 0 and 10, got %g", *o.LossPenaltyGain)
+	if o.LossMetricGain != nil && (*o.LossMetricGain < 0 || *o.LossMetricGain > 100) {
+		return fmt.Errorf("loss_metric_gain must be between 0 and 100, got %g", *o.LossMetricGain)
+	}
+	if o.LossMetricCap != nil && *o.LossMetricCap < 1 {
+		return fmt.Errorf("loss_metric_cap must be at least 1, got %g", *o.LossMetricCap)
 	}
 	if o.LossDemotionThreshold != nil && (*o.LossDemotionThreshold < 0 || *o.LossDemotionThreshold >= 1) {
 		return fmt.Errorf("loss_demotion_threshold must be in [0, 1), got %g", *o.LossDemotionThreshold)

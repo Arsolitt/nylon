@@ -85,7 +85,7 @@ All metric names start with `nylon_`.
 | `nylon_wireguard_peer_receive_bytes_total` | Counter | `peer` | WireGuard bytes received from a peer. |
 | `nylon_wireguard_peer_latest_handshake_seconds` | Gauge | `peer` | Unix time of the peer's latest WireGuard handshake, or `0` before the first handshake. |
 | `nylon_endpoint_active` | Gauge | `peer`, `endpoint` | `1` when the endpoint is active, otherwise `0`. |
-| `nylon_endpoint_metric` | Gauge | `peer`, `endpoint` | Current Babel endpoint metric. |
+| `nylon_endpoint_metric` | Gauge | `peer`, `endpoint` | Current Babel endpoint metric: quantised RTT in microseconds multiplied by the packet-loss factor. |
 | `nylon_endpoint_rtt_seconds` | Gauge | `peer`, `endpoint` | Filtered endpoint round-trip time in seconds. |
 | `nylon_route_metric` | Gauge | `prefix`, `router`, `next_hop` | Metric of a selected Babel route. |
 | `nylon_route_switch_total` | Counter | `prefix` | Committed next-hop changes for a selected Babel route. |

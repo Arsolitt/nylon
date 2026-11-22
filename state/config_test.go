@@ -189,7 +189,8 @@ router_tunables:
   handshake_stale_demote: 145s
   handshake_stale_debounce: 10s
   handshake_stale_warn_interval: 30m
-  loss_penalty_gain: 0.9
+  loss_metric_gain: 0.9
+  loss_metric_cap: 12.5
   loss_demotion_threshold: 0.5
   link_switch_deadband: 1.25
   hop_cost: 7
@@ -211,7 +212,8 @@ router_tunables:
 		assert.Equal(t, 145*time.Second, *tr.HandshakeStaleDemote)
 		assert.Equal(t, 10*time.Second, *tr.HandshakeStaleDebounce)
 		assert.Equal(t, 30*time.Minute, *tr.HandshakeStaleWarnInterval)
-		assert.Equal(t, 0.9, *tr.LossPenaltyGain)
+		assert.Equal(t, 0.9, *tr.LossMetricGain)
+		assert.Equal(t, 12.5, *tr.LossMetricCap)
 		assert.Equal(t, 0.5, *tr.LossDemotionThreshold)
 		assert.Equal(t, 1.25, *tr.LinkSwitchDeadband)
 		assert.Equal(t, uint32(7), *tr.HopCost)
@@ -240,8 +242,9 @@ func TestTunablesOverridesRejected(t *testing.T) {
 		"router_tunables:\n  handshake_stale_warn_interval: -1s\n",
 		"router_tunables:\n  probe_timeout: 11s\n",
 		"router_tunables:\n  probe_timeout: -1s\n",
-		"router_tunables:\n  loss_penalty_gain: 11\n",
-		"router_tunables:\n  loss_penalty_gain: -0.1\n",
+		"router_tunables:\n  loss_metric_gain: 101\n",
+		"router_tunables:\n  loss_metric_gain: -0.1\n",
+		"router_tunables:\n  loss_metric_cap: 0.9\n",
 		"router_tunables:\n  loss_demotion_threshold: 1\n",
 		"router_tunables:\n  loss_demotion_threshold: -0.1\n",
 		"router_tunables:\n  link_switch_deadband: 0.9\n",
@@ -273,7 +276,7 @@ func TestTunablesOverridesHappyPath(t *testing.T) {
 	ApplyTunablesOverrides(&def, cfg.Tunables)
 	assert.Equal(t, 5*time.Second, def.ProbeTimeout)
 	assert.Equal(t, 0.25, def.LossDemotionThreshold)
-	assert.Equal(t, DefaultRouterTunables().LossPenaltyGain, def.LossPenaltyGain)
+	assert.Equal(t, DefaultRouterTunables().LossMetricGain, def.LossMetricGain)
 	assert.Equal(t, uint32(500), DefaultRouterTunables().RouteSwitchMinImprovement)
 	assert.Equal(t, uint32(200), DefaultRouterTunables().HopCost)
 	var cfg2 LocalCfg
@@ -282,4 +285,11 @@ func TestTunablesOverridesHappyPath(t *testing.T) {
 	node2 := LocalCfg{Id: "node", Port: 1, Key: NyPrivateKey{1}}
 	node2.Tunables = cfg2.Tunables
 	assert.NoError(t, NodeConfigValidator(nil, &node2))
+}
+
+func TestTunablesDefaultsLossMetric(t *testing.T) {
+	def := DefaultRouterTunables()
+	assert.Equal(t, 10.0, def.LossMetricGain)
+	assert.Equal(t, 10.0, def.LossMetricCap)
+	assert.Equal(t, 1.1, def.LinkSwitchDeadband, "the deadband default is unchanged")
 }
