@@ -1,7 +1,7 @@
 ARG VERSION=dev
 ARG COMMIT=none
 
-FROM golang:1.26.3 AS builder
+FROM golang:1.27.4 AS builder
 ARG VERSION
 ARG COMMIT
 WORKDIR /src
