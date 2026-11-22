@@ -63,13 +63,16 @@ func TestHealthcheckPing(t *testing.T) {
 			},
 		},
 	}
-	// 2 would be fallback
+	// 2 would be fallback. The fallback metric must dwarf the healthy one
+	// even after quantised link cost (RTT bucket + HopCost 200): with 1000,
+	// node2's own route beat node1's ~710 total by only ~290 µs and
+	// RouteSwitchMinImprovement correctly refused the switch (CI, 2026-11-22).
 	central.Routers[1].Prefixes = []state.PrefixHealthWrapper{
 		{
 			&state.PingPrefixHealth{
 				Prefix: netip.MustParsePrefix("10.0.1.4/32"),
 				Addr:   netip.MustParseAddr("10.0.1.4"),
-				Metric: new(uint32(1000)),
+				Metric: new(state.DurationToMetric(10 * time.Second)),
 			},
 		},
 	}
