@@ -224,11 +224,21 @@ func (u *NylonEndpoint) IsRemote() bool {
 	return u.remoteInit
 }
 
+// metricQuantum is the bucket size, in microseconds, that DurationToMetric
+// rounds RTT-derived metrics to: sub-bucket ping wobble collapses to equal
+// metrics and can never reorder paths, and a full bucket (250 µs) is half the
+// 500 µs RouteSwitchMinImprovement floor, so drift must cross two buckets
+// before a switch is even considered. 250 µs: the smallest measured same-link
+// drift band on a production mesh is ~360 µs over 6 minutes (1811→2173 µs),
+// while per-probe jitter sits well inside one bucket.
+const metricQuantum = int64(250)
+
 func DurationToMetric(d time.Duration) uint32 {
 	if d == time.Duration(math.MaxInt64) {
 		return INF
 	}
-	return uint32(min(d.Microseconds(), int64(INF)-1))
+	us := (d.Microseconds() + metricQuantum/2) / metricQuantum * metricQuantum
+	return uint32(min(us, int64(INF)-1))
 }
 
 func MetricToDuration(m uint32) time.Duration {

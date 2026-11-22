@@ -353,3 +353,28 @@ func TestPingRenewalKeepsLossDemotion(t *testing.T) {
 	dep.Renew()
 	assert.Equal(t, INF, dep.Metric())
 }
+
+func TestDurationToMetric_Quantisation(t *testing.T) {
+	// Round-half-up to 250 µs buckets. The measured drift endpoints 1811 and
+	// 2173 land in DISTINCT buckets: quantisation alone cannot suppress the
+	// measured drift — that is RouteSwitchMinImprovement's job; the bucket
+	// only erases sub-250 µs wobble.
+	for d, want := range map[time.Duration]uint32{
+		0:                            0,
+		124 * time.Microsecond:       0,
+		125 * time.Microsecond:       250,
+		249 * time.Microsecond:       250,
+		250 * time.Microsecond:       250,
+		374 * time.Microsecond:       250,
+		375 * time.Microsecond:       500,
+		1598 * time.Microsecond:      1500,
+		1811 * time.Microsecond:      1750,
+		2101 * time.Microsecond:      2000,
+		2173 * time.Microsecond:      2250,
+		time.Second:                  1_000_000,
+		time.Duration(math.MaxInt64): INF,
+		5000 * time.Second:           INF - 1,
+	} {
+		assert.Equal(t, want, DurationToMetric(d), "DurationToMetric(%s)", d)
+	}
+}
