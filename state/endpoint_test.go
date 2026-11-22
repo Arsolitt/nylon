@@ -354,6 +354,29 @@ func TestPingRenewalKeepsLossDemotion(t *testing.T) {
 	assert.Equal(t, INF, dep.Metric())
 }
 
+func TestProbeLossEstimate(t *testing.T) {
+	alpha := float64(time.Second) / float64(2*time.Minute)
+	dep := newProbeTestEndpoint(5)
+	for range 15 {
+		dep.UpdatePing(10 * time.Millisecond)
+		dep.RecordProbe(true)
+	}
+	assert.Zero(t, dep.probeLoss, "successful probes keep the estimate at zero")
+	for lost := 1; lost <= 6; lost++ {
+		dep.RecordProbe(false)
+		assert.InDelta(t, 1-math.Pow(1-alpha, float64(lost)), dep.probeLoss, 1e-12,
+			"%d consecutive timed-out probes", lost)
+		assert.InDelta(t, math.Pow(1-ewmaAlpha, float64(lost)), dep.ProbeSuccess(), 1e-12,
+			"the demotion EWMA keeps its own time constant")
+	}
+	dep.Lock()
+	dep.lastHeardBack = time.Now().Add(-2 * dep.t.LinkDeadThreshold)
+	dep.Unlock()
+	dep.Renew()
+	assert.Zero(t, dep.probeLoss, "a revival after silence starts the estimate over")
+	assert.Equal(t, uint32(0), dep.probeSamples)
+}
+
 func TestDurationToMetric_Quantisation(t *testing.T) {
 	// Round-half-up to 250 µs buckets. The measured drift endpoints 1811 and
 	// 2173 land in DISTINCT buckets: quantisation alone cannot suppress the

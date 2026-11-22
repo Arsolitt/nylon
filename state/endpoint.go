@@ -13,6 +13,11 @@ import (
 
 const ewmaAlpha = 0.0836
 
+// lossMetricWindow is the time constant of the probe-loss estimate behind the
+// metric penalty. The demotion EWMA above reacts within a dozen probes, so one
+// timed-out probe reads as 8.4% loss there for longer than RouteSwitchHold.
+const lossMetricWindow = 2 * time.Minute
+
 type Endpoint interface {
 	UpdatePing(ping time.Duration)
 	Metric() uint32
@@ -29,6 +34,8 @@ type NylonEndpoint struct {
 	dirty         bool
 	prevMedian    time.Duration
 	lastHeardBack time.Time
+	probeLoss     float64
+	lossAlpha     float64
 	probeSuccess  float64
 	probeSamples  uint32
 	probeTimeouts uint64
@@ -95,6 +102,7 @@ func (u *NylonEndpoint) Renew() {
 		u.expRTT = math.Inf(1)
 		u.dirty = true
 		u.probeSuccess = 1
+		u.probeLoss = 0
 		u.probeSamples = 0
 	}
 	u.lastHeardBack = time.Now()
@@ -109,8 +117,10 @@ func (u *NylonEndpoint) RecordProbe(success bool) {
 	u.probeSamples++
 	if success {
 		u.probeSuccess = ewmaAlpha + (1-ewmaAlpha)*u.probeSuccess
+		u.probeLoss *= 1 - u.lossAlpha
 	} else {
 		u.probeSuccess = (1 - ewmaAlpha) * u.probeSuccess
+		u.probeLoss = u.lossAlpha + (1-u.lossAlpha)*u.probeLoss
 		u.probeTimeouts++
 	}
 }
@@ -128,6 +138,7 @@ func NewEndpoint(address string, remoteInit bool, wgEndpoint conn.Endpoint, t *R
 		history:      make([]time.Duration, 0),
 		expRTT:       math.Inf(1),
 		probeSuccess: 1,
+		lossAlpha:    min(1, float64(t.ProbeDelay)/float64(lossMetricWindow)),
 	}
 }
 
@@ -195,7 +206,7 @@ func (u *NylonEndpoint) UpdatePing(ping time.Duration) {
 func (u *NylonEndpoint) Metric() uint32 {
 	u.RLock()
 	lossDead := u.lossDeadUnlocked()
-	samples, success := u.probeSamples, u.probeSuccess
+	samples, loss := u.probeSamples, u.probeLoss
 	u.RUnlock()
 	if !u.IsActive() || lossDead {
 		return INF
@@ -204,7 +215,7 @@ func (u *NylonEndpoint) Metric() uint32 {
 	if samples == 0 || u.t.LossPenaltyGain <= 0 {
 		return base
 	}
-	factor := min(1+u.t.LossPenaltyGain*(1-success), u.t.LinkSwitchDeadband)
+	factor := min(1+u.t.LossPenaltyGain*loss, u.t.LinkSwitchDeadband)
 	return uint32(min(float64(base)*factor, float64(INF)-1))
 }
 
