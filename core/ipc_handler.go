@@ -299,7 +299,8 @@ func buildRouteTables(n *Nylon) *protocol.RouteTables {
 	tables := &protocol.RouteTables{}
 	forwarding := n.router.Tables.Load()
 	for prefix, route := range n.RouterState.Routes {
-		tables.Selected = append(tables.Selected, selRouteProto(route, n.RouterState.RouteSwitchCounts[prefix]))
+		stats := n.RouterState.RouteSwitchStats[prefix]
+		tables.Selected = append(tables.Selected, selRouteProto(route, n.RouterState.RouteSwitchCounts[prefix], stats))
 	}
 	slices.SortFunc(tables.Selected, func(a, b *protocol.SelRoute) int {
 		return comparePubRoute(a.PubRoute, b.PubRoute)
@@ -408,7 +409,7 @@ func neighRouteProto(route state.NeighRoute) *protocol.NeighRoute {
 	}
 }
 
-func selRouteProto(route state.SelRoute, switches uint64) *protocol.SelRoute {
+func selRouteProto(route state.SelRoute, switches uint64, stats state.RouteSwitchStats) *protocol.SelRoute {
 	retractedBy := make([]string, 0, len(route.RetractedBy))
 	for _, id := range route.RetractedBy {
 		retractedBy = append(retractedBy, string(id))
@@ -420,6 +421,25 @@ func selRouteProto(route state.SelRoute, switches uint64) *protocol.SelRoute {
 		ExpireAtUnix: route.ExpireAt.Unix(),
 		RetractedBy:  retractedBy,
 		Switches:     switches,
+		SwitchStats:  switchStatsProto(stats),
+	}
+}
+
+// switchStatsProto returns nil for a prefix without any recorded decision, so
+// an untouched route adds no empty message to the status output.
+func switchStatsProto(stats state.RouteSwitchStats) *protocol.RouteSwitchStats {
+	if stats.DeltaCount == 0 && len(stats.Reasons) == 0 {
+		return nil
+	}
+	reasons := make(map[string]uint64, len(stats.Reasons))
+	for reason, count := range stats.Reasons {
+		reasons[string(reason)] = count
+	}
+	return &protocol.RouteSwitchStats{
+		DeltaBins:  stats.DeltaBins[:],
+		DeltaSum:   stats.DeltaSum,
+		DeltaCount: stats.DeltaCount,
+		Reasons:    reasons,
 	}
 }
 

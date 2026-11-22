@@ -89,6 +89,12 @@ All metric names start with `nylon_`.
 | `nylon_endpoint_rtt_seconds` | Gauge | `peer`, `endpoint` | Filtered endpoint round-trip time in seconds. |
 | `nylon_route_metric` | Gauge | `prefix`, `router`, `next_hop` | Metric of a selected Babel route. |
 | `nylon_route_switch_total` | Counter | `prefix` | Committed next-hop changes for a selected Babel route. |
+| `nylon_route_switch_delta_bucket` | Counter | `prefix`, `le` | Committed route switches by metric delta (old-new, microseconds), cumulative buckets. Switches from an infinite (lost) old metric are excluded. |
+| `nylon_route_switch_delta_sum` | Counter | `prefix` | Sum of metric deltas (old-new, microseconds) over committed route switches with finite old and new metrics. |
+| `nylon_route_switch_delta_count` | Counter | `prefix` | Committed route switches with finite old and new metrics. |
+| `nylon_route_switch_reasons_total` | Counter | `prefix`, `reason` | Route switch decisions by reason: better_metric, reinsert_after_loss, first_route, seqno_change. |
+
+The route-switch series explain every increment of `nylon_route_switch_total`. `nylon_route_switch_delta_bucket` is a cumulative histogram of the signed metric delta `old - new` in microseconds, positive when the new path is cheaper, with `le` bounds of `-5000`, `-2000`, `-1000`, `-500`, `-250`, `-100`, `-50`, `0`, `50`, `100`, `250`, `500`, `1000`, `2000`, `5000` and `+Inf`; `nylon_route_switch_delta_sum` and `nylon_route_switch_delta_count` carry its sum and count. A switch away from an infinite (lost) old metric has no delta: it counts in `nylon_route_switch_total` and `nylon_route_switch_reasons_total` but not in the delta series. The same decisions are logged as `route_switched` records at `info` level: once per committed next-hop change, and once when a neighbour route is first selected for a prefix, with reason `first_route`. In those records `hops_old` and `hops_new` are `1` when the route's origin is a direct neighbour and `0` for a transit path — the protocol carries no hop depth, so `0` means transit of unknown depth.
 
 For example, alert when a node cannot be scraped or when a peer has not completed a handshake in the last five minutes:
 

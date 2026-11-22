@@ -453,6 +453,9 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 	if s.RouteSwitchCounts == nil {
 		s.RouteSwitchCounts = make(map[netip.Prefix]uint64)
 	}
+	if s.RouteSwitchStats == nil {
+		s.RouteSwitchStats = make(map[netip.Prefix]state.RouteSwitchStats)
+	}
 
 	// 3.5.4.  Hold Time
 	//
@@ -496,6 +499,11 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 			newTable[prefix] = route
 		}
 	}
+
+	// graceExpired lists the prefixes whose lost incumbent was not re-seeded
+	// because its loss grace has elapsed. A dead link or a disabled hold fails
+	// over at once instead and is not listed.
+	var graceExpired map[netip.Prefix]bool
 
 	// Re-seed the committed route as the incumbent: the switch decision below
 	// must compare candidates against what is actually selected, not against
@@ -545,6 +553,10 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 			s.RouteLostAt[prefix] = now
 		}
 		if now.Sub(lostAt) >= s.RouteSwitchHold {
+			if graceExpired == nil {
+				graceExpired = make(map[netip.Prefix]bool)
+			}
+			graceExpired[prefix] = true
 			continue // grace expired: fail over now (competitor commits via !exists)
 		}
 		newTable[prefix] = route // seed last committed entry verbatim: stale finite metric, same Nh
@@ -669,6 +681,11 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 		}
 	}
 
+	// gatePassed lists the prefixes whose challenger displaced a committed
+	// incumbent through the stickiness gate. The bypass below, for a prefix
+	// without a committed incumbent, is not gated and is not listed.
+	var gatePassed map[netip.Prefix]bool
+
 	// Resolve the collected challengers: a metric-based switch requires a
 	// deadband pass plus an uninterrupted superiority streak spanning
 	// RouteSwitchHold plus an expired commit-age hold. A prefix without a
@@ -688,6 +705,10 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 		streakAged := s.RouteSwitchHold <= 0 ||
 			(tok && tracked.Nh == best.Nh && now.Sub(tracked.Since) >= s.RouteSwitchHold)
 		if streakAged && !routeSwitchHeld(s, prefix, cur, now) {
+			if gatePassed == nil {
+				gatePassed = make(map[netip.Prefix]bool)
+			}
+			gatePassed[prefix] = true
 			newTable[prefix] = best
 			delete(s.RouteChallenger, prefix)
 		} else if !tok || tracked.Nh != best.Nh {
@@ -773,8 +794,14 @@ func ComputeRoutes(s *state.RouterState, r Router) {
 		}
 		delete(s.RouteLostAt, prefix)
 		s.RouteSelectedAt[prefix] = now
-		if prev, ok := s.Routes[prefix]; ok && prev.Nh != route.Nh {
+		prev, hadPrev := s.Routes[prefix]
+		switch {
+		case !hadPrev:
+			reportRouteSwitch(r, s, prefix, nil, route, false, state.SwitchReasonFirstRoute)
+		case prev.Nh != route.Nh:
 			s.RouteSwitchCounts[prefix]++
+			reason, held := classifyRouteSwitch(s, prev, graceExpired[prefix] || gatePassed[prefix])
+			reportRouteSwitch(r, s, prefix, &prev, route, held, reason)
 		}
 	}
 	for prefix := range s.RouteSelectedAt {
@@ -857,4 +884,77 @@ func IsStrictlyBetter(curRoute state.SelRoute, newRoute state.SelRoute) bool {
 
 func sameRoute(a state.SelRoute, b state.SelRoute) bool {
 	return a.Nh == b.Nh && a.Source == b.Source
+}
+
+// routeIncumbentLost reports whether the route committed for prev can no
+// longer be used: it was retracted to an infinite metric, its next hop is
+// gone or has no usable link, or it no longer advertises a finite metric for
+// the prefix.
+func routeIncumbentLost(s *state.RouterState, prev state.SelRoute) bool {
+	if prev.Metric == state.INF {
+		return true
+	}
+	neigh := s.GetNeighbour(prev.Nh)
+	if neigh == nil || neighLinkCost(s, neigh) == state.INF {
+		return true
+	}
+	adv, ok := neigh.Routes[prev.Prefix]
+	return !ok || adv.Metric == state.INF
+}
+
+// classifyRouteSwitch names why the committed next hop of prev's prefix
+// changed to another neighbour, and whether a stickiness gate admitted the
+// change. gated marks a prefix whose loss grace elapsed or whose challenger
+// cleared the sustained-gain and commit-age gate in this recompute. A lost
+// incumbent explains the change on its own, so it is checked first; the
+// grace only elapses for a lost incumbent, so a gated change that is not a
+// loss went through the gate. What remains is a finite incumbent displaced
+// without meeting the deadband: its route identity changed and it lost the
+// route through the immediate switch in ComputeRoutes.
+func classifyRouteSwitch(s *state.RouterState, prev state.SelRoute, gated bool) (state.SwitchReason, bool) {
+	switch {
+	case routeIncumbentLost(s, prev):
+		return state.SwitchReasonReinsertAfterLoss, gated
+	case gated:
+		return state.SwitchReasonBetterMetric, true
+	default:
+		return state.SwitchReasonSeqnoChange, false
+	}
+}
+
+// directOriginHops reports whether route reaches its origin through a direct
+// neighbour: 1 when the origin is the next hop, 0 for a transit path. The
+// protocol carries no hop depth, so 0 is a sentinel for a path of unknown
+// depth, not a hop count.
+func directOriginHops(route state.SelRoute) int {
+	if route.NodeId == route.Nh {
+		return 1
+	}
+	return 0
+}
+
+// reportRouteSwitch emits the decision record of one committed route
+// decision for prefix and accounts it in the switch statistics. prev is nil
+// when a neighbour route is selected for the prefix for the first time: the
+// record then has empty old fields and no delta.
+func reportRouteSwitch(r Router, s *state.RouterState, prefix netip.Prefix, prev *state.SelRoute, route state.SelRoute, held bool, reason state.SwitchReason) {
+	var (
+		old       state.SelRoute
+		hopsOld   int
+		oldMetric = state.INF
+		desc      = "selected first route"
+	)
+	if prev != nil {
+		old = *prev
+		oldMetric, hopsOld, desc = prev.Metric, directOriginHops(*prev), "switched next hop"
+	}
+	deltaAbs, deltaRatio := state.RouteMetricDelta(oldMetric, route.Metric)
+	r.RouterEvent(log.EventRouteSwitched, desc,
+		"prefix", prefix,
+		"old_nh", string(old.Nh), "old_metric", uint64(old.Metric),
+		"new_nh", string(route.Nh), "new_metric", uint64(route.Metric),
+		"delta_abs", deltaAbs, "delta_ratio", deltaRatio,
+		"hops_old", hopsOld, "hops_new", directOriginHops(route),
+		"held", held, "reason", string(reason))
+	s.RecordRouteSwitch(prefix, oldMetric, route.Metric, reason)
 }

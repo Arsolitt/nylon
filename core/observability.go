@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"github.com/encodeous/nylon/log"
 	"github.com/encodeous/nylon/perf"
 	"github.com/encodeous/nylon/protocol"
+	"github.com/encodeous/nylon/state"
 )
 
 const observabilityTimeout = time.Second
@@ -244,5 +248,36 @@ func writePrometheusMetrics(w io.Writer, status *protocol.StatusResponse) {
 			"counter",
 			map[string]string{"prefix": pub.GetSource().GetPrefix()},
 			float64(route.GetSwitches()))
+		writeRouteSwitchMetrics(metrics, pub.GetSource().GetPrefix(), route.GetSwitchStats())
+	}
+}
+
+const routeSwitchDeltaBucketHelp = "Committed route switches by metric delta (old-new, microseconds), cumulative buckets. Switches from an infinite (lost) old metric are excluded."
+
+// writeRouteSwitchMetrics renders the decisions recorded for a selected
+// route: the cumulative histogram, sum and count of metric deltas once any
+// finite delta exists, and the reason counts once any decision exists. The
+// series vanish with the prefix, like nylon_route_switch_total.
+func writeRouteSwitchMetrics(metrics *promtext.Writer, prefix string, stats *protocol.RouteSwitchStats) {
+	if stats.GetDeltaCount() > 0 {
+		var cumulative uint64
+		for i, edge := range state.RouteDeltaEdges {
+			cumulative += stats.GetDeltaBins()[i]
+			metrics.Metric("nylon_route_switch_delta_bucket", routeSwitchDeltaBucketHelp, "counter",
+				map[string]string{"prefix": prefix, "le": strconv.FormatInt(edge, 10)}, float64(cumulative))
+		}
+		cumulative += stats.GetDeltaBins()[len(state.RouteDeltaEdges)]
+		metrics.Metric("nylon_route_switch_delta_bucket", routeSwitchDeltaBucketHelp, "counter",
+			map[string]string{"prefix": prefix, "le": "+Inf"}, float64(cumulative))
+		metrics.Metric("nylon_route_switch_delta_sum",
+			"Sum of metric deltas (old-new, microseconds) over committed route switches with finite old and new metrics.",
+			"counter", map[string]string{"prefix": prefix}, float64(stats.GetDeltaSum()))
+		metrics.Metric("nylon_route_switch_delta_count", "Committed route switches with finite old and new metrics.",
+			"counter", map[string]string{"prefix": prefix}, float64(stats.GetDeltaCount()))
+	}
+	for _, reason := range slices.Sorted(maps.Keys(stats.GetReasons())) {
+		metrics.Metric("nylon_route_switch_reasons_total",
+			"Route switch decisions by reason: better_metric, reinsert_after_loss, first_route, seqno_change.",
+			"counter", map[string]string{"prefix": prefix, "reason": reason}, float64(stats.GetReasons()[reason]))
 	}
 }

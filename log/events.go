@@ -19,6 +19,7 @@ const (
 	EventRouteRetracted          = "route_retracted"
 	EventRouteExpired            = "route_expired"
 	EventMajorRouteChange        = "major_route_change"
+	EventRouteSwitched           = "route_switched"
 	EventInconsistentState       = "inconsistent_state"
 	EventNoEndpointToNeigh       = "no_endpoint_to_neighbour"
 	EventHandshakeStale          = "handshake_stale"

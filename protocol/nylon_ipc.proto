@@ -47,6 +47,18 @@ message SelRoute {
   int64 expire_at_unix = 3;
   repeated string retracted_by = 4;
   uint64 switches = 5;
+  RouteSwitchStats switch_stats = 6;
+}
+
+message RouteSwitchStats {
+  // 16 counts over the fixed signed µs edges documented in the observability docs
+  repeated uint64 delta_bins = 1;
+  // Σ(old−new) µs, finite-finite switches only
+  sint64 delta_sum = 2;
+  // finite-finite switches only
+  uint64 delta_count = 3;
+  // decisions per reason, incl. INF-old
+  map<string, uint64> reasons = 4;
 }
 
 message Advertisement {

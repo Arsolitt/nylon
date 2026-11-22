@@ -54,8 +54,12 @@ type RouterState struct {
 	RouteChallenger map[netip.Prefix]RouteChallenger
 	// RouteSwitchCounts counts committed next-hop changes per prefix.
 	RouteSwitchCounts map[netip.Prefix]uint64
-	Sources           map[Source]FD
-	Neighbours        []*Neighbour
+	// RouteSwitchStats records why each route decision for a prefix was
+	// committed and the metric deltas behind its switches. Maintained by
+	// ComputeRoutes; read by the IPC status snapshot on the same goroutine.
+	RouteSwitchStats map[netip.Prefix]RouteSwitchStats
+	Sources          map[Source]FD
+	Neighbours       []*Neighbour
 	// Advertised is a map tracking the prefix and the time it will be advertised until
 	Advertised map[netip.Prefix]Advertisement
 
@@ -74,6 +78,76 @@ type RouterState struct {
 type RouteChallenger struct {
 	Nh    NodeId
 	Since time.Time
+}
+
+// SwitchReason names why a route was committed for a prefix.
+type SwitchReason string
+
+const (
+	SwitchReasonBetterMetric      SwitchReason = "better_metric"
+	SwitchReasonReinsertAfterLoss SwitchReason = "reinsert_after_loss"
+	SwitchReasonFirstRoute        SwitchReason = "first_route"
+	SwitchReasonSeqnoChange       SwitchReason = "seqno_change"
+)
+
+// RouteDeltaEdges are the signed microsecond upper bounds of the route
+// switch delta buckets, old metric minus new metric. A delta belongs to the
+// first bucket whose edge it does not exceed; a delta above every edge
+// belongs to the overflow bucket that follows.
+var RouteDeltaEdges = [...]int64{-5000, -2000, -1000, -500, -250, -100, -50, 0, 50, 100, 250, 500, 1000, 2000, 5000}
+
+// RouteSwitchStats summarises the route decisions committed for one prefix.
+// Only a switch between two finite metrics has a delta; every decision counts
+// in Reasons.
+type RouteSwitchStats struct {
+	DeltaBins  [len(RouteDeltaEdges) + 1]uint64
+	DeltaSum   int64
+	DeltaCount uint64
+	Reasons    map[SwitchReason]uint64
+}
+
+// RouteMetricDelta compares the metrics on both sides of a route switch:
+// abs is old minus new, positive when the new route is cheaper, and ratio is
+// new over old, below 1 when it is cheaper. An infinite metric on either
+// side makes both zero, since a lost route has no measurable difference; an
+// old metric of zero makes the ratio zero, since it has none. Both results
+// are always finite: the JSON log sink cannot encode Inf or NaN.
+func RouteMetricDelta(oldMetric, newMetric uint32) (abs int64, ratio float64) {
+	if oldMetric == INF || newMetric == INF {
+		return 0, 0
+	}
+	abs = int64(oldMetric) - int64(newMetric)
+	if oldMetric != 0 {
+		ratio = float64(newMetric) / float64(oldMetric)
+	}
+	return abs, ratio
+}
+
+// RecordRouteSwitch accounts one committed route decision for prefix: its
+// reason always, and the delta between oldMetric and newMetric when both are
+// finite.
+func (s *RouterState) RecordRouteSwitch(prefix netip.Prefix, oldMetric, newMetric uint32, reason SwitchReason) {
+	stats := s.RouteSwitchStats[prefix]
+	if stats.Reasons == nil {
+		stats.Reasons = make(map[SwitchReason]uint64)
+	}
+	stats.Reasons[reason]++
+	if oldMetric != INF && newMetric != INF {
+		delta, _ := RouteMetricDelta(oldMetric, newMetric)
+		stats.DeltaSum += delta
+		stats.DeltaCount++
+		stats.DeltaBins[routeDeltaBin(delta)]++
+	}
+	s.RouteSwitchStats[prefix] = stats
+}
+
+func routeDeltaBin(delta int64) int {
+	for i, edge := range RouteDeltaEdges {
+		if delta <= edge {
+			return i
+		}
+	}
+	return len(RouteDeltaEdges)
 }
 
 func (s *RouterState) GetSeqno(prefix netip.Prefix) uint16 {

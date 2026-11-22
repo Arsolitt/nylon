@@ -503,6 +503,7 @@ type SelRoute struct {
 	ExpireAtUnix  int64                  `protobuf:"varint,3,opt,name=expire_at_unix,json=expireAtUnix,proto3" json:"expire_at_unix,omitempty"`
 	RetractedBy   []string               `protobuf:"bytes,4,rep,name=retracted_by,json=retractedBy,proto3" json:"retracted_by,omitempty"`
 	Switches      uint64                 `protobuf:"varint,5,opt,name=switches,proto3" json:"switches,omitempty"`
+	SwitchStats   *RouteSwitchStats      `protobuf:"bytes,6,opt,name=switch_stats,json=switchStats,proto3" json:"switch_stats,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -572,6 +573,85 @@ func (x *SelRoute) GetSwitches() uint64 {
 	return 0
 }
 
+func (x *SelRoute) GetSwitchStats() *RouteSwitchStats {
+	if x != nil {
+		return x.SwitchStats
+	}
+	return nil
+}
+
+type RouteSwitchStats struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 16 counts over the fixed signed µs edges documented in the observability docs
+	DeltaBins []uint64 `protobuf:"varint,1,rep,packed,name=delta_bins,json=deltaBins,proto3" json:"delta_bins,omitempty"`
+	// Σ(old−new) µs, finite-finite switches only
+	DeltaSum int64 `protobuf:"zigzag64,2,opt,name=delta_sum,json=deltaSum,proto3" json:"delta_sum,omitempty"`
+	// finite-finite switches only
+	DeltaCount uint64 `protobuf:"varint,3,opt,name=delta_count,json=deltaCount,proto3" json:"delta_count,omitempty"`
+	// decisions per reason, incl. INF-old
+	Reasons       map[string]uint64 `protobuf:"bytes,4,rep,name=reasons,proto3" json:"reasons,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RouteSwitchStats) Reset() {
+	*x = RouteSwitchStats{}
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RouteSwitchStats) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RouteSwitchStats) ProtoMessage() {}
+
+func (x *RouteSwitchStats) ProtoReflect() protoreflect.Message {
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RouteSwitchStats.ProtoReflect.Descriptor instead.
+func (*RouteSwitchStats) Descriptor() ([]byte, []int) {
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *RouteSwitchStats) GetDeltaBins() []uint64 {
+	if x != nil {
+		return x.DeltaBins
+	}
+	return nil
+}
+
+func (x *RouteSwitchStats) GetDeltaSum() int64 {
+	if x != nil {
+		return x.DeltaSum
+	}
+	return 0
+}
+
+func (x *RouteSwitchStats) GetDeltaCount() uint64 {
+	if x != nil {
+		return x.DeltaCount
+	}
+	return 0
+}
+
+func (x *RouteSwitchStats) GetReasons() map[string]uint64 {
+	if x != nil {
+		return x.Reasons
+	}
+	return nil
+}
+
 type Advertisement struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -585,7 +665,7 @@ type Advertisement struct {
 
 func (x *Advertisement) Reset() {
 	*x = Advertisement{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[9]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -597,7 +677,7 @@ func (x *Advertisement) String() string {
 func (*Advertisement) ProtoMessage() {}
 
 func (x *Advertisement) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[9]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -610,7 +690,7 @@ func (x *Advertisement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Advertisement.ProtoReflect.Descriptor instead.
 func (*Advertisement) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{9}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Advertisement) GetNodeId() string {
@@ -665,7 +745,7 @@ type EndpointInfo struct {
 
 func (x *EndpointInfo) Reset() {
 	*x = EndpointInfo{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[10]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -677,7 +757,7 @@ func (x *EndpointInfo) String() string {
 func (*EndpointInfo) ProtoMessage() {}
 
 func (x *EndpointInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[10]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -690,7 +770,7 @@ func (x *EndpointInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndpointInfo.ProtoReflect.Descriptor instead.
 func (*EndpointInfo) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{10}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *EndpointInfo) GetAddress() string {
@@ -769,7 +849,7 @@ type WireGuardPeerStats struct {
 
 func (x *WireGuardPeerStats) Reset() {
 	*x = WireGuardPeerStats{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[11]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -781,7 +861,7 @@ func (x *WireGuardPeerStats) String() string {
 func (*WireGuardPeerStats) ProtoMessage() {}
 
 func (x *WireGuardPeerStats) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[11]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -794,7 +874,7 @@ func (x *WireGuardPeerStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WireGuardPeerStats.ProtoReflect.Descriptor instead.
 func (*WireGuardPeerStats) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{11}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *WireGuardPeerStats) GetLatestHandshakeUnix() int64 {
@@ -848,7 +928,7 @@ type NeighbourInfo struct {
 
 func (x *NeighbourInfo) Reset() {
 	*x = NeighbourInfo{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[12]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -860,7 +940,7 @@ func (x *NeighbourInfo) String() string {
 func (*NeighbourInfo) ProtoMessage() {}
 
 func (x *NeighbourInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[12]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -873,7 +953,7 @@ func (x *NeighbourInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NeighbourInfo.ProtoReflect.Descriptor instead.
 func (*NeighbourInfo) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{12}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *NeighbourInfo) GetPeerId() string {
@@ -943,7 +1023,7 @@ type RouteTableEntry struct {
 
 func (x *RouteTableEntry) Reset() {
 	*x = RouteTableEntry{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[13]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -955,7 +1035,7 @@ func (x *RouteTableEntry) String() string {
 func (*RouteTableEntry) ProtoMessage() {}
 
 func (x *RouteTableEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[13]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -968,7 +1048,7 @@ func (x *RouteTableEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RouteTableEntry.ProtoReflect.Descriptor instead.
 func (*RouteTableEntry) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{13}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RouteTableEntry) GetPrefix() string {
@@ -1003,7 +1083,7 @@ type RouteTables struct {
 
 func (x *RouteTables) Reset() {
 	*x = RouteTables{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[14]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1015,7 +1095,7 @@ func (x *RouteTables) String() string {
 func (*RouteTables) ProtoMessage() {}
 
 func (x *RouteTables) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[14]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1028,7 +1108,7 @@ func (x *RouteTables) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RouteTables.ProtoReflect.Descriptor instead.
 func (*RouteTables) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{14}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *RouteTables) GetSelected() []*SelRoute {
@@ -1062,7 +1142,7 @@ type SeqnoEntry struct {
 
 func (x *SeqnoEntry) Reset() {
 	*x = SeqnoEntry{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[15]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1074,7 +1154,7 @@ func (x *SeqnoEntry) String() string {
 func (*SeqnoEntry) ProtoMessage() {}
 
 func (x *SeqnoEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[15]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1087,7 +1167,7 @@ func (x *SeqnoEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SeqnoEntry.ProtoReflect.Descriptor instead.
 func (*SeqnoEntry) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{15}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SeqnoEntry) GetPrefix() string {
@@ -1114,7 +1194,7 @@ type FeasibilityDistance struct {
 
 func (x *FeasibilityDistance) Reset() {
 	*x = FeasibilityDistance{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[16]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1126,7 +1206,7 @@ func (x *FeasibilityDistance) String() string {
 func (*FeasibilityDistance) ProtoMessage() {}
 
 func (x *FeasibilityDistance) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[16]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1139,7 +1219,7 @@ func (x *FeasibilityDistance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeasibilityDistance.ProtoReflect.Descriptor instead.
 func (*FeasibilityDistance) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{16}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *FeasibilityDistance) GetSource() *Source {
@@ -1170,7 +1250,7 @@ type NodeStats struct {
 
 func (x *NodeStats) Reset() {
 	*x = NodeStats{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[17]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1182,7 +1262,7 @@ func (x *NodeStats) String() string {
 func (*NodeStats) ProtoMessage() {}
 
 func (x *NodeStats) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[17]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1195,7 +1275,7 @@ func (x *NodeStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeStats.ProtoReflect.Descriptor instead.
 func (*NodeStats) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{17}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *NodeStats) GetNeighbourCount() int32 {
@@ -1257,7 +1337,7 @@ type NodeStatus struct {
 
 func (x *NodeStatus) Reset() {
 	*x = NodeStatus{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[18]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1269,7 +1349,7 @@ func (x *NodeStatus) String() string {
 func (*NodeStatus) ProtoMessage() {}
 
 func (x *NodeStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[18]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1282,7 +1362,7 @@ func (x *NodeStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeStatus.ProtoReflect.Descriptor instead.
 func (*NodeStatus) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{18}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *NodeStatus) GetNodeId() string {
@@ -1360,7 +1440,7 @@ type StatusResponse struct {
 
 func (x *StatusResponse) Reset() {
 	*x = StatusResponse{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[19]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1372,7 +1452,7 @@ func (x *StatusResponse) String() string {
 func (*StatusResponse) ProtoMessage() {}
 
 func (x *StatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[19]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1385,7 +1465,7 @@ func (x *StatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusResponse.ProtoReflect.Descriptor instead.
 func (*StatusResponse) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{19}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *StatusResponse) GetNode() *NodeStatus {
@@ -1428,7 +1508,7 @@ type EndpointProbeResult struct {
 
 func (x *EndpointProbeResult) Reset() {
 	*x = EndpointProbeResult{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[20]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1440,7 +1520,7 @@ func (x *EndpointProbeResult) String() string {
 func (*EndpointProbeResult) ProtoMessage() {}
 
 func (x *EndpointProbeResult) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[20]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1453,7 +1533,7 @@ func (x *EndpointProbeResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndpointProbeResult.ProtoReflect.Descriptor instead.
 func (*EndpointProbeResult) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{20}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *EndpointProbeResult) GetAddress() string {
@@ -1493,7 +1573,7 @@ type ProbeResponse struct {
 
 func (x *ProbeResponse) Reset() {
 	*x = ProbeResponse{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[21]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1505,7 +1585,7 @@ func (x *ProbeResponse) String() string {
 func (*ProbeResponse) ProtoMessage() {}
 
 func (x *ProbeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[21]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1518,7 +1598,7 @@ func (x *ProbeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeResponse.ProtoReflect.Descriptor instead.
 func (*ProbeResponse) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{21}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ProbeResponse) GetResults() []*EndpointProbeResult {
@@ -1538,7 +1618,7 @@ type ReloadResponse struct {
 
 func (x *ReloadResponse) Reset() {
 	*x = ReloadResponse{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[22]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1550,7 +1630,7 @@ func (x *ReloadResponse) String() string {
 func (*ReloadResponse) ProtoMessage() {}
 
 func (x *ReloadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[22]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1563,7 +1643,7 @@ func (x *ReloadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReloadResponse.ProtoReflect.Descriptor instead.
 func (*ReloadResponse) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{22}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ReloadResponse) GetResult() ReloadResult {
@@ -1589,7 +1669,7 @@ type TraceEvent struct {
 
 func (x *TraceEvent) Reset() {
 	*x = TraceEvent{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[23]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1601,7 +1681,7 @@ func (x *TraceEvent) String() string {
 func (*TraceEvent) ProtoMessage() {}
 
 func (x *TraceEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[23]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1614,7 +1694,7 @@ func (x *TraceEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceEvent.ProtoReflect.Descriptor instead.
 func (*TraceEvent) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{23}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *TraceEvent) GetLine() string {
@@ -1639,7 +1719,7 @@ type IpcRequest struct {
 
 func (x *IpcRequest) Reset() {
 	*x = IpcRequest{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[24]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1651,7 +1731,7 @@ func (x *IpcRequest) String() string {
 func (*IpcRequest) ProtoMessage() {}
 
 func (x *IpcRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[24]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1664,7 +1744,7 @@ func (x *IpcRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IpcRequest.ProtoReflect.Descriptor instead.
 func (*IpcRequest) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{24}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *IpcRequest) GetRequest() isIpcRequest_Request {
@@ -1755,7 +1835,7 @@ type IpcResponse struct {
 
 func (x *IpcResponse) Reset() {
 	*x = IpcResponse{}
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[25]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1767,7 +1847,7 @@ func (x *IpcResponse) String() string {
 func (*IpcResponse) ProtoMessage() {}
 
 func (x *IpcResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protocol_nylon_ipc_proto_msgTypes[25]
+	mi := &file_protocol_nylon_ipc_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1780,7 +1860,7 @@ func (x *IpcResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IpcResponse.ProtoReflect.Descriptor instead.
 func (*IpcResponse) Descriptor() ([]byte, []int) {
-	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{25}
+	return file_protocol_nylon_ipc_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *IpcResponse) GetOk() bool {
@@ -1892,13 +1972,24 @@ const file_protocol_nylon_ipc_proto_rawDesc = "" +
 	"\n" +
 	"NeighRoute\x12,\n" +
 	"\tpub_route\x18\x01 \x01(\v2\x0f.proto.PubRouteR\bpubRoute\x12$\n" +
-	"\x0eexpire_at_unix\x18\x02 \x01(\x03R\fexpireAtUnix\"\xad\x01\n" +
+	"\x0eexpire_at_unix\x18\x02 \x01(\x03R\fexpireAtUnix\"\xe9\x01\n" +
 	"\bSelRoute\x12,\n" +
 	"\tpub_route\x18\x01 \x01(\v2\x0f.proto.PubRouteR\bpubRoute\x12\x0e\n" +
 	"\x02nh\x18\x02 \x01(\tR\x02nh\x12$\n" +
 	"\x0eexpire_at_unix\x18\x03 \x01(\x03R\fexpireAtUnix\x12!\n" +
 	"\fretracted_by\x18\x04 \x03(\tR\vretractedBy\x12\x1a\n" +
-	"\bswitches\x18\x05 \x01(\x04R\bswitches\"\x9c\x01\n" +
+	"\bswitches\x18\x05 \x01(\x04R\bswitches\x12:\n" +
+	"\fswitch_stats\x18\x06 \x01(\v2\x17.proto.RouteSwitchStatsR\vswitchStats\"\xeb\x01\n" +
+	"\x10RouteSwitchStats\x12\x1d\n" +
+	"\n" +
+	"delta_bins\x18\x01 \x03(\x04R\tdeltaBins\x12\x1b\n" +
+	"\tdelta_sum\x18\x02 \x01(\x12R\bdeltaSum\x12\x1f\n" +
+	"\vdelta_count\x18\x03 \x01(\x04R\n" +
+	"deltaCount\x12>\n" +
+	"\areasons\x18\x04 \x03(\v2$.proto.RouteSwitchStats.ReasonsEntryR\areasons\x1a:\n" +
+	"\fReasonsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\x9c\x01\n" +
 	"\rAdvertisement\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x16\n" +
 	"\x06prefix\x18\x02 \x01(\tR\x06prefix\x12\x16\n" +
@@ -2038,7 +2129,7 @@ func file_protocol_nylon_ipc_proto_rawDescGZIP() []byte {
 }
 
 var file_protocol_nylon_ipc_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_protocol_nylon_ipc_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_protocol_nylon_ipc_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_protocol_nylon_ipc_proto_goTypes = []any{
 	(ReloadResult)(0),           // 0: proto.ReloadResult
 	(EndpointProbeStatus)(0),    // 1: proto.EndpointProbeStatus
@@ -2051,61 +2142,65 @@ var file_protocol_nylon_ipc_proto_goTypes = []any{
 	(*PubRoute)(nil),            // 8: proto.PubRoute
 	(*NeighRoute)(nil),          // 9: proto.NeighRoute
 	(*SelRoute)(nil),            // 10: proto.SelRoute
-	(*Advertisement)(nil),       // 11: proto.Advertisement
-	(*EndpointInfo)(nil),        // 12: proto.EndpointInfo
-	(*WireGuardPeerStats)(nil),  // 13: proto.WireGuardPeerStats
-	(*NeighbourInfo)(nil),       // 14: proto.NeighbourInfo
-	(*RouteTableEntry)(nil),     // 15: proto.RouteTableEntry
-	(*RouteTables)(nil),         // 16: proto.RouteTables
-	(*SeqnoEntry)(nil),          // 17: proto.SeqnoEntry
-	(*FeasibilityDistance)(nil), // 18: proto.FeasibilityDistance
-	(*NodeStats)(nil),           // 19: proto.NodeStats
-	(*NodeStatus)(nil),          // 20: proto.NodeStatus
-	(*StatusResponse)(nil),      // 21: proto.StatusResponse
-	(*EndpointProbeResult)(nil), // 22: proto.EndpointProbeResult
-	(*ProbeResponse)(nil),       // 23: proto.ProbeResponse
-	(*ReloadResponse)(nil),      // 24: proto.ReloadResponse
-	(*TraceEvent)(nil),          // 25: proto.TraceEvent
-	(*IpcRequest)(nil),          // 26: proto.IpcRequest
-	(*IpcResponse)(nil),         // 27: proto.IpcResponse
+	(*RouteSwitchStats)(nil),    // 11: proto.RouteSwitchStats
+	(*Advertisement)(nil),       // 12: proto.Advertisement
+	(*EndpointInfo)(nil),        // 13: proto.EndpointInfo
+	(*WireGuardPeerStats)(nil),  // 14: proto.WireGuardPeerStats
+	(*NeighbourInfo)(nil),       // 15: proto.NeighbourInfo
+	(*RouteTableEntry)(nil),     // 16: proto.RouteTableEntry
+	(*RouteTables)(nil),         // 17: proto.RouteTables
+	(*SeqnoEntry)(nil),          // 18: proto.SeqnoEntry
+	(*FeasibilityDistance)(nil), // 19: proto.FeasibilityDistance
+	(*NodeStats)(nil),           // 20: proto.NodeStats
+	(*NodeStatus)(nil),          // 21: proto.NodeStatus
+	(*StatusResponse)(nil),      // 22: proto.StatusResponse
+	(*EndpointProbeResult)(nil), // 23: proto.EndpointProbeResult
+	(*ProbeResponse)(nil),       // 24: proto.ProbeResponse
+	(*ReloadResponse)(nil),      // 25: proto.ReloadResponse
+	(*TraceEvent)(nil),          // 26: proto.TraceEvent
+	(*IpcRequest)(nil),          // 27: proto.IpcRequest
+	(*IpcResponse)(nil),         // 28: proto.IpcResponse
+	nil,                         // 29: proto.RouteSwitchStats.ReasonsEntry
 }
 var file_protocol_nylon_ipc_proto_depIdxs = []int32{
 	6,  // 0: proto.PubRoute.source:type_name -> proto.Source
 	7,  // 1: proto.PubRoute.fd:type_name -> proto.FD
 	8,  // 2: proto.NeighRoute.pub_route:type_name -> proto.PubRoute
 	8,  // 3: proto.SelRoute.pub_route:type_name -> proto.PubRoute
-	12, // 4: proto.NeighbourInfo.endpoints:type_name -> proto.EndpointInfo
-	9,  // 5: proto.NeighbourInfo.routes:type_name -> proto.NeighRoute
-	11, // 6: proto.NeighbourInfo.advertised:type_name -> proto.Advertisement
-	13, // 7: proto.NeighbourInfo.wireguard:type_name -> proto.WireGuardPeerStats
-	10, // 8: proto.RouteTables.selected:type_name -> proto.SelRoute
-	15, // 9: proto.RouteTables.forward:type_name -> proto.RouteTableEntry
-	15, // 10: proto.RouteTables.exit:type_name -> proto.RouteTableEntry
-	6,  // 11: proto.FeasibilityDistance.source:type_name -> proto.Source
-	7,  // 12: proto.FeasibilityDistance.fd:type_name -> proto.FD
-	11, // 13: proto.NodeStatus.advertised:type_name -> proto.Advertisement
-	17, // 14: proto.NodeStatus.seqnos:type_name -> proto.SeqnoEntry
-	19, // 15: proto.NodeStatus.stats:type_name -> proto.NodeStats
-	20, // 16: proto.StatusResponse.node:type_name -> proto.NodeStatus
-	14, // 17: proto.StatusResponse.neighbours:type_name -> proto.NeighbourInfo
-	16, // 18: proto.StatusResponse.routes:type_name -> proto.RouteTables
-	18, // 19: proto.StatusResponse.feasibility_distances:type_name -> proto.FeasibilityDistance
-	1,  // 20: proto.EndpointProbeResult.status:type_name -> proto.EndpointProbeStatus
-	22, // 21: proto.ProbeResponse.results:type_name -> proto.EndpointProbeResult
-	0,  // 22: proto.ReloadResponse.result:type_name -> proto.ReloadResult
-	2,  // 23: proto.IpcRequest.status:type_name -> proto.StatusRequest
-	3,  // 24: proto.IpcRequest.probe:type_name -> proto.ProbeRequest
-	4,  // 25: proto.IpcRequest.reload:type_name -> proto.ReloadRequest
-	5,  // 26: proto.IpcRequest.trace:type_name -> proto.TraceRequest
-	21, // 27: proto.IpcResponse.status:type_name -> proto.StatusResponse
-	23, // 28: proto.IpcResponse.probe:type_name -> proto.ProbeResponse
-	24, // 29: proto.IpcResponse.reload:type_name -> proto.ReloadResponse
-	25, // 30: proto.IpcResponse.trace:type_name -> proto.TraceEvent
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	11, // 4: proto.SelRoute.switch_stats:type_name -> proto.RouteSwitchStats
+	29, // 5: proto.RouteSwitchStats.reasons:type_name -> proto.RouteSwitchStats.ReasonsEntry
+	13, // 6: proto.NeighbourInfo.endpoints:type_name -> proto.EndpointInfo
+	9,  // 7: proto.NeighbourInfo.routes:type_name -> proto.NeighRoute
+	12, // 8: proto.NeighbourInfo.advertised:type_name -> proto.Advertisement
+	14, // 9: proto.NeighbourInfo.wireguard:type_name -> proto.WireGuardPeerStats
+	10, // 10: proto.RouteTables.selected:type_name -> proto.SelRoute
+	16, // 11: proto.RouteTables.forward:type_name -> proto.RouteTableEntry
+	16, // 12: proto.RouteTables.exit:type_name -> proto.RouteTableEntry
+	6,  // 13: proto.FeasibilityDistance.source:type_name -> proto.Source
+	7,  // 14: proto.FeasibilityDistance.fd:type_name -> proto.FD
+	12, // 15: proto.NodeStatus.advertised:type_name -> proto.Advertisement
+	18, // 16: proto.NodeStatus.seqnos:type_name -> proto.SeqnoEntry
+	20, // 17: proto.NodeStatus.stats:type_name -> proto.NodeStats
+	21, // 18: proto.StatusResponse.node:type_name -> proto.NodeStatus
+	15, // 19: proto.StatusResponse.neighbours:type_name -> proto.NeighbourInfo
+	17, // 20: proto.StatusResponse.routes:type_name -> proto.RouteTables
+	19, // 21: proto.StatusResponse.feasibility_distances:type_name -> proto.FeasibilityDistance
+	1,  // 22: proto.EndpointProbeResult.status:type_name -> proto.EndpointProbeStatus
+	23, // 23: proto.ProbeResponse.results:type_name -> proto.EndpointProbeResult
+	0,  // 24: proto.ReloadResponse.result:type_name -> proto.ReloadResult
+	2,  // 25: proto.IpcRequest.status:type_name -> proto.StatusRequest
+	3,  // 26: proto.IpcRequest.probe:type_name -> proto.ProbeRequest
+	4,  // 27: proto.IpcRequest.reload:type_name -> proto.ReloadRequest
+	5,  // 28: proto.IpcRequest.trace:type_name -> proto.TraceRequest
+	22, // 29: proto.IpcResponse.status:type_name -> proto.StatusResponse
+	24, // 30: proto.IpcResponse.probe:type_name -> proto.ProbeResponse
+	25, // 31: proto.IpcResponse.reload:type_name -> proto.ReloadResponse
+	26, // 32: proto.IpcResponse.trace:type_name -> proto.TraceEvent
+	33, // [33:33] is the sub-list for method output_type
+	33, // [33:33] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_protocol_nylon_ipc_proto_init() }
@@ -2113,16 +2208,16 @@ func file_protocol_nylon_ipc_proto_init() {
 	if File_protocol_nylon_ipc_proto != nil {
 		return
 	}
-	file_protocol_nylon_ipc_proto_msgTypes[10].OneofWrappers = []any{}
 	file_protocol_nylon_ipc_proto_msgTypes[11].OneofWrappers = []any{}
-	file_protocol_nylon_ipc_proto_msgTypes[20].OneofWrappers = []any{}
-	file_protocol_nylon_ipc_proto_msgTypes[24].OneofWrappers = []any{
+	file_protocol_nylon_ipc_proto_msgTypes[12].OneofWrappers = []any{}
+	file_protocol_nylon_ipc_proto_msgTypes[21].OneofWrappers = []any{}
+	file_protocol_nylon_ipc_proto_msgTypes[25].OneofWrappers = []any{
 		(*IpcRequest_Status)(nil),
 		(*IpcRequest_Probe)(nil),
 		(*IpcRequest_Reload)(nil),
 		(*IpcRequest_Trace)(nil),
 	}
-	file_protocol_nylon_ipc_proto_msgTypes[25].OneofWrappers = []any{
+	file_protocol_nylon_ipc_proto_msgTypes[26].OneofWrappers = []any{
 		(*IpcResponse_Status)(nil),
 		(*IpcResponse_Probe)(nil),
 		(*IpcResponse_Reload)(nil),
@@ -2134,7 +2229,7 @@ func file_protocol_nylon_ipc_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_protocol_nylon_ipc_proto_rawDesc), len(file_protocol_nylon_ipc_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   26,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
